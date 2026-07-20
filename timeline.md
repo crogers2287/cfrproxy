@@ -2,6 +2,20 @@
 
 ## 2026-07-20
 
+### REQ-006 — fred traffic missing from live traces + refresh loses the traces tab
+
+Source: chat ("I have the agents model selected with Fred as the provider, but it's not showing up in the live traces … when I refresh … takes me back to the main page")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. fred requests not in traces | 🟡 fixed | Root cause: fred provider was DISABLED (accidental card click); `fred/agents-a1` silently fell back to next enabled provider (trace 21: routed to ollama). Re-enabled fred; live curl routes to fred again (143ms) |
+| 2. Silent fallback masked the misconfig | 🟡 fixed | Explicitly-addressed disabled provider now 503s with "provider X is disabled — enable it…" (verified with scratch provider) |
+| 3. Refresh returns to main page | 🟡 fixed | Active tab now in URL hash (#traces); Playwright: after reload active tab=traces, 24 rows rendered |
+
+SSE itself was healthy — traffic was flowing all along, just attributed to other providers. Commit df9eafe; service restarted.
+
+**REQ-006 status: COMPLETE.**
+
 ### REQ-005 — Claude's /model picker only shows Claude models
 
 Source: chat ("when launching Claude via the proxy it only shows Claude models. no option for cfrproxy models")
