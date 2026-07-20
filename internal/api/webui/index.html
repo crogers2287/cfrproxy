@@ -205,13 +205,18 @@ const api=(path,opt={})=>fetch('/admin/api/'+path,{headers:{'Content-Type':'appl
   .then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j});
 function toast(msg,err){const t=$('#toast');t.textContent=msg;t.style.borderColor=err?'var(--err)':'var(--ok)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
 
-// tabs
-$$('nav button').forEach(b=>b.onclick=()=>{
-  $$('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+// tabs — active tab tracked in the URL hash so refresh keeps your place
+function showTab(name){
+  const btn=$$('nav button').find(b=>b.dataset.tab===name);
+  if(!btn)return;
+  $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
-  $('#tab-'+b.dataset.tab).classList.remove('hidden');
-  if(b.dataset.tab==='docs')refreshDocSel();
-});
+  $('#tab-'+name).classList.remove('hidden');
+  if(name==='docs')refreshDocSel();
+}
+$$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
+window.addEventListener('hashchange',()=>showTab(location.hash.slice(1)||'providers'));
+showTab(location.hash.slice(1)||'providers');
 
 // ---- providers ----
 let providers=[];

@@ -191,8 +191,13 @@ func (p *Proxy) ResolveModel(ctx context.Context, model string) (store.Provider,
 	if i := strings.IndexByte(model, '/'); i > 0 {
 		name, rest := model[:i], model[i+1:]
 		for _, prov := range provs {
-			if !prov.Enabled || !strings.EqualFold(prov.Name, name) {
+			if !strings.EqualFold(prov.Name, name) {
 				continue
+			}
+			// explicitly-addressed providers must not silently fall through —
+			// a disabled provider is a loud error, not a reroute
+			if !prov.Enabled {
+				return store.Provider{}, "", fmt.Errorf("provider %q is disabled — enable it in the WebUI or with: cfrproxy provider edit --name %s", prov.Name, prov.Name)
 			}
 			if rest == "" {
 				return prov, prov.DefaultModel, nil
