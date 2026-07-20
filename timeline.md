@@ -2,6 +2,24 @@
 
 ## 2026-07-20
 
+### REQ-010 — Dynamic model selector in Telegram for all Hermes agents + OAuth logins (Codex/Anthropic/SuperGrok)
+
+Source: chat ("dynamic model selector inside of telegram for all of our Hermes agents … updates every time we add/remove models from the proxy" + "log in with our oauth device codes from codex, anthropic etc … route through an anthropic oauth proxy" + "supergrok as well")
+
+Key finding (Explore agent): Hermes ALREADY has `/model` with a live-fetching inline-keyboard picker (`gateway/slash_commands.py:_handle_model_command` → `model_switch.list_picker_providers` → live `GET /v1/models`; custom providers with an api_key get their catalog replaced by live discovery). So the integration is config, not code.
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Dynamic selector, all agents | 🟡 done | cfrproxy injected as one custom provider in all 7 profile config.yaml (ash/canna/fogger/grant/haxor/max/winston; backups written); `list_picker_providers` for haxor shows cfrproxy row w/ 183 live models; gateways restarted clean |
+| 2. Auto-updates on proxy change | 🟡 done | Hermes live-fetches cfrproxy `/v1/models`; 15-min stale-while-revalidate cache + `/model --refresh`; verified `fetch_api_models` → 183 |
+| 3. OAuth logins (Codex device/Anthropic/etc.) | 🟡 done | `cfrproxy login codex|codex-device|claude|antigravity|kimi|supergrok` → CLIProxyAPI flows; CLIProxyAPI (:8317) registered as cfrproxy provider `oauth` (130 models) |
+| 4. Anthropic OAuth routing preserved | 🟡 verified | `oauth/claude-sonnet-5` (anthropic dialect in) → pong |
+| 5. SuperGrok | 🟡 verified | `-xai-login` wired; `oauth/claude-command-grok-4.5` → pong |
+
+Non-repo changes: `~/.hermes/profiles/*/config.yaml` (cfrproxy custom provider), cfrproxy `oauth` provider in ~/.cfrproxy DB. Commits c0f94f8, 1257393; inject script + HERMES_INTEGRATION.md in repo.
+
+**REQ-010 status: COMPLETE.**
+
 ### REQ-009 — Visible alert in chat when failover changes the model
 
 Source: chat ("if we get routed to fall back can we have it flagged in the chat/toolcalls so we realize if the model changes like an alert?")
