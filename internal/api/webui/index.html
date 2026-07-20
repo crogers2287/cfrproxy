@@ -166,6 +166,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
     <datalist id="modellist"></datalist>
     <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
+    <label>Fallback (provider/model — auto-reroute on timeouts/5xx after one retry)</label><input type="text" id="p-fallback" placeholder="fred/agents-a1" list="allmodels">
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
     <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
@@ -232,7 +233,7 @@ async function loadProviders(){
       <h3>${esc(p.name)}</h3>
       <span class="type">${p.type}</span>
       <div class="url">${esc(p.base_url)}</div>
-      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}</div>
+      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · fb:<b>${esc(p.fallback)}</b>`:''}</div>
       <div class="row">
         <button class="b" onclick="openProviderDialog(${p.id})">Edit</button>
         <button class="b" onclick="testProvider(${p.id},this)">Test</button>
@@ -270,7 +271,7 @@ function openProviderDialog(id){
   $('#pdlg-title').textContent=id?'Edit '+p.name:'Add provider';
   $('#p-id').value=id||'';$('#p-name').value=p.name||'';$('#p-type').value=p.type||'openai';
   $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
-  $('#p-models').value=p.models||'';$('#p-docurl').value=p.doc_url||'';
+  $('#p-models').value=p.models||'';$('#p-fallback').value=p.fallback||'';$('#p-docurl').value=p.doc_url||'';
   $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
   pdlg.showModal();
 }
@@ -278,7 +279,7 @@ async function saveProvider(e){
   e.preventDefault();
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
-    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,
+    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,
     doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});

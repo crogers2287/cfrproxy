@@ -33,7 +33,8 @@ type Provider struct {
 	DocURL       string `json:"doc_url"`
 	DocMarkdown  string `json:"doc_markdown,omitempty"`
 	InjectDocs   bool   `json:"inject_docs"`
-	Models       string `json:"models"` // comma-separated aliases this provider serves
+	Models       string `json:"models"`   // comma-separated aliases this provider serves
+	Fallback     string `json:"fallback"` // provider/model to fail over to on transient errors
 }
 
 type Transform struct {
@@ -112,7 +113,8 @@ CREATE TABLE IF NOT EXISTS providers (
   doc_url TEXT NOT NULL DEFAULT '',
   doc_markdown TEXT NOT NULL DEFAULT '',
   inject_docs INTEGER NOT NULL DEFAULT 0,
-  models TEXT NOT NULL DEFAULT ''
+  models TEXT NOT NULL DEFAULT '',
+  fallback TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS transforms (
   id INTEGER PRIMARY KEY,
@@ -139,7 +141,12 @@ CREATE TABLE IF NOT EXISTS traces (
 CREATE INDEX IF NOT EXISTS traces_ts ON traces(ts);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// additive migration for pre-fallback DBs; duplicate-column error is fine
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN fallback TEXT NOT NULL DEFAULT ''`)
+	return nil
 }
 
 // ---- crypto ----
@@ -205,7 +212,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -215,7 +222,7 @@ func (s *Store) reload() error {
 		var p Provider
 		var enc []byte
 		var enabled, inject int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback); err != nil {
 			return err
 		}
 		p.Enabled, p.InjectDocs = enabled == 1, inject == 1
@@ -334,8 +341,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback)
 		if err != nil {
 			return err
 		}
@@ -343,11 +350,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.ID)
 		}
 		if err != nil {
 			return err

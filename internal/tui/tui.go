@@ -352,8 +352,8 @@ func mkInput(label, val string, width int) textinput.Model {
 
 func (m *model) openProviderForm(p *store.Provider) {
 	m.formKind = "provider"
-	m.labels = []string{"name", "type (openai|anthropic|ollama)", "base_url", "api_key (blank = keep)", "default_model", "models (aliases, comma-sep)", "doc_url", "inject_docs (y/n)"}
-	var vals [8]string
+	m.labels = []string{"name", "type (openai|anthropic|ollama)", "base_url", "api_key (blank = keep)", "default_model", "models (aliases, comma-sep)", "fallback (provider/model)", "doc_url", "inject_docs (y/n)"}
+	var vals [9]string
 	m.editingID = 0
 	m.formTitle = "add provider"
 	if p != nil {
@@ -363,9 +363,9 @@ func (m *model) openProviderForm(p *store.Provider) {
 		if p.InjectDocs {
 			inject = "y"
 		}
-		vals = [8]string{p.Name, p.Type, p.BaseURL, "", p.DefaultModel, p.Models, p.DocURL, inject}
+		vals = [9]string{p.Name, p.Type, p.BaseURL, "", p.DefaultModel, p.Models, p.Fallback, p.DocURL, inject}
 	} else {
-		vals[7] = "n"
+		vals[8] = "n"
 	}
 	m.inputs = nil
 	for i, l := range m.labels {
@@ -450,8 +450,8 @@ func (m *model) submitForm() error {
 		if v(3) != "" {
 			p.APIKey = v(3)
 		}
-		p.DefaultModel, p.Models, p.DocURL = v(4), v(5), v(6)
-		p.InjectDocs = strings.HasPrefix(strings.ToLower(v(7)), "y")
+		p.DefaultModel, p.Models, p.Fallback, p.DocURL = v(4), v(5), v(6), v(7)
+		p.InjectDocs = strings.HasPrefix(strings.ToLower(v(8)), "y")
 		if v(2) != p.BaseURL {
 			p.BaseURL = v(2)
 			probe := p

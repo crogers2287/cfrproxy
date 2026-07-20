@@ -123,54 +123,102 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 		p.Hub.Publish(*tr)
 	}()
 
-	// docs injection
-	if prov.InjectDocs && prov.DocMarkdown != "" {
-		if req.System != "" {
-			req.System = prov.DocMarkdown + "\n\n" + req.System
-		} else {
-			req.System = prov.DocMarkdown
+	// candidate chain: primary, then its configured fallback (single hop).
+	// Transient failures (transport, 408/429/5xx) retry once, then fail over.
+	cands := []candidate{{prov: prov, model: model}}
+	if prov.Fallback != "" {
+		if fprov, fmodel, ferr := p.ResolveModel(r.Context(), prov.Fallback); ferr == nil && fprov.ID != prov.ID {
+			cands = append(cands, candidate{prov: fprov, model: fmodel, failover: true})
 		}
 	}
 
-	reqRules, respRules, err := p.rules(prov.ID, inbound)
-	if err != nil {
-		tr.Status, tr.Err = 500, err.Error()
-		httpErr(w, inbound, 500, err.Error())
-		return
+	var resp *http.Response
+	var used candidate
+	var respRules []transform.Rule
+	var passth bool
+	lastErr := ""
+	for _, c := range cands {
+		creq := *req
+		creq.Model = c.model
+		if c.prov.InjectDocs && c.prov.DocMarkdown != "" {
+			if creq.System != "" {
+				creq.System = c.prov.DocMarkdown + "\n\n" + creq.System
+			} else {
+				creq.System = c.prov.DocMarkdown
+			}
+		}
+		reqRules, respR, err := p.rules(c.prov.ID, inbound)
+		if err != nil {
+			tr.Status, tr.Err = 500, err.Error()
+			httpErr(w, inbound, 500, err.Error())
+			return
+		}
+		passthrough := inbound == c.prov.Type && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
+		var outBody []byte
+		if passthrough {
+			outBody = rawWithModel(body, c.model)
+		} else {
+			outBody, err = buildOutbound(c.prov.Type, &creq)
+			if err != nil {
+				tr.Status, tr.Err = 500, err.Error()
+				httpErr(w, inbound, 500, err.Error())
+				return
+			}
+			outBody = transform.Apply(outBody, reqRules)
+		}
+		for attempt := 0; attempt < 2 && resp == nil; attempt++ {
+			if attempt > 0 {
+				time.Sleep(1200 * time.Millisecond)
+			}
+			r2, err := p.send(r.Context(), c.prov, providerPath(c.prov.Type), outBody)
+			if err != nil {
+				lastErr = c.prov.Name + ": " + err.Error()
+				if r.Context().Err() != nil {
+					return // client gone
+				}
+				continue
+			}
+			if transientStatus(r2.StatusCode) {
+				eb, _ := io.ReadAll(io.LimitReader(r2.Body, 1<<20))
+				r2.Body.Close()
+				lastErr = fmt.Sprintf("%s: HTTP %d %s", c.prov.Name, r2.StatusCode, snip(eb))
+				continue
+			}
+			resp = r2
+		}
+		if resp != nil {
+			used, respRules, passth = c, respR, passthrough
+			req = &creq
+			break
+		}
 	}
-
-	// raw fast path: same dialect in and out, nothing to rewrite
-	if inbound == prov.Type && len(reqRules) == 0 && len(respRules) == 0 && !prov.InjectDocs {
-		p.passthrough(w, r.Context(), prov, model, body, req.Stream, inbound, tr)
-		return
-	}
-
-	outBody, err := buildOutbound(prov.Type, req)
-	if err != nil {
-		tr.Status, tr.Err = 500, err.Error()
-		httpErr(w, inbound, 500, err.Error())
-		return
-	}
-	outBody = transform.Apply(outBody, reqRules)
-
-	resp, err := p.send(r.Context(), prov, providerPath(prov.Type), outBody)
-	if err != nil {
-		tr.Status, tr.Err = 502, err.Error()
-		httpErr(w, inbound, 502, err.Error())
+	if resp == nil {
+		tr.Status, tr.Err = 502, lastErr
+		httpErr(w, inbound, 502, lastErr)
 		return
 	}
 	defer resp.Body.Close()
+	tr.Provider, tr.Model = used.prov.Name, used.model
+	if used.failover {
+		tr.Err = "failover from " + prov.Name + " (" + lastErr + ")"
+	}
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 { // non-transient provider error (auth, bad request)
 		eb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		tr.Status, tr.Err = resp.StatusCode, snip(eb)
-		httpErr(w, inbound, resp.StatusCode, fmt.Sprintf("provider %s: %s", prov.Name, snip(eb)))
+		tr.Status = resp.StatusCode
+		tr.Err = snip(eb)
+		httpErr(w, inbound, resp.StatusCode, fmt.Sprintf("provider %s: %s", used.prov.Name, snip(eb)))
+		return
+	}
+
+	if passth {
+		p.copyRaw(w, resp, req.Stream, tr)
 		return
 	}
 
 	if req.Stream {
 		deltas := make(chan wire.Delta, 16)
-		go readStream(prov.Type, resp.Body, deltas)
+		go readStream(used.prov.Type, resp.Body, deltas)
 		if err := writeStream(inbound, w, req.Model, deltas); err != nil {
 			tr.Status, tr.Err = 200, "stream aborted: "+err.Error()
 			return
@@ -186,7 +234,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 		httpErr(w, inbound, 502, err.Error())
 		return
 	}
-	norm, err := parseOutboundResponse(prov.Type, rb)
+	norm, err := parseOutboundResponse(used.prov.Type, rb)
 	if err != nil {
 		tr.Status, tr.Err = 502, err.Error()
 		httpErr(w, inbound, 502, err.Error())
@@ -201,23 +249,37 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 	w.Write(final)
 }
 
-// passthrough forwards the raw body (model field rewritten) and copies the
-// provider's response bytes straight through — the zero-translation fast path.
-func (p *Proxy) passthrough(w http.ResponseWriter, ctx context.Context, prov store.Provider, model string, body []byte, stream bool, inbound string, tr *store.Trace) {
+type candidate struct {
+	prov     store.Provider
+	model    string
+	failover bool
+}
+
+// transientStatus: worth retrying / failing over. 4xx auth/validation errors
+// are not — they'd fail identically anywhere.
+func transientStatus(code int) bool {
+	switch code {
+	case 408, 429, 500, 502, 503, 504, 524, 529:
+		return true
+	}
+	return false
+}
+
+func rawWithModel(body []byte, model string) []byte {
 	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err == nil {
-		doc["model"] = model
-		if b, err := json.Marshal(doc); err == nil {
-			body = b
-		}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body
 	}
-	resp, err := p.send(ctx, prov, providerPath(prov.Type), body)
+	doc["model"] = model
+	b, err := json.Marshal(doc)
 	if err != nil {
-		tr.Status, tr.Err = 502, err.Error()
-		httpErr(w, inbound, 502, err.Error())
-		return
+		return body
 	}
-	defer resp.Body.Close()
+	return b
+}
+
+// copyRaw streams the provider's bytes through untouched (passthrough mode).
+func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool, tr *store.Trace) {
 	for _, h := range []string{"Content-Type", "Cache-Control"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
