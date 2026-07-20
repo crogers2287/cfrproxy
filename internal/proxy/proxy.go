@@ -153,7 +153,9 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 			httpErr(w, inbound, 500, err.Error())
 			return
 		}
-		passthrough := inbound == c.prov.Type && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
+		// failover responses always take the translated path so the alert
+		// notice can be injected into the visible content
+		passthrough := !c.failover && inbound == c.prov.Type && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
 		var outBody []byte
 		if passthrough {
 			outBody = rawWithModel(body, c.model)
@@ -199,8 +201,15 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 	}
 	defer resp.Body.Close()
 	tr.Provider, tr.Model = used.prov.Name, used.model
+	alert := ""
 	if used.failover {
 		tr.Err = "failover from " + prov.Name + " (" + lastErr + ")"
+		reason := lastErr
+		if len(reason) > 160 {
+			reason = reason[:160] + "…"
+		}
+		alert = fmt.Sprintf("⚠️ [cfrproxy] %s unavailable — failed over to %s/%s (%s)\n\n",
+			prov.Name, used.prov.Name, used.model, reason)
 	}
 
 	if resp.StatusCode >= 400 { // non-transient provider error (auth, bad request)
@@ -219,6 +228,17 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 	if req.Stream {
 		deltas := make(chan wire.Delta, 16)
 		go readStream(used.prov.Type, resp.Body, deltas)
+		if alert != "" {
+			withAlert := make(chan wire.Delta, 16)
+			go func(in <-chan wire.Delta) {
+				withAlert <- wire.Delta{Text: alert}
+				for d := range in {
+					withAlert <- d
+				}
+				close(withAlert)
+			}(deltas)
+			deltas = withAlert
+		}
 		if err := writeStream(inbound, w, req.Model, deltas); err != nil {
 			tr.Status, tr.Err = 200, "stream aborted: "+err.Error()
 			return
@@ -241,6 +261,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 		return
 	}
 	norm.Model = req.Model
+	norm.Content = alert + norm.Content
 	final := buildInboundResponse(inbound, norm)
 	final = transform.Apply(final, respRules)
 	tr.Status = 200

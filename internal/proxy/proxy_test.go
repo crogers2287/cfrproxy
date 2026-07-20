@@ -156,6 +156,9 @@ func TestFailover(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "saved") {
 		t.Fatalf("response not from backup: %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "[cfrproxy] primary unavailable — failed over to backup/backup-model") {
+		t.Fatalf("failover alert missing from visible content: %s", rec.Body.String())
+	}
 	if primaryHits != 2 {
 		t.Errorf("want 2 attempts on primary (1 retry), got %d", primaryHits)
 	}
