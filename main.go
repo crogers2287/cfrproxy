@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -73,10 +74,22 @@ func main() {
 		cmdTransform(rest)
 	case "passwd":
 		cmdPasswd(rest)
+	case "models":
+		cmdModels(rest)
+	case "launch":
+		if len(rest) < 1 {
+			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
+		}
+		cmdLaunch(rest[0], rest[1:])
 	case "help", "-h", "--help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
+		// any binary on PATH is launchable directly: `cfrproxy claude --model ...`
+		if _, err := exec.LookPath(cmd); err == nil {
+			cmdLaunch(cmd, rest)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "unknown command %q (not a subcommand, and not a harness on PATH)\n", cmd)
 		usage()
 		os.Exit(2)
 	}
@@ -99,6 +112,12 @@ Usage:
                    [--provider P] [--target openai|anthropic|ollama]
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
+  cfrproxy models  [--name N]                         scan providers' live model lists
+  cfrproxy <harness> [--model provider/model] [args]  launch a harness through the proxy
+                   e.g. cfrproxy claude --model nexum/qwen-3.8
+                        cfrproxy codex --model fred/agents-a1
+                        cfrproxy opencode | cfrproxy omp | any binary on PATH
+                   (also: cfrproxy launch <harness> ...)
 
 Inbound endpoints (point any harness at these):
   OpenAI-compat    POST /v1/chat/completions   (Codex, OpenCode, ...)

@@ -88,6 +88,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("DELETE /admin/api/providers/{id}", a.hProviderDelete)
 	inner.HandleFunc("POST /admin/api/providers/reorder", a.hReorder)
 	inner.HandleFunc("POST /admin/api/providers/{id}/test", a.hTest)
+	inner.HandleFunc("GET /admin/api/providers/{id}/models", a.hProviderModels)
 	inner.HandleFunc("POST /admin/api/providers/{id}/docs/fetch", a.hDocsFetch)
 	inner.HandleFunc("GET /admin/api/providers/{id}/docs", a.hDocsGet)
 	inner.HandleFunc("GET /admin/api/transforms", a.hTransformsList)
@@ -224,6 +225,24 @@ func (a *API) hTest(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "content": resp.Content, "model": resp.Model,
 		"latency_ms": time.Since(start).Milliseconds(), "tokens": resp.CompletionTokens})
+}
+
+func (a *API) hProviderModels(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	prov, ok := a.Store.ProviderByID(id)
+	if !ok {
+		httpErr(w, 404, "provider not found")
+		return
+	}
+	models, err := a.Proxy.ListModels(r.Context(), prov)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"models": []string{}, "error": err.Error()})
+		return
+	}
+	if models == nil {
+		models = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"models": models, "count": len(models)})
 }
 
 func (a *API) hDocsGet(w http.ResponseWriter, r *http.Request) {

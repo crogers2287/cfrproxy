@@ -58,10 +58,12 @@ type Proxy struct {
 	Store  *store.Store
 	Hub    *Hub
 	Client *http.Client
+	models modelCache
 }
 
 func New(s *store.Store) *Proxy {
-	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: 10 * time.Minute}}
+	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: 10 * time.Minute},
+		models: modelCache{entries: map[int64]modelCacheEntry{}}}
 }
 
 func (p *Proxy) Register(mux *http.ServeMux) {
@@ -78,31 +80,9 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	})
 }
 
-// exposed model list = provider/model combos + aliases, for harness pickers
-func (p *Proxy) modelIDs() []string {
-	var ids []string
-	for _, prov := range p.Store.Providers() {
-		if !prov.Enabled {
-			continue
-		}
-		if prov.DefaultModel != "" {
-			ids = append(ids, prov.Name+"/"+prov.DefaultModel)
-		}
-		for _, alias := range strings.Split(prov.Models, ",") {
-			if a := strings.TrimSpace(alias); a != "" {
-				ids = append(ids, a)
-			}
-		}
-	}
-	if len(ids) == 0 {
-		ids = []string{"default"}
-	}
-	return ids
-}
-
 func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
 	var data []map[string]any
-	for _, id := range p.modelIDs() {
+	for _, id := range p.AllModelIDs(r.Context()) {
 		data = append(data, map[string]any{"id": id, "object": "model", "owned_by": "cfrproxy"})
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
@@ -110,7 +90,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request) {
 	var models []map[string]any
-	for _, id := range p.modelIDs() {
+	for _, id := range p.AllModelIDs(r.Context()) {
 		models = append(models, map[string]any{"name": id, "model": id, "modified_at": time.Now().UTC().Format(time.RFC3339)})
 	}
 	writeJSON(w, 200, map[string]any{"models": models})

@@ -147,7 +147,9 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <label>Base URL</label><input type="text" id="p-url" required placeholder="https://openrouter.ai/api or http://127.0.0.1:11434">
     <label>API key <span style="color:var(--dim)">(leave blank to keep existing; stored encrypted)</span></label>
     <input type="password" id="p-key" autocomplete="off">
-    <label>Default model</label><input type="text" id="p-model" placeholder="glm-5.2:cloud">
+    <label>Default model <button type="button" class="b" style="margin-left:8px;font-size:11px;padding:2px 8px" onclick="scanModels()">Scan models</button> <span id="scan-count" style="color:var(--dim);font-size:11px"></span></label>
+    <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
+    <datalist id="modellist"></datalist>
     <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
@@ -263,6 +265,18 @@ async function saveProvider(e){
     pdlg.close();toast(r.note||'provider saved',(r.note||'').startsWith('warning'));loadProviders();
   }catch(err){toast(err.message,true)}
   return false;
+}
+async function scanModels(){
+  const id=$('#p-id').value;
+  if(!id){toast('save the provider first, then scan',true);return}
+  $('#scan-count').textContent='scanning…';
+  try{
+    const r=await api('providers/'+id+'/models');
+    if(r.error){$('#scan-count').textContent='';toast('scan failed: '+r.error,true);return}
+    $('#modellist').innerHTML=r.models.map(m=>`<option value="${esc(m)}">`).join('');
+    $('#scan-count').textContent=r.count+' models found — type to filter';
+    if(!$('#p-model').value)$('#p-model').focus();
+  }catch(err){$('#scan-count').textContent='';toast(err.message,true)}
 }
 async function toggleProvider(id){
   const p=providers.find(x=>x.id===id);
