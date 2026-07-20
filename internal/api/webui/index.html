@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cfrproxy</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128268;</text></svg>">
+<style>
+:root{
+  --bg:#0d1117;--panel:#161b22;--panel2:#1c2129;--border:#30363d;--text:#e6edf3;
+  --dim:#8b949e;--accent:#d16ba5;--ok:#3fb950;--err:#f85149;--warn:#d29922;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;min-height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--panel)}
+header h1{font-size:17px;letter-spacing:.5px}
+header h1 span{color:var(--accent)}
+nav{display:flex;gap:4px;margin-left:24px}
+nav button{background:none;border:none;color:var(--dim);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:14px}
+nav button.on{background:var(--panel2);color:var(--text);font-weight:600}
+#status{margin-left:auto;color:var(--dim);font-size:12px}
+main{padding:24px;max-width:1200px;margin:0 auto}
+.hidden{display:none!important}
+h2{font-size:15px;margin-bottom:14px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:1px}
+/* provider cards */
+#cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;cursor:grab;position:relative;transition:border-color .15s}
+.card:hover{border-color:var(--accent)}
+.card.dragging{opacity:.4}
+.card.dragover{border-color:var(--accent);border-style:dashed}
+.card.off{opacity:.45}
+.card .prio{position:absolute;top:10px;right:12px;color:var(--dim);font-size:11px}
+.card h3{font-size:16px;margin-bottom:2px}
+.card .type{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim);margin-bottom:8px}
+.card .url{color:var(--dim);font-size:12px;word-break:break-all}
+.card .meta{margin-top:8px;font-size:12px;color:var(--dim)}
+.card .meta b{color:var(--text);font-weight:500}
+.card .row{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+button.b{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+button.b:hover{border-color:var(--accent)}
+button.b.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+button.b.danger:hover{border-color:var(--err);color:var(--err)}
+.badge-ok{color:var(--ok)} .badge-err{color:var(--err)}
+/* forms */
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:24px;width:560px;max-width:92vw}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog h3{margin-bottom:16px}
+label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px}
+input[type=text],input[type=password],select,textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit}
+textarea{font-family:ui-monospace,monospace;min-height:110px}
+.check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--dim)}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--dim);text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
+td{padding:6px 10px;border-bottom:1px solid #21262d;vertical-align:top}
+tr.err td{color:var(--err)}
+code,.mono{font-family:ui-monospace,monospace;font-size:12px}
+.pill{display:inline-block;font-size:11px;padding:0 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim)}
+.pill.on{color:var(--ok);border-color:var(--ok)}
+/* docs viewer */
+#docsview{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px;margin-top:16px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;max-height:480px;overflow:auto}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.toolbar .spacer{flex:1}
+#tracedetail{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;max-height:320px;overflow:auto}
+#toast{position:fixed;bottom:24px;right:24px;background:var(--panel2);border:1px solid var(--border);padding:10px 18px;border-radius:8px;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+.hint{color:var(--dim);font-size:12px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>cfr<span>proxy</span></h1>
+  <nav>
+    <button data-tab="providers" class="on">Providers</button>
+    <button data-tab="transforms">Transforms</button>
+    <button data-tab="traces">Live Traces</button>
+    <button data-tab="docs">Docs</button>
+  </nav>
+  <div id="status"></div>
+</header>
+<main>
+
+<section id="tab-providers">
+  <div class="toolbar">
+    <h2 style="margin:0">Provider registry</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openProviderDialog()">+ Add provider</button>
+  </div>
+  <p class="hint">Drag cards to set routing priority — the first enabled card handles bare model names. Address a provider directly with <code>provider-name/model</code>.</p>
+  <div id="cards"></div>
+</section>
+
+<section id="tab-transforms" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Transform rules</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openTransformDialog()">+ Add transform</button>
+  </div>
+  <p class="hint">Request-phase rules rewrite the outbound provider body; response-phase rules rewrite the body returned to the consumer. Ops: <code>set</code>, <code>default</code>, <code>rename</code>, <code>delete</code>.</p>
+  <table id="ttable">
+    <thead><tr><th></th><th>Name</th><th>Phase</th><th>Provider</th><th>Target dialect</th><th>Rules</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section id="tab-traces" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Live request trace</h2>
+    <span id="sse-state" class="pill">connecting…</span>
+    <div class="spacer"></div>
+    <button class="b" onclick="clearTraces()">Clear view</button>
+  </div>
+  <table id="trtable">
+    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Inbound</th><th>Status</th><th>Latency</th><th>Stream</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="tracedetail" class="hidden"></div>
+</section>
+
+<section id="tab-docs" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Provider docs</h2>
+    <select id="docsel" onchange="loadDocs()" style="width:220px"></select>
+    <button class="b" onclick="fetchDocUrl()">Fetch from URL</button>
+    <label class="b" style="cursor:pointer">Upload .md<input type="file" id="docupload" accept=".md,.markdown,.txt" style="display:none" onchange="uploadDoc(event)"></label>
+    <span id="injectstate" class="pill"></span>
+    <button class="b" onclick="toggleInject()">Toggle inject</button>
+  </div>
+  <p class="hint">Docs attach per provider (URL fetch or Markdown upload). When inject is on, the doc is prepended as system context on every request routed to that provider.</p>
+  <div id="docsview">select a provider…</div>
+</section>
+
+</main>
+
+<dialog id="pdlg">
+  <h3 id="pdlg-title">Add provider</h3>
+  <form method="dialog" onsubmit="return saveProvider(event)">
+    <input type="hidden" id="p-id">
+    <label>Name</label><input type="text" id="p-name" required placeholder="openrouter">
+    <label>Type</label>
+    <select id="p-type">
+      <option value="openai">openai-compatible (OpenAI, OpenRouter, Nexum, SuperGrok, OpenCode…)</option>
+      <option value="anthropic">anthropic (Claude)</option>
+      <option value="ollama">ollama (local models)</option>
+    </select>
+    <label>Base URL</label><input type="text" id="p-url" required placeholder="https://openrouter.ai/api or http://127.0.0.1:11434">
+    <label>API key <span style="color:var(--dim)">(leave blank to keep existing; stored encrypted)</span></label>
+    <input type="password" id="p-key" autocomplete="off">
+    <label>Default model</label><input type="text" id="p-model" placeholder="glm-5.2:cloud">
+    <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
+    <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
+    <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
+    <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="pdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="tdlg">
+  <h3 id="tdlg-title">Add transform</h3>
+  <form method="dialog" onsubmit="return saveTransform(event)">
+    <input type="hidden" id="t-id">
+    <label>Name</label><input type="text" id="t-name" required>
+    <label>Phase</label>
+    <select id="t-phase"><option value="request">request (outbound provider body)</option><option value="response">response (body returned to consumer)</option></select>
+    <label>Provider (blank = all)</label><select id="t-provider"><option value="0">all providers</option></select>
+    <label>Target inbound dialect (blank = any)</label>
+    <select id="t-target"><option value="">any</option><option>openai</option><option>anthropic</option><option>ollama</option></select>
+    <label>Rules (JSON array)</label>
+    <textarea id="t-rules" spellcheck="false">[
+  {"op":"set","path":"temperature","value":0.2}
+]</textarea>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="tdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const api=(path,opt={})=>fetch('/admin/api/'+path,{headers:{'Content-Type':'application/json'},...opt})
+  .then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j});
+function toast(msg,err){const t=$('#toast');t.textContent=msg;t.style.borderColor=err?'var(--err)':'var(--ok)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+
+// tabs
+$$('nav button').forEach(b=>b.onclick=()=>{
+  $$('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  $$('main > section').forEach(s=>s.classList.add('hidden'));
+  $('#tab-'+b.dataset.tab).classList.remove('hidden');
+  if(b.dataset.tab==='docs')refreshDocSel();
+});
+
+// ---- providers ----
+let providers=[];
+async function loadProviders(){
+  providers=await api('providers');
+  const grid=$('#cards');grid.innerHTML='';
+  providers.forEach((p,i)=>{
+    const card=document.createElement('div');
+    card.className='card'+(p.enabled?'':' off');
+    card.draggable=true;card.dataset.id=p.id;
+    card.innerHTML=`
+      <div class="prio">#${i+1}</div>
+      <h3>${esc(p.name)}</h3>
+      <span class="type">${p.type}</span>
+      <div class="url">${esc(p.base_url)}</div>
+      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}</div>
+      <div class="row">
+        <button class="b" onclick="openProviderDialog(${p.id})">Edit</button>
+        <button class="b" onclick="testProvider(${p.id},this)">Test</button>
+        <button class="b" onclick="toggleProvider(${p.id})">${p.enabled?'Disable':'Enable'}</button>
+        <button class="b danger" onclick="delProvider(${p.id},'${esc(p.name)}')">Delete</button>
+      </div>
+      <div class="meta test-out"></div>`;
+    addDnD(card);grid.appendChild(card);
+  });
+  refreshDocSel();
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+// drag to reorder
+let dragEl=null;
+function addDnD(card){
+  card.addEventListener('dragstart',()=>{dragEl=card;card.classList.add('dragging')});
+  card.addEventListener('dragend',()=>{card.classList.remove('dragging');dragEl=null});
+  card.addEventListener('dragover',e=>{e.preventDefault();card.classList.add('dragover')});
+  card.addEventListener('dragleave',()=>card.classList.remove('dragover'));
+  card.addEventListener('drop',async e=>{
+    e.preventDefault();card.classList.remove('dragover');
+    if(!dragEl||dragEl===card)return;
+    const grid=$('#cards'),kids=[...grid.children];
+    grid.insertBefore(dragEl,kids.indexOf(dragEl)<kids.indexOf(card)?card.nextSibling:card);
+    const ids=[...grid.children].map(c=>+c.dataset.id);
+    try{await api('providers/reorder',{method:'POST',body:JSON.stringify({ids})});toast('routing order saved');loadProviders()}
+    catch(err){toast(err.message,true)}
+  });
+}
+
+const pdlg=$('#pdlg');
+function openProviderDialog(id){
+  const p=providers.find(x=>x.id===id)||{};
+  $('#pdlg-title').textContent=id?'Edit '+p.name:'Add provider';
+  $('#p-id').value=id||'';$('#p-name').value=p.name||'';$('#p-type').value=p.type||'openai';
+  $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
+  $('#p-models').value=p.models||'';$('#p-docurl').value=p.doc_url||'';
+  $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
+  pdlg.showModal();
+}
+async function saveProvider(e){
+  e.preventDefault();
+  const id=$('#p-id').value;
+  const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
+    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,
+    doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
+  try{
+    await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    pdlg.close();toast('provider saved');loadProviders();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleProvider(id){
+  const p=providers.find(x=>x.id===id);
+  try{await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',enabled:!p.enabled})});loadProviders()}
+  catch(err){toast(err.message,true)}
+}
+async function delProvider(id,name){
+  if(!confirm('Delete provider "'+name+'"?'))return;
+  try{await api('providers/'+id,{method:'DELETE'});toast('deleted');loadProviders()}
+  catch(err){toast(err.message,true)}
+}
+async function testProvider(id,btn){
+  const out=btn.closest('.card').querySelector('.test-out');
+  out.textContent='testing…';
+  try{
+    const r=await api('providers/'+id+'/test',{method:'POST',body:JSON.stringify({})});
+    out.innerHTML=r.ok?`<span class="badge-ok">✓ ${r.latency_ms}ms</span> ${esc(r.content).slice(0,120)}`
+                      :`<span class="badge-err">✗ ${esc(r.error)}</span>`;
+  }catch(err){out.innerHTML=`<span class="badge-err">✗ ${esc(err.message)}</span>`}
+}
+
+// ---- transforms ----
+let transforms=[];
+async function loadTransforms(){
+  transforms=await api('transforms');
+  const tb=$('#ttable tbody');tb.innerHTML='';
+  transforms.forEach(t=>{
+    const prov=providers.find(p=>p.id===t.provider_id);
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><span class="pill ${t.enabled?'on':''}" style="cursor:pointer" onclick="toggleTransform(${t.id},${!t.enabled})">${t.enabled?'on':'off'}</span></td>
+      <td>${esc(t.name)}</td><td>${t.phase}</td>
+      <td>${prov?esc(prov.name):'all'}</td><td>${t.target||'any'}</td>
+      <td><code>${esc(JSON.stringify(t.rules)).slice(0,80)}</code></td>
+      <td><button class="b" onclick="openTransformDialog(${t.id})">Edit</button>
+          <button class="b danger" onclick="delTransform(${t.id})">Del</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+const tdlg=$('#tdlg');
+function openTransformDialog(id){
+  const t=transforms.find(x=>x.id===id)||{};
+  $('#tdlg-title').textContent=id?'Edit '+t.name:'Add transform';
+  const sel=$('#t-provider');sel.innerHTML='<option value="0">all providers</option>';
+  providers.forEach(p=>sel.insertAdjacentHTML('beforeend',`<option value="${p.id}">${esc(p.name)}</option>`));
+  $('#t-id').value=id||'';$('#t-name').value=t.name||'';$('#t-phase').value=t.phase||'request';
+  sel.value=t.provider_id||0;$('#t-target').value=t.target||'';
+  if(id)$('#t-rules').value=JSON.stringify(t.rules,null,2);
+  tdlg.showModal();
+}
+async function saveTransform(e){
+  e.preventDefault();
+  let rules;
+  try{rules=JSON.parse($('#t-rules').value)}catch{toast('rules is not valid JSON',true);return false}
+  const id=$('#t-id').value;
+  const body={name:$('#t-name').value,phase:$('#t-phase').value,provider_id:+$('#t-provider').value,
+    target:$('#t-target').value,rules,enabled:true};
+  if(id){const ex=transforms.find(x=>x.id==id);if(ex)body.enabled=ex.enabled}
+  try{
+    await api(id?'transforms/'+id:'transforms',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    tdlg.close();toast('transform saved');loadTransforms();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleTransform(id,enabled){
+  try{await api('transforms/'+id+'/toggle',{method:'POST',body:JSON.stringify({enabled})});loadTransforms()}
+  catch(err){toast(err.message,true)}
+}
+async function delTransform(id){
+  if(!confirm('Delete this transform?'))return;
+  try{await api('transforms/'+id,{method:'DELETE'});loadTransforms()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- traces ----
+const trbody=()=>$('#trtable tbody');
+function traceRow(t){
+  const tr=document.createElement('tr');
+  if(t.status>=400||t.err)tr.classList.add('err');
+  tr.style.cursor='pointer';
+  tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
+    d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
+  tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
+    <td class="mono">${esc(t.model)}</td><td>${t.inbound}</td>
+    <td>${t.status}${t.err?' ✗':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
+  return tr;
+}
+async function loadTraces(){
+  const ts=await api('traces?limit=100');
+  trbody().innerHTML='';ts.forEach(t=>trbody().appendChild(traceRow(t)));
+}
+function clearTraces(){trbody().innerHTML='';$('#tracedetail').classList.add('hidden')}
+function connectSSE(){
+  const es=new EventSource('/admin/api/logs/stream');
+  es.onopen=()=>{const p=$('#sse-state');p.textContent='live';p.classList.add('on')};
+  es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on')};
+  es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));
+    while(trbody().children.length>200)trbody().lastChild.remove()};
+}
+
+// ---- docs ----
+function refreshDocSel(){
+  const sel=$('#docsel');const cur=sel.value;sel.innerHTML='';
+  providers.forEach(p=>sel.insertAdjacentHTML('beforeend',`<option value="${p.id}">${esc(p.name)}</option>`));
+  if(cur)sel.value=cur;
+  if(providers.length)loadDocs();
+}
+async function loadDocs(){
+  const id=$('#docsel').value;if(!id)return;
+  try{
+    const d=await api('providers/'+id+'/docs');
+    $('#docsview').textContent=d.doc_markdown||('(no markdown stored)'+(d.doc_url?'\ndoc_url: '+d.doc_url+'  — use "Fetch from URL"':''));
+    const pill=$('#injectstate');pill.textContent=d.inject_docs?'inject: on':'inject: off';
+    pill.classList.toggle('on',d.inject_docs);
+  }catch(err){toast(err.message,true)}
+}
+async function fetchDocUrl(){
+  const id=$('#docsel').value;if(!id)return;
+  try{const r=await api('providers/'+id+'/docs/fetch',{method:'POST'});toast('fetched '+r.bytes+' bytes');loadDocs()}
+  catch(err){toast(err.message,true)}
+}
+async function uploadDoc(ev){
+  const id=$('#docsel').value;if(!id||!ev.target.files.length)return;
+  const text=await ev.target.files[0].text();
+  const p=providers.find(x=>x.id==id);
+  try{
+    await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',doc_markdown:text})});
+    toast('doc uploaded ('+text.length+' bytes)');loadDocs();
+  }catch(err){toast(err.message,true)}
+  ev.target.value='';
+}
+async function toggleInject(){
+  const id=$('#docsel').value;if(!id)return;
+  const p=providers.find(x=>x.id==id);
+  const d=await api('providers/'+id+'/docs');
+  try{
+    await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',doc_markdown:d.doc_markdown,inject_docs:!d.inject_docs})});
+    toast('inject toggled');loadDocs();loadProviders();
+  }catch(err){toast(err.message,true)}
+}
+
+// ---- boot ----
+async function boot(){
+  try{
+    await loadProviders();await loadTransforms();await loadTraces();connectSSE();
+    const st=await api('status');
+    $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
+  }catch(err){toast(err.message,true)}
+}
+boot();
+</script>
+</body>
+</html>

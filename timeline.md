@@ -1,0 +1,34 @@
+# cfrproxy timeline
+
+## 2026-07-20
+
+### REQ-001 — Build universal LLM proxy (provider registry, router, transforms, TUI/CLI, WebUI, Ollama-first)
+
+Source: Governed Fable Prompt pasted in session (universal proxy replicating `ollama launch <harness> --model <m>` generically). Operator decisions: Go single binary, SQLite ("whichever is faster"), basic auth.
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Provider registry (any provider, base URL, encrypted key, docs ref) | 🟡 built | `internal/store`; `TestKeyEncryptionAtRest` proves AES-GCM at rest + empty-key-keeps-key; fred + ollama registered live |
+| 2. Request router (normalized schema → provider wire format → normalize back) | 🟡 built | `internal/wire` + `internal/proxy`; live: anthropic→openai (fred), openai→ollama, ollama→openai all returned "pong" |
+| 3. Output transformer pipeline (declarative, per-provider/per-target) | 🟡 built | `internal/transform`; live: `tag-response` rule visibly added `proxy_tag` to response; `pin-temp` scoped to fred |
+| 4. TUI/CLI full management | 🟡 built | CLI: provider/route/test/logs/transform/passwd all exercised live; TUI rendered under `script` pseudo-tty, exit 0 |
+| 5. WebUI (card grid, drag reorder, docs panel, live trace, transform editor) | 🟡 built | `internal/api` + embedded `webui/index.html`; Playwright screenshots of all 4 tabs; SSE trace event received live; 401 without creds |
+| 6. Ollama first-class (streaming + non-streaming, transformed to any harness) | 🟡 built | qwen2.5:7b via /v1/chat/completions (stream + non-stream) and /v1/messages; NDJSON out for /api/chat consumers |
+
+#### Files
+- `main.go` — CLI (serve/tui/provider/route/test/logs/transform/passwd), presets
+- `internal/store/` — SQLite WAL + AES-256-GCM key encryption + registry cache (+ `data_version` cross-process invalidation)
+- `internal/wire/` — normal form + openai/anthropic/ollama translators incl. stream re-framing + tool calls
+- `internal/transform/` — declarative rule engine (set/default/rename/delete)
+- `internal/proxy/` — inbound endpoints, routing, passthrough fast path, traces, SSE hub
+- `internal/api/` — management REST + basic auth + SSE + embedded WebUI (`webui/index.html`)
+- `internal/tui/` — Bubble Tea console (providers/transforms/logs/test)
+
+#### Verify
+- `go test ./...` — 3 packages ok (store, transform, wire; 12 tests incl. stream re-framing both directions)
+- Live smoke on 127.0.0.1:8420 against fred:9069 (llama-swap agents-a1) and local Ollama 0.21.2 (qwen2.5:7b): passthrough raw-bytes proof (llama-swap `timings` field intact), cross-dialect streaming (anthropic SSE + ollama NDJSON), tool-call translation (get_weather → tool_use block), docs injection ("zanzibar" test), basic auth 401/200, SSE live trace, key-redaction in API responses
+- Found+fixed during verify: server registry cache missed CLI writes from a second process → `PRAGMA data_version` check in `Providers()`
+
+**REQ-001 status: COMPLETE.**
