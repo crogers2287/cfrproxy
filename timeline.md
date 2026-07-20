@@ -2,6 +2,19 @@
 
 ## 2026-07-20
 
+### REQ-003 — Auto-try conventional URL variants when adding a provider
+
+Source: chat ("fix it so that if we add a URL, it auto tries a couple different options based on conventional formatting")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Normalize user-entered URLs | 🟡 built | `NormalizeBase`: scheme inference (http for local/private hosts), trim, strip pasted endpoint paths; table-driven test |
+| 2. Probe conventional variants on save | 🟡 built | `DiscoverBase`: 1-token probe, ≠404/405 = exists; `/api/v1` candidate for openai routers; wired into API create/update, CLI add/edit, TUI form; WebUI toasts the resolution |
+
+Verify: `go test ./...` 4 packages ok (4 new discovery tests incl. httptest mock router). Live: `"openrouter.ai"` → resolved `https://openrouter.ai/api/v1` (HTTP 401 = exists); full endpoint paste `https://dialagram.me/router/v1/chat/completions` → stripped to `.../router/v1`. Commit ae7aa42; service restarted.
+
+**REQ-003 status: COMPLETE.**
+
 ### REQ-002 — Nexum provider test failed from WebUI
 
 Source: chat ("I tried testing adding a provider  the test failed. test nexum")
