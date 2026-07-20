@@ -4,14 +4,48 @@ Every Hermes agent's Telegram `/model` picker lists all models behind cfrproxy,
 live. Add or remove a provider in cfrproxy and the picker reflects it (within the
 cache window, or immediately with `/model --refresh`).
 
-## How it works
+## How it works — router → provider → model drill-down
 
-Hermes already ships a `/model` command with a live-fetching inline-keyboard
-picker (`gateway/slash_commands.py:_handle_model_command` →
+Hermes ships a `/model` command with a live-fetching inline-keyboard picker
+(`gateway/slash_commands.py:_handle_model_command` →
 `hermes_cli/model_switch.list_picker_providers` → live `GET <base>/v1/models`).
-cfrproxy is registered as **one custom provider** in each profile; because it
-aggregates fred + ollama + Nexum + the CLIProxyAPI OAuth subs, that single row
-surfaces everything (183 models at install time).
+It supports three tiers: **group → provider → model**. cfrproxy maps onto all
+three:
+
+- **Router tier (group):** a `cfrproxy` entry in `hermes_cli/models.PROVIDER_GROUPS`
+  folds the cfrproxy sub-providers under one "cfrproxy" group button.
+- **Provider tier:** each cfrproxy provider is a Hermes custom provider
+  `cfrproxy-<name>` pointing at that provider's **scoped mount**
+  `http://HOST/p/<name>/v1` — so it lists only that provider's models and
+  routes only to it.
+- **Model tier:** the scoped mount's `/v1/models` is probed live, so each
+  provider shows its real current catalog (fred 20, ollama 14, Nexum 17,
+  oauth 130 at install).
+
+So in Telegram: `/model` → **cfrproxy** → pick **fred / ollama / Nexum / oauth**
+→ pick a model.
+
+## Sync (run after adding/removing a cfrproxy provider)
+
+```bash
+CFRPROXY_ADMIN_PASS=<webui-pass> \
+  ~/.hermes/hermes-agent/venv/bin/python \
+  ~/cfrproxy/scripts/sync_hermes_cfrproxy.py
+systemctl --user restart 'hermes-gateway-*'
+```
+
+`sync_hermes_cfrproxy.py` reads cfrproxy's live provider list and regenerates
+(a) the per-provider `custom_providers` entries in every Hermes profile and
+(b) the `PROVIDER_GROUPS['cfrproxy']` member list in `models.py` (idempotent,
+marker-delimited, backups written). **Models within a provider are always live
+— only adding/removing a whole provider needs a re-run.** Re-run this after any
+Hermes reinstall too, since it re-applies the `models.py` group patch.
+
+### Legacy single-provider mode
+
+Earlier setup registered cfrproxy as one flat provider (`scripts/inject_cfrproxy.py`,
+183 models in a single list, no provider tier). The sync script removes those
+entries. Use `inject_cfrproxy.py` only if you want the flat single-row variant.
 
 ## What was changed
 
