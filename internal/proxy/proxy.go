@@ -268,7 +268,20 @@ func (p *Proxy) passthrough(w http.ResponseWriter, ctx context.Context, prov sto
 }
 
 func (p *Proxy) send(ctx context.Context, prov store.Provider, path string, body []byte) (*http.Response, error) {
-	url := strings.TrimRight(prov.BaseURL, "/") + path
+	base := strings.TrimRight(prov.BaseURL, "/")
+	// tolerate bases pasted in SDK convention that already end in the version
+	// segment: ".../v1" for openai/anthropic, ".../api" for ollama
+	switch prov.Type {
+	case "ollama":
+		if strings.HasSuffix(base, "/api") {
+			path = strings.TrimPrefix(path, "/api")
+		}
+	default:
+		if strings.HasSuffix(base, "/v1") {
+			path = strings.TrimPrefix(path, "/v1")
+		}
+	}
+	url := base + path
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
