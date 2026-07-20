@@ -259,8 +259,8 @@ async function saveProvider(e){
     api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,
     doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
   try{
-    await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
-    pdlg.close();toast('provider saved');loadProviders();
+    const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    pdlg.close();toast(r.note||'provider saved',(r.note||'').startsWith('warning'));loadProviders();
   }catch(err){toast(err.message,true)}
   return false;
 }

@@ -325,6 +325,80 @@ func (p *Proxy) rules(providerID int64, inbound string) (reqRules, respRules []t
 	return reqRules, respRules, nil
 }
 
+// NormalizeBase cleans up a user-entered base URL: trims whitespace and
+// slashes, adds a scheme (http for private/local hosts, https otherwise), and
+// strips accidentally pasted endpoint paths like /chat/completions.
+func NormalizeBase(raw string) string {
+	b := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if b == "" {
+		return b
+	}
+	if !strings.Contains(b, "://") {
+		host := b
+		if i := strings.IndexAny(host, "/:"); i >= 0 {
+			host = host[:i]
+		}
+		if host == "localhost" || !strings.Contains(host, ".") ||
+			strings.HasPrefix(host, "127.") || strings.HasPrefix(host, "10.") ||
+			strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "172.16.") ||
+			strings.HasPrefix(host, "100.") {
+			b = "http://" + b
+		} else {
+			b = "https://" + b
+		}
+	}
+	for _, suffix := range []string{"/chat/completions", "/messages", "/api/chat", "/api/generate"} {
+		if strings.HasSuffix(b, suffix) {
+			b = strings.TrimSuffix(b, suffix)
+			// keep a trailing /v1 or /api — the suffix-aware join handles it
+			break
+		}
+	}
+	return strings.TrimRight(b, "/")
+}
+
+// DiscoverBase probes conventional base-URL variants with a 1-token request
+// and returns the first base whose chat endpoint exists (any HTTP status
+// except 404/405 counts — 400/401 still prove the path is right). Returns the
+// original base and a warning note when nothing responds.
+func (p *Proxy) DiscoverBase(ctx context.Context, prov store.Provider) (string, string) {
+	base := NormalizeBase(prov.BaseURL)
+	candidates := []string{base}
+	if prov.Type == "openai" && !strings.HasSuffix(base, "/v1") && !strings.HasSuffix(base, "/api") {
+		candidates = append(candidates, base+"/api/v1") // openrouter-style domain-root paste
+	}
+	model := prov.DefaultModel
+	if model == "" {
+		model = "cfrproxy-probe"
+	}
+	body, err := buildOutbound(prov.Type, &wire.Request{Model: model,
+		Messages: []wire.Msg{{Role: "user", Content: "hi"}}, MaxTokens: 1})
+	if err != nil {
+		return base, ""
+	}
+	for _, cand := range candidates {
+		probe := prov
+		probe.BaseURL = cand
+		cctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		resp, err := p.send(cctx, probe, providerPath(prov.Type), body)
+		if err != nil {
+			cancel()
+			continue
+		}
+		code := resp.StatusCode
+		resp.Body.Close()
+		cancel()
+		if code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
+			note := fmt.Sprintf("endpoint verified (HTTP %d)", code)
+			if cand != prov.BaseURL {
+				note = fmt.Sprintf("base URL resolved to %s (HTTP %d)", cand, code)
+			}
+			return cand, note
+		}
+	}
+	return base, "warning: no conventional endpoint variant responded; saved as entered"
+}
+
 // TestProvider sends a small prompt directly to one provider (TUI/WebUI test button).
 func (p *Proxy) TestProvider(ctx context.Context, prov store.Provider, prompt string) (*wire.Response, error) {
 	model := prov.DefaultModel

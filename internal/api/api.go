@@ -140,11 +140,13 @@ func (a *API) hProviderCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = 0
+	base, note := a.Proxy.DiscoverBase(r.Context(), p)
+	p.BaseURL = base
 	if err := a.Store.SaveProvider(&p); err != nil {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, publicProvider(p))
+	writeJSON(w, 200, map[string]any{"provider": publicProvider(p), "note": note})
 }
 
 func (a *API) hProviderUpdate(w http.ResponseWriter, r *http.Request) {
@@ -161,11 +163,19 @@ func (a *API) hProviderUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = id
+	note := ""
+	if p.BaseURL != existing.BaseURL || p.Type != existing.Type {
+		probe := p
+		if probe.APIKey == "" {
+			probe.APIKey = existing.APIKey // probe with the kept key
+		}
+		p.BaseURL, note = a.Proxy.DiscoverBase(r.Context(), probe)
+	}
 	if err := a.Store.SaveProvider(&p); err != nil {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, publicProvider(p))
+	writeJSON(w, 200, map[string]any{"provider": publicProvider(p), "note": note})
 }
 
 func (a *API) hProviderDelete(w http.ResponseWriter, r *http.Request) {

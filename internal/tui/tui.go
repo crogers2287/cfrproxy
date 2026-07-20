@@ -446,12 +446,28 @@ func (m *model) submitForm() error {
 				p.APIKey = ""
 			}
 		}
-		p.Name, p.Type, p.BaseURL = v(0), v(1), v(2)
+		p.Name, p.Type = v(0), v(1)
 		if v(3) != "" {
 			p.APIKey = v(3)
 		}
 		p.DefaultModel, p.Models, p.DocURL = v(4), v(5), v(6)
 		p.InjectDocs = strings.HasPrefix(strings.ToLower(v(7)), "y")
+		if v(2) != p.BaseURL {
+			p.BaseURL = v(2)
+			probe := p
+			if probe.APIKey == "" && m.editingID != 0 {
+				if exist, ok := m.s.ProviderByID(m.editingID); ok {
+					probe.APIKey = exist.APIKey
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			base, note := m.p.DiscoverBase(ctx, probe)
+			cancel()
+			p.BaseURL = base
+			if note != "" {
+				m.status = note
+			}
+		}
 		return m.s.SaveProvider(&p)
 	}
 	t := store.Transform{ID: m.editingID, Enabled: true, Name: v(0), Phase: v(1), Target: v(2), Rules: json.RawMessage(v(4))}

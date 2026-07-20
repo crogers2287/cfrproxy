@@ -247,6 +247,21 @@ func cmdProvider(args []string) {
 		if sub == "add" {
 			p.Enabled = !*disabled
 		}
+		if *f["base-url"] != "" || sub == "add" {
+			probe := p
+			if probe.APIKey == "" {
+				if exist, ok := s.ProviderByName(p.Name); ok {
+					probe.APIKey = exist.APIKey
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			base, note := proxy.New(s).DiscoverBase(ctx, probe)
+			cancel()
+			p.BaseURL = base
+			if note != "" {
+				fmt.Println(note)
+			}
+		}
 		if err := s.SaveProvider(&p); err != nil {
 			fatal("%v", err)
 		}
