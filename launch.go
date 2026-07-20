@@ -131,7 +131,7 @@ func resolveLaunchModel(dataDir, spec string) (string, string) {
 			if rest == "" {
 				rest = prov.DefaultModel
 			}
-			if m, ok := fuzzyModel(p.ModelsCached(ctx, prov), rest); ok {
+			if m, ok := proxy.FuzzyModel(p.ModelsCached(ctx, prov), rest); ok {
 				return prov.Name + "/" + m, noteIfChanged(spec, prov.Name+"/"+m)
 			}
 			return prov.Name + "/" + rest, fmt.Sprintf("note: %q not in %s's live model list; passing through as typed", rest, prov.Name)
@@ -150,7 +150,7 @@ func resolveLaunchModel(dataDir, spec string) (string, string) {
 		if !prov.Enabled {
 			continue
 		}
-		if m, ok := fuzzyModel(p.ModelsCached(ctx, prov), spec); ok {
+		if m, ok := proxy.FuzzyModel(p.ModelsCached(ctx, prov), spec); ok {
 			full := prov.Name + "/" + m
 			return full, noteIfChanged(spec, full)
 		}
@@ -158,55 +158,63 @@ func resolveLaunchModel(dataDir, spec string) (string, string) {
 	return spec, fmt.Sprintf("note: %q not found at any provider; passing through as typed", spec)
 }
 
-// fuzzyModel: exact > case-insensitive > unique substring > unique
-// normalized substring (punctuation-blind, so "Qwen3.8" finds
-// "qwen-3.8-max-preview-thinking").
-func fuzzyModel(models []string, want string) (string, bool) {
-	for _, m := range models {
-		if m == want {
-			return m, true
-		}
-	}
-	for _, m := range models {
-		if strings.EqualFold(m, want) {
-			return m, true
-		}
-	}
-	var subs []string
-	for _, m := range models {
-		if strings.Contains(strings.ToLower(m), strings.ToLower(want)) {
-			subs = append(subs, m)
-		}
-	}
-	if len(subs) == 1 {
-		return subs[0], true
-	}
-	norm := func(s string) string {
-		var b strings.Builder
-		for _, r := range strings.ToLower(s) {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-				b.WriteRune(r)
-			}
-		}
-		return b.String()
-	}
-	subs = nil
-	for _, m := range models {
-		if strings.Contains(norm(m), norm(want)) {
-			subs = append(subs, m)
-		}
-	}
-	if len(subs) == 1 {
-		return subs[0], true
-	}
-	return "", false
-}
-
 func noteIfChanged(typed, resolved string) string {
 	if typed == resolved {
 		return ""
 	}
 	return fmt.Sprintf("model %q resolved to %q", typed, resolved)
+}
+
+func cmdMap(args []string) {
+	data := defaultDataDir()
+	rm := ""
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--data":
+			if i+1 < len(args) {
+				data = args[i+1]
+				i++
+			}
+		case "--rm":
+			if i+1 < len(args) {
+				rm = args[i+1]
+				i++
+			}
+		default:
+			pos = append(pos, args[i])
+		}
+	}
+	s := openStore(data)
+	defer s.Close()
+	m := s.ModelMap()
+	switch {
+	case rm != "":
+		if _, ok := m[rm]; !ok {
+			fatal("no map entry %q", rm)
+		}
+		delete(m, rm)
+		if err := s.SetModelMap(m); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("removed %s\n", rm)
+	case len(pos) == 2:
+		m[pos[0]] = pos[1]
+		if err := s.SetModelMap(m); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("%s → %s\n", pos[0], pos[1])
+	case len(pos) == 0:
+		if len(m) == 0 {
+			fmt.Println("no model map entries (patterns: exact name or trailing-*, e.g. 'claude-sonnet*')")
+			return
+		}
+		for k, v := range m {
+			fmt.Printf("%-32s → %s\n", k, v)
+		}
+	default:
+		fatal("usage: cfrproxy map [PATTERN TARGET | --rm PATTERN]")
+	}
 }
 
 func cmdModels(args []string) {

@@ -20,9 +20,10 @@ Point harnesses at it:
 | Ollama-native consumers | `OLLAMA_HOST=http://localhost:8420` (`/api/chat`) |
 
 Model names route requests:
-- `fred/agents-a1` — provider `fred`, model `agents-a1` (`fred/` alone uses its default model)
-- bare name (`agents-a1`) — matched against each provider's alias list
-- anything else — highest-priority enabled provider (drag cards in the WebUI or `route set` to reorder)
+- **model map first**: `cfrproxy map 'claude-sonnet*' fred/agents-a1` rewrites fixed harness names — Claude Code's built-in /model presets (Opus/Sonnet/Haiku) become switchable slots (its picker is hardcoded and never lists API models; the map is how `ollama launch` handles this too)
+- `fred/agents-a1` — provider `fred`, model `agents-a1`; both parts fuzzy (case-insensitive, punctuation-blind: `nexum/Qwen3.8` finds `qwen-3.8-max-preview-thinking`)
+- bare name — provider alias list, then unique fuzzy match across all providers' live scans
+- anything else — highest-priority enabled provider **and its default model** (unknown harness names never error)
 
 ## Surfaces
 

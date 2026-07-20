@@ -108,7 +108,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 		httpErr(w, inbound, 400, err.Error())
 		return
 	}
-	prov, model, err := p.Store.Resolve(req.Model)
+	prov, model, err := p.ResolveModel(r.Context(), req.Model)
 	if err != nil {
 		httpErr(w, inbound, 503, err.Error())
 		return

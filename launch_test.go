@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/crogers2287/cfrproxy/internal/proxy"
+)
 
 func TestFuzzyModel(t *testing.T) {
 	models := []string{"qwen-3.8-max-preview-thinking", "glm-5.2", "agents-a1", "agents-a1-q8"}
@@ -18,9 +22,9 @@ func TestFuzzyModel(t *testing.T) {
 		{"nope", "", false},                                       // no match
 	}
 	for _, c := range cases {
-		got, ok := fuzzyModel(models, c.want)
+		got, ok := proxy.FuzzyModel(models, c.want)
 		if ok != c.matched || got != c.expect {
-			t.Errorf("fuzzyModel(%q) = %q,%v want %q,%v", c.want, got, ok, c.expect, c.matched)
+			t.Errorf("proxy.FuzzyModel(%q) = %q,%v want %q,%v", c.want, got, ok, c.expect, c.matched)
 		}
 	}
 }

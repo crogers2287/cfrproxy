@@ -76,6 +76,8 @@ func main() {
 		cmdPasswd(rest)
 	case "models":
 		cmdModels(rest)
+	case "map":
+		cmdMap(rest)
 	case "launch":
 		if len(rest) < 1 {
 			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
@@ -113,6 +115,9 @@ Usage:
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
   cfrproxy models  [--name N]                         scan providers' live model lists
+  cfrproxy map     [PATTERN TARGET | --rm PATTERN]    map harness model names to providers
+                   e.g. cfrproxy map 'claude-sonnet*' fred/agents-a1
+                   (Claude Code's /model presets become switchable slots)
   cfrproxy <harness> [--model provider/model] [args]  launch a harness through the proxy
                    e.g. cfrproxy claude --model nexum/qwen-3.8
                         cfrproxy codex --model fred/agents-a1

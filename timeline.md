@@ -2,6 +2,23 @@
 
 ## 2026-07-20
 
+### REQ-005 — Claude's /model picker only shows Claude models
+
+Source: chat ("when launching Claude via the proxy it only shows Claude models. no option for cfrproxy models")
+
+Root cause: Claude Code's /model window is a hardcoded preset list — it never queries the API for models (ollama launch has the same limitation and solves it by rewriting inbound model names).
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Model map (harness names → provider/model) | 🟡 built | settings-backed map, exact + trailing-`*` patterns; `cfrproxy map`, `GET/PUT /admin/api/modelmap`, WebUI editor on Providers tab |
+| 2. Claude presets as switchable slots | 🟡 seeded | `claude-opus*`→Nexum/qwen-3.8, `claude-sonnet*`→fred/agents-a1, `claude-haiku*`→ollama/qwen2.5:7b; live: `claude-haiku-4-5-20251001` → answered by qwen2.5:7b |
+| 3. Server-side fuzzy resolution for typed /model strings | 🟡 built | `ResolveModel` (map → case-fold provider prefix + FuzzyModel vs live scan → alias → cross-provider fuzzy → active default); live: typed `nexum/Qwen3.8` → qwen-3.8-max-preview-thinking |
+| 4. Unknown models never error | 🟡 built | fallback = top enabled provider's default model |
+
+Verify: `go test ./...` 5 packages ok; two live curls above. Commit (this). Service restarted.
+
+**REQ-005 status: COMPLETE.**
+
 ### REQ-004 — Model scanning + ollama-launch-style harness commands
 
 Source: chat ("scan the models in point for models that we can select" + "add in the launch commands like the way that ollama does it … cfrproxy claude --model nexum/Qwen3.8 … change models on the fly via the /model window")

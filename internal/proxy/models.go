@@ -122,6 +122,115 @@ func (p *Proxy) ModelsCached(ctx context.Context, prov store.Provider) []string 
 	return ids
 }
 
+// FuzzyModel matches a wanted model against a list: exact > case-insensitive
+// > unique substring > unique punctuation-blind substring (so "Qwen3.8"
+// finds "qwen-3.8-max-preview-thinking").
+func FuzzyModel(models []string, want string) (string, bool) {
+	for _, m := range models {
+		if m == want {
+			return m, true
+		}
+	}
+	for _, m := range models {
+		if strings.EqualFold(m, want) {
+			return m, true
+		}
+	}
+	var subs []string
+	for _, m := range models {
+		if strings.Contains(strings.ToLower(m), strings.ToLower(want)) {
+			subs = append(subs, m)
+		}
+	}
+	if len(subs) == 1 {
+		return subs[0], true
+	}
+	norm := func(s string) string {
+		var b strings.Builder
+		for _, r := range strings.ToLower(s) {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				b.WriteRune(r)
+			}
+		}
+		return b.String()
+	}
+	subs = nil
+	for _, m := range models {
+		if strings.Contains(norm(m), norm(want)) {
+			subs = append(subs, m)
+		}
+	}
+	if len(subs) == 1 {
+		return subs[0], true
+	}
+	return "", false
+}
+
+// MatchMapPattern reports whether a model matches a map pattern: exact
+// (case-insensitive) or trailing-* prefix ("claude-sonnet*").
+func MatchMapPattern(pattern, model string) bool {
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(strings.ToLower(model), strings.ToLower(strings.TrimSuffix(pattern, "*")))
+	}
+	return strings.EqualFold(pattern, model)
+}
+
+// ResolveModel routes an inbound model string to (provider, real model id):
+//  1. model map rewrite (harness preset names → any provider/model)
+//  2. case-insensitive "provider/model" prefix, model fuzzy-matched against
+//     the provider's live scan
+//  3. bare alias from a provider's alias list
+//  4. unique fuzzy match across all enabled providers' scans
+//  5. fallback: highest-priority enabled provider and ITS default model —
+//     unknown harness names route somewhere useful instead of erroring
+func (p *Proxy) ResolveModel(ctx context.Context, model string) (store.Provider, string, error) {
+	if mapped := p.Store.ModelMapLookup(model, MatchMapPattern); mapped != "" {
+		model = mapped
+	}
+	provs := p.Store.Providers()
+	if i := strings.IndexByte(model, '/'); i > 0 {
+		name, rest := model[:i], model[i+1:]
+		for _, prov := range provs {
+			if !prov.Enabled || !strings.EqualFold(prov.Name, name) {
+				continue
+			}
+			if rest == "" {
+				return prov, prov.DefaultModel, nil
+			}
+			if m, ok := FuzzyModel(p.ModelsCached(ctx, prov), rest); ok {
+				return prov, m, nil
+			}
+			return prov, rest, nil // pass through as typed
+		}
+	}
+	for _, prov := range provs {
+		if !prov.Enabled {
+			continue
+		}
+		for _, alias := range strings.Split(prov.Models, ",") {
+			if a := strings.TrimSpace(alias); a != "" && strings.EqualFold(a, model) {
+				return prov, model, nil
+			}
+		}
+	}
+	if model != "" && model != "default" {
+		for _, prov := range provs {
+			if !prov.Enabled {
+				continue
+			}
+			if m, ok := FuzzyModel(p.ModelsCached(ctx, prov), model); ok {
+				return prov, m, nil
+			}
+		}
+	}
+	for _, prov := range provs {
+		if prov.Enabled {
+			return prov, prov.DefaultModel, nil
+		}
+	}
+	return store.Provider{}, "", fmt.Errorf("no enabled providers configured")
+}
+
 // AllModelIDs merges every enabled provider's scanned models (as
 // provider/model), plus configured aliases and defaults. Scans run in
 // parallel on cold cache.

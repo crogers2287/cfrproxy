@@ -470,6 +470,52 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	return out, rows.Err()
 }
 
+// ---- model map ----
+
+// ModelMap returns the harness-name → provider/model rewrite table
+// (settings key "model_map", JSON object).
+func (s *Store) ModelMap() map[string]string {
+	m := map[string]string{}
+	if raw := s.Setting("model_map"); raw != "" {
+		json.Unmarshal([]byte(raw), &m)
+	}
+	return m
+}
+
+func (s *Store) SetModelMap(m map[string]string) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return s.SetSetting("model_map", string(b))
+}
+
+// ModelMapLookup rewrites a model through the map. Exact-pattern entries win
+// over glob patterns; ties broken by pattern order (sorted) for determinism.
+func (s *Store) ModelMapLookup(model string, match func(pattern, model string) bool) string {
+	m := s.ModelMap()
+	if len(m) == 0 {
+		return ""
+	}
+	patterns := make([]string, 0, len(m))
+	for k := range m {
+		patterns = append(patterns, k)
+	}
+	sort.Slice(patterns, func(i, j int) bool {
+		gi, gj := strings.HasSuffix(patterns[i], "*"), strings.HasSuffix(patterns[j], "*")
+		if gi != gj {
+			return !gi // exact patterns first
+		}
+		return patterns[i] < patterns[j]
+	})
+	for _, pat := range patterns {
+		if match(pat, model) {
+			return m[pat]
+		}
+	}
+	return ""
+}
+
 // ---- settings ----
 
 func (s *Store) Setting(k string) string {

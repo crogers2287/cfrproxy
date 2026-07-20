@@ -96,6 +96,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/transforms/{id}", a.hTransformUpdate)
 	inner.HandleFunc("DELETE /admin/api/transforms/{id}", a.hTransformDelete)
 	inner.HandleFunc("POST /admin/api/transforms/{id}/toggle", a.hTransformToggle)
+	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
+	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/traces", a.hTraces)
 	inner.HandleFunc("GET /admin/api/logs/stream", a.hLogStream)
 
@@ -363,6 +365,23 @@ func (a *API) hTransformToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *API) hModelMapGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, a.Store.ModelMap())
+}
+
+func (a *API) hModelMapPut(w http.ResponseWriter, r *http.Request) {
+	var m map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if err := a.Store.SetModelMap(m); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, m)
 }
 
 func (a *API) hTraces(w http.ResponseWriter, r *http.Request) {

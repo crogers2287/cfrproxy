@@ -89,6 +89,21 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </div>
   <p class="hint">Drag cards to set routing priority — the first enabled card handles bare model names. Address a provider directly with <code>provider-name/model</code>.</p>
   <div id="cards"></div>
+
+  <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Model map</h2>
+  </div>
+  <p class="hint">Rewrite fixed harness model names to any provider/model — e.g. map <code>claude-opus*</code>, <code>claude-sonnet*</code>, <code>claude-haiku*</code> so Claude Code's built-in /model presets become switchable cfrproxy slots. Patterns: exact name or trailing <code>*</code>. Unmapped unknown names route to the top provider's default model.</p>
+  <table id="maptable" style="max-width:760px">
+    <thead><tr><th>Harness name / pattern</th><th>→ provider/model</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div style="display:flex;gap:8px;margin-top:10px;max-width:760px">
+    <input type="text" id="map-pattern" placeholder="claude-sonnet*" style="flex:1">
+    <input type="text" id="map-target" placeholder="fred/agents-a1" list="allmodels" style="flex:1">
+    <datalist id="allmodels"></datalist>
+    <button class="b primary" onclick="addMapEntry()">Add</button>
+  </div>
 </section>
 
 <section id="tab-transforms" class="hidden">
@@ -298,6 +313,37 @@ async function testProvider(id,btn){
   }catch(err){out.innerHTML=`<span class="badge-err">✗ ${esc(err.message)}</span>`}
 }
 
+// ---- model map ----
+let modelMap={};
+async function loadModelMap(){
+  modelMap=await api('modelmap');
+  const tb=$('#maptable tbody');tb.innerHTML='';
+  Object.entries(modelMap).sort().forEach(([k,v])=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="mono">${esc(k)}</td><td class="mono">${esc(v)}</td>
+      <td><button class="b danger" onclick="rmMapEntry('${esc(k)}')">Del</button></td>`;
+    tb.appendChild(tr);
+  });
+  // datalist of proxy-wide models for the target field
+  try{
+    const r=await fetch('/v1/models').then(r=>r.json());
+    $('#allmodels').innerHTML=r.data.map(m=>`<option value="${esc(m.id)}">`).join('');
+  }catch{}
+}
+async function addMapEntry(){
+  const k=$('#map-pattern').value.trim(),v=$('#map-target').value.trim();
+  if(!k||!v){toast('pattern and target required',true);return}
+  modelMap[k]=v;
+  try{await api('modelmap',{method:'PUT',body:JSON.stringify(modelMap)});
+    $('#map-pattern').value='';$('#map-target').value='';toast('map saved');loadModelMap()}
+  catch(err){toast(err.message,true)}
+}
+async function rmMapEntry(k){
+  delete modelMap[k];
+  try{await api('modelmap',{method:'PUT',body:JSON.stringify(modelMap)});loadModelMap()}
+  catch(err){toast(err.message,true)}
+}
+
 // ---- transforms ----
 let transforms=[];
 async function loadTransforms(){
@@ -421,7 +467,7 @@ async function toggleInject(){
 // ---- boot ----
 async function boot(){
   try{
-    await loadProviders();await loadTransforms();await loadTraces();connectSSE();
+    await loadProviders();await loadTransforms();await loadTraces();connectSSE();loadModelMap();
     const st=await api('status');
     $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
   }catch(err){toast(err.message,true)}
