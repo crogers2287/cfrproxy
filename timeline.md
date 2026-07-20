@@ -2,6 +2,18 @@
 
 ## 2026-07-20
 
+### REQ-002 — Nexum provider test failed from WebUI
+
+Source: chat ("I tried testing adding a provider  the test failed. test nexum")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Nexum test 404 | 🟡 fixed | Base `https://dialagram.me/router/v1` + proxy's `/v1/chat/completions` = double `/v1` → 404. Path join now strips the duplicate version segment when base ends in `/v1` (or `/api` for ollama). Commit 87a4f7a. |
+
+Verify: test endpoint → `{"ok":true,"content":"pong","model":"qwen-3.8-max-preview-thinking"}`; cross-dialect `/v1/messages` → `Nexum/...` returned `pong` with correct anthropic framing. Service restarted via systemd.
+
+**REQ-002 status: COMPLETE.**
+
 ### REQ-001 — Build universal LLM proxy (provider registry, router, transforms, TUI/CLI, WebUI, Ollama-first)
 
 Source: Governed Fable Prompt pasted in session (universal proxy replicating `ollama launch <harness> --model <m>` generically). Operator decisions: Go single binary, SQLite ("whichever is faster"), basic auth.
