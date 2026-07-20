@@ -2,6 +2,21 @@
 
 ## 2026-07-20
 
+### REQ-008 — Nexum Qwen upstream timeouts killing omp runs
+
+Source: phone screenshot (omp: "Qwen upstream request timed out … Retry failed after 3 attempts") + "the nexum API is getting hammered because of the new Qwen model"
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Per-provider fallback | 🟡 built | `fallback` column (+migration); candidate loop: 1 retry w/ 1.2s backoff on transient (transport, 408/429/5xx/524/529) then failover before any bytes reach client; 4xx auth/validation never fail over; surfaced in CLI/TUI/WebUI |
+| 2. Nexum protected | 🟡 configured | `Nexum.fallback = fred/agents-a1` |
+| 3. omp routed through proxy | 🟡 wired | `~/.omp/agent/models.yml` dialagram baseUrl → `http://127.0.0.1:8420/v1` (original URL preserved in comment; home-repo file, not committed here); bare `qwen-3.8-max-preview-thinking` verified → Nexum 200 |
+| 4. Tests | 🟡 pass | `TestFailover` (503→retry→backup, trace notes failover), `TestNoFailoverOn401`; live proof: deadtest provider → "failover from deadtest (connection refused)" → fred answered pong |
+
+Commit dc609c5; service restarted.
+
+**REQ-008 status: COMPLETE.**
+
 ### REQ-007 — Claude Code → fred/agents-a1 400: "System message must be at the beginning"
 
 Source: phone screenshot (API Error 400 provider fred, Jinja exception from agents-a1 chat template)
