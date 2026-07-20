@@ -2,6 +2,23 @@
 
 ## 2026-07-20
 
+### REQ-011 — 3-tier model selector: router → provider → model
+
+Source: chat ("subset of providers inside the model selector … select the router, then the provider, then the model from that provider")
+
+Explore finding: Hermes picker supports group→provider→model, but the group tier comes ONLY from hardcoded `hermes_cli/models.PROVIDER_GROUPS` (slug-membership table; no config/naming/family mechanism). So needs distinct provider rows + a PROVIDER_GROUPS entry.
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. cfrproxy per-provider scoped mounts | 🟡 built | `/p/{provider}/v1/chat/completions` `/v1/models` `/v1/messages` `/api/chat` `/api/tags`; forces provider, bare model ids; `TestScopedProviderMount`; live: /p/fred 20, /p/ollama 14, /p/oauth 130. Commit 7fa6696 |
+| 2. Provider tier in Hermes | 🟡 done | one custom provider `cfrproxy-<name>` per backend → scoped mount; picker shows fred(20)/ollama(14)/Nexum(17)/oauth(130) rows w/ live counts |
+| 3. Router tier (group) | 🟡 done | `sync_hermes_cfrproxy.py` patches PROVIDER_GROUPS['cfrproxy'] (marker block before _SLUG_TO_GROUP); `group_providers` folds the 4 into one 'cfrproxy' group row; models.py imports clean |
+| 4. Dynamic | 🟡 done | sync re-reads cfrproxy admin API; models within a provider always live; provider add/remove = one sync re-run. Ran across all 14 profiles+subprofiles; 7 gateways restarted clean |
+
+Non-repo: `~/.hermes/profiles/*/config.yaml` (cfrproxy-* providers), `~/.hermes/hermes-agent/hermes_cli/models.py` (PROVIDER_GROUPS patch, marker-delimited, backup written). Commits 7fa6696, 5f40c45.
+
+**REQ-011 status: COMPLETE.**
+
 ### REQ-010 — Dynamic model selector in Telegram for all Hermes agents + OAuth logins (Codex/Anthropic/SuperGrok)
 
 Source: chat ("dynamic model selector inside of telegram for all of our Hermes agents … updates every time we add/remove models from the proxy" + "log in with our oauth device codes from codex, anthropic etc … route through an anthropic oauth proxy" + "supergrok as well")
