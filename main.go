@@ -78,6 +78,8 @@ func main() {
 		cmdModels(rest)
 	case "map":
 		cmdMap(rest)
+	case "login":
+		cmdLogin(rest)
 	case "launch":
 		if len(rest) < 1 {
 			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
@@ -115,6 +117,9 @@ Usage:
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
   cfrproxy models  [--name N]                         scan providers' live model lists
+  cfrproxy login   codex|codex-device|claude|antigravity|kimi [--no-browser]
+                   OAuth device/browser login via CLIProxyAPI; models appear
+                   under the "oauth" provider automatically
   cfrproxy map     [PATTERN TARGET | --rm PATTERN]    map harness model names to providers
                    e.g. cfrproxy map 'claude-sonnet*' fred/agents-a1
                    (Claude Code's /model presets become switchable slots)

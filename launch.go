@@ -165,6 +165,51 @@ func noteIfChanged(typed, resolved string) string {
 	return fmt.Sprintf("model %q resolved to %q", typed, resolved)
 }
 
+// cmdLogin proxies OAuth logins to CLIProxyAPI, which holds the device-code
+// and browser flows for subscription providers (Codex, Claude, Antigravity,
+// Kimi). New accounts land in its auth dir; models flow into cfrproxy via
+// the registered "oauth" provider's live scan.
+func cmdLogin(args []string) {
+	bin := os.Getenv("CLIPROXY_BIN")
+	if bin == "" {
+		bin = "/home/crogers2287/cliproxyapi/cli-proxy-api"
+	}
+	cfg := os.Getenv("CLIPROXY_CONFIG")
+	if cfg == "" {
+		home, _ := os.UserHomeDir()
+		cfg = home + "/.cli-proxy-api/config.yaml"
+	}
+	flags := map[string]string{
+		"codex":        "-codex-login",
+		"codex-device": "-codex-device-login",
+		"claude":       "-claude-login",
+		"anthropic":    "-claude-login",
+		"antigravity":  "-antigravity-login",
+		"kimi":         "-kimi-login",
+	}
+	if len(args) < 1 {
+		fmt.Println("usage: cfrproxy login codex|codex-device|claude|antigravity|kimi [--no-browser]")
+		fmt.Println("logins are handled by CLIProxyAPI; accounts stack, models appear under the 'oauth' provider")
+		return
+	}
+	fl, ok := flags[args[0]]
+	if !ok {
+		fatal("unknown login target %q (want codex|codex-device|claude|antigravity|kimi)", args[0])
+	}
+	if _, err := os.Stat(bin); err != nil {
+		fatal("CLIProxyAPI binary not found at %s (set CLIPROXY_BIN)", bin)
+	}
+	argv := []string{bin, "--config", cfg, fl}
+	for _, a := range args[1:] {
+		if a == "--no-browser" {
+			argv = append(argv, "-no-browser")
+		}
+	}
+	if err := syscall.Exec(bin, argv, os.Environ()); err != nil {
+		fatal("exec: %v", err)
+	}
+}
+
 func cmdMap(args []string) {
 	data := defaultDataDir()
 	rm := ""
