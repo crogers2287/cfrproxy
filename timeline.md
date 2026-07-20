@@ -2,6 +2,19 @@
 
 ## 2026-07-20
 
+### REQ-009 — Visible alert in chat when failover changes the model
+
+Source: chat ("if we get routed to fall back can we have it flagged in the chat/toolcalls so we realize if the model changes like an alert?")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Alert injected into response content | 🟡 built | "⚠️ [cfrproxy] X unavailable — failed over to Y/model (reason)" — first text_delta when streaming, content prefix otherwise; failover candidates skip passthrough so injection always possible; reason truncated to 160 chars |
+| 2. Verified | 🟡 pass | TestFailover asserts alert in body; live deadtest: alert present in both non-streaming content and first streamed delta before fred's "pong" |
+
+Commit d5cb29e; service restarted.
+
+**REQ-009 status: COMPLETE.**
+
 ### REQ-008 — Nexum Qwen upstream timeouts killing omp runs
 
 Source: phone screenshot (omp: "Qwen upstream request timed out … Retry failed after 3 attempts") + "the nexum API is getting hammered because of the new Qwen model"
