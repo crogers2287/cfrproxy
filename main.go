@@ -117,7 +117,7 @@ Usage:
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
   cfrproxy models  [--name N]                         scan providers' live model lists
-  cfrproxy login   codex|codex-device|claude|antigravity|kimi [--no-browser]
+  cfrproxy login   codex|codex-device|claude|antigravity|kimi|supergrok [--no-browser]
                    OAuth device/browser login via CLIProxyAPI; models appear
                    under the "oauth" provider automatically
   cfrproxy map     [PATTERN TARGET | --rm PATTERN]    map harness model names to providers

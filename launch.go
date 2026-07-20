@@ -186,15 +186,18 @@ func cmdLogin(args []string) {
 		"anthropic":    "-claude-login",
 		"antigravity":  "-antigravity-login",
 		"kimi":         "-kimi-login",
+		"xai":          "-xai-login",
+		"grok":         "-xai-login",
+		"supergrok":    "-xai-login",
 	}
 	if len(args) < 1 {
-		fmt.Println("usage: cfrproxy login codex|codex-device|claude|antigravity|kimi [--no-browser]")
+		fmt.Println("usage: cfrproxy login codex|codex-device|claude|antigravity|kimi|supergrok [--no-browser]")
 		fmt.Println("logins are handled by CLIProxyAPI; accounts stack, models appear under the 'oauth' provider")
 		return
 	}
 	fl, ok := flags[args[0]]
 	if !ok {
-		fatal("unknown login target %q (want codex|codex-device|claude|antigravity|kimi)", args[0])
+		fatal("unknown login target %q (want codex|codex-device|claude|antigravity|kimi|supergrok)", args[0])
 	}
 	if _, err := os.Stat(bin); err != nil {
 		fatal("CLIProxyAPI binary not found at %s (set CLIPROXY_BIN)", bin)
