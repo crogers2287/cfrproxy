@@ -2,6 +2,21 @@
 
 ## 2026-07-20
 
+### REQ-004 — Model scanning + ollama-launch-style harness commands
+
+Source: chat ("scan the models in point for models that we can select" + "add in the launch commands like the way that ollama does it … cfrproxy claude --model nexum/Qwen3.8 … change models on the fly via the /model window")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Scan provider endpoints for selectable models | 🟡 built | `ListModels` (openai+anthropic `/v1/models`, ollama `/api/tags`), 60s cache; live CLI scan: fred 20, ollama 14, Nexum 19 |
+| 2. Expose scanned models to harness pickers | 🟡 built | data-plane `/v1/models` + `/api/tags` return 53 `provider/model` IDs; WebUI provider form gets Scan-models button + datalist; `GET /admin/api/providers/{id}/models` |
+| 3. Launch commands (`cfrproxy claude/codex/opencode/omp/...`) | 🟡 built | `launch.go`: any binary on PATH; consumes `--model/--addr`, forwards the rest; execs with ANTHROPIC_*/OPENAI_*/OLLAMA_HOST → proxy; codex gets `-m`; health-check first |
+| 4. Fuzzy model resolution | 🟡 built | exact > case-fold > unique substring > punctuation-blind; `nexum/Qwen3.8` → `Nexum/qwen-3.8-max-preview-thinking`; `TestFuzzyModel` table |
+
+Verify: fake harness dump showed all env correct + arg passthrough + only-if-unset key handling. Real end-to-end: `cfrproxy claude --model nexum/Qwen3.8 -p "Reply with the single word: pong"` → launched actual Claude Code CLI → proxy → Nexum → `pong`. `go test ./...` 5 packages ok. Commit 353b8e3; service restarted.
+
+**REQ-004 status: COMPLETE.**
+
 ### REQ-003 — Auto-try conventional URL variants when adding a provider
 
 Source: chat ("fix it so that if we add a URL, it auto tries a couple different options based on conventional formatting")
