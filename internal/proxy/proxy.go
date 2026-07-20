@@ -67,36 +67,82 @@ func New(s *store.Store) *Proxy {
 }
 
 func (p *Proxy) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "openai") })
-	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "anthropic") })
-	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "ollama") })
-	mux.HandleFunc("GET /v1/models", p.handleModels)
-	mux.HandleFunc("GET /api/tags", p.handleTags)
+	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "openai", "") })
+	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "anthropic", "") })
+	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "ollama", "") })
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleModels(w, r, "") })
+	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleTags(w, r, "") })
+
+	// Per-provider virtual mounts: /p/{provider}/... scopes every call to one
+	// provider and lists only its models (bare ids). This lets a harness treat
+	// each cfrproxy provider as its own OpenAI endpoint — the basis for the
+	// router→provider→model drill-down in pickers.
+	mux.HandleFunc("POST /p/{provider}/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "openai", r.PathValue("provider")) })
+	mux.HandleFunc("POST /p/{provider}/v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "anthropic", r.PathValue("provider")) })
+	mux.HandleFunc("POST /p/{provider}/api/chat", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "ollama", r.PathValue("provider")) })
+	mux.HandleFunc("GET /p/{provider}/v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleModels(w, r, r.PathValue("provider")) })
+	mux.HandleFunc("GET /p/{provider}/api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleTags(w, r, r.PathValue("provider")) })
+
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"version": "0.6.0-cfrproxy"})
+		writeJSON(w, 200, map[string]string{"version": "0.7.0-cfrproxy"})
 	})
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	})
 }
 
-func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
-	var data []map[string]any
-	for _, id := range p.AllModelIDs(r.Context()) {
+// scopedModelIDs returns bare model ids for one provider (its live scan, or
+// alias/default fallback), for the /p/{provider}/v1/models mount.
+func (p *Proxy) scopedModelIDs(ctx context.Context, provider string) []string {
+	prov, ok := p.Store.ProviderByName(provider)
+	if !ok {
+		return nil
+	}
+	ids := p.ModelsCached(ctx, prov)
+	if len(ids) == 0 {
+		seen := map[string]bool{}
+		if prov.DefaultModel != "" {
+			ids = append(ids, prov.DefaultModel)
+			seen[prov.DefaultModel] = true
+		}
+		for _, a := range strings.Split(prov.Models, ",") {
+			if a = strings.TrimSpace(a); a != "" && !seen[a] {
+				ids = append(ids, a)
+			}
+		}
+	}
+	return ids
+}
+
+func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope string) {
+	var ids []string
+	if scope != "" {
+		ids = p.scopedModelIDs(r.Context(), scope)
+	} else {
+		ids = p.AllModelIDs(r.Context())
+	}
+	data := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
 		data = append(data, map[string]any{"id": id, "object": "model", "owned_by": "cfrproxy"})
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
 
-func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request) {
-	var models []map[string]any
-	for _, id := range p.AllModelIDs(r.Context()) {
+func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request, scope string) {
+	var ids []string
+	if scope != "" {
+		ids = p.scopedModelIDs(r.Context(), scope)
+	} else {
+		ids = p.AllModelIDs(r.Context())
+	}
+	models := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
 		models = append(models, map[string]any{"name": id, "model": id, "modified_at": time.Now().UTC().Format(time.RFC3339)})
 	}
 	writeJSON(w, 200, map[string]any{"models": models})
 }
 
-func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
+func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope string) {
 	start := time.Now()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
 	if err != nil {
@@ -108,7 +154,17 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound string) {
 		httpErr(w, inbound, 400, err.Error())
 		return
 	}
-	prov, model, err := p.ResolveModel(r.Context(), req.Model)
+	// scoped mount forces the provider; a bare model id is qualified to it, and
+	// a "provider/model" that names a different provider is corrected.
+	reqModel := req.Model
+	if scope != "" {
+		m := reqModel
+		if i := strings.IndexByte(m, '/'); i > 0 {
+			m = m[i+1:]
+		}
+		reqModel = scope + "/" + m
+	}
+	prov, model, err := p.ResolveModel(r.Context(), reqModel)
 	if err != nil {
 		httpErr(w, inbound, 503, err.Error())
 		return

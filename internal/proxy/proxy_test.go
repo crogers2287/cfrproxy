@@ -198,3 +198,44 @@ func TestNoFailoverOn401(t *testing.T) {
 		t.Errorf("backup should not be hit on auth error, got %d hits", backupHits)
 	}
 }
+
+// scoped /p/{provider}/ mount lists only that provider's models (bare) and
+// forces routing to it regardless of the model prefix sent.
+func TestScopedProviderMount(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"object":"list","data":[{"id":"alpha"},{"id":"beta"}]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"alpha","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer backend.Close()
+	s := newDiscoveryStore(t)
+	s.SaveProvider(&store.Provider{Name: "scoped", Type: "openai", BaseURL: backend.URL, DefaultModel: "alpha", Priority: 10, Enabled: true})
+	// a second provider that must NOT receive scoped traffic
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("other provider should not be hit") }))
+	defer other.Close()
+	s.SaveProvider(&store.Provider{Name: "other", Type: "openai", BaseURL: other.URL, DefaultModel: "z", Priority: 5, Enabled: true})
+
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+
+	// scoped model list = bare ids from that provider only
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/p/scoped/v1/models", nil))
+	if !strings.Contains(rec.Body.String(), `"alpha"`) || strings.Contains(rec.Body.String(), "scoped/alpha") {
+		t.Errorf("scoped models should be bare ids: %s", rec.Body.String())
+	}
+
+	// scoped chat with a bare model → routed to 'scoped' even though 'other'
+	// has higher priority
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/p/scoped/v1/chat/completions",
+		strings.NewReader(`{"model":"alpha","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "ok") {
+		t.Errorf("scoped chat failed: %d %s", rec.Code, rec.Body.String())
+	}
+}
