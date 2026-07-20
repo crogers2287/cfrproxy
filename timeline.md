@@ -2,6 +2,21 @@
 
 ## 2026-07-20
 
+### REQ-007 — Claude Code → fred/agents-a1 400: "System message must be at the beginning"
+
+Source: phone screenshot (API Error 400 provider fred, Jinja exception from agents-a1 chat template)
+
+Root cause chain: Claude Code's Agent SDK injects **system-role messages mid-conversation** (SessionStart hook output). The anthropic parser passed the role through verbatim → outbound `[system, user, system]` → agents-a1's custom template hard-raises during llama.cpp parser generation → 400. Synthetic repros (stream/tools/history permutations) all passed; found by registering a capture provider and recording the exact outbound body from a real `claude -p` run (153KB, 53 tools, roles `[system, user, system]`).
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Mid-conversation system messages | 🟡 fixed | Anthropic parser folds them into top-level system (matches openai parser); `TestAnthropicMidConversationSystem` |
+| 2. End-to-end | 🟡 verified | `cfrproxy claude --model fred/agents-a1 -p "Reply with the single word: pong"` → `pong`; trace: fred 200, 15.9s stream |
+
+Commit c66014c; service restarted; capture provider removed.
+
+**REQ-007 status: COMPLETE.**
+
 ### REQ-006 — fred traffic missing from live traces + refresh loses the traces tab
 
 Source: chat ("I have the agents model selected with Fred as the provider, but it's not showing up in the live traces … when I refresh … takes me back to the main page")
