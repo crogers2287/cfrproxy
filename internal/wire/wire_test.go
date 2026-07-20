@@ -86,6 +86,39 @@ func TestOpenAIToAnthropic(t *testing.T) {
 	}
 }
 
+// Claude Code Agent SDK injects mid-conversation system messages; they must
+// fold into the top-level system so system-first chat templates accept the
+// converted request.
+func TestAnthropicMidConversationSystem(t *testing.T) {
+	in := []byte(`{"model":"m","max_tokens":10,"system":"top",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"system","content":"hook output"},
+			{"role":"user","content":[{"type":"text","text":"again"}]}
+		]}`)
+	req, err := ParseAnthropicRequest(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.System != "top\n\nhook output" {
+		t.Errorf("system not folded: %q", req.System)
+	}
+	for _, m := range req.Messages {
+		if m.Role == "system" {
+			t.Fatalf("system role leaked into messages: %+v", req.Messages)
+		}
+	}
+	out, _ := BuildOpenAIRequest(req)
+	var oai map[string]any
+	json.Unmarshal(out, &oai)
+	msgs := oai["messages"].([]any)
+	for i, m := range msgs {
+		if m.(map[string]any)["role"] == "system" && i != 0 {
+			t.Errorf("system message at index %d", i)
+		}
+	}
+}
+
 func TestOllamaRoundtrip(t *testing.T) {
 	in := []byte(`{"model":"local/llama3","messages":[{"role":"system","content":"s"},{"role":"user","content":"q"}],"options":{"temperature":0.5},"stream":false}`)
 	req, err := ParseOllamaRequest(in)

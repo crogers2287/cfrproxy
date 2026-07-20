@@ -75,6 +75,19 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 	r := &Request{Model: in.Model, System: antText(in.System), MaxTokens: in.MaxTokens,
 		Temperature: in.Temperature, TopP: in.TopP, Stop: in.Stop, Stream: in.Stream}
 	for _, m := range in.Messages {
+		// Claude Code's Agent SDK injects system-role messages mid-conversation
+		// (session hooks, reminders). Fold them into the top-level system —
+		// same as the openai parser — so strict chat templates that require
+		// system-first (e.g. local models) don't reject the request.
+		if m.Role == "system" {
+			if txt := antText(m.Content); txt != "" {
+				if r.System != "" {
+					r.System += "\n\n"
+				}
+				r.System += txt
+			}
+			continue
+		}
 		var blocks []antBlock
 		if err := json.Unmarshal(m.Content, &blocks); err != nil {
 			// plain string content
