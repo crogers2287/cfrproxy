@@ -76,6 +76,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <button data-tab="transforms">Transforms</button>
     <button data-tab="traces">Live Traces</button>
     <button data-tab="docs">Docs</button>
+    <button data-tab="accounts">Accounts</button>
   </nav>
   <div id="status"></div>
 </header>
@@ -146,6 +147,39 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <div id="docsview">select a provider…</div>
 </section>
 
+<section id="tab-accounts" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">OAuth accounts</h2>
+    <div class="spacer"></div>
+    <button class="b" onclick="loadAccounts()">Refresh</button>
+  </div>
+  <p class="hint">Subscription logins (held by CLIProxyAPI, surfaced as the <code>oauth</code> provider). Device-flow providers show a code to enter; browser-flow providers give a link — after approving you'll land on a localhost URL that won't load: copy that full URL from the address bar and paste it below.</p>
+  <div class="toolbar" style="gap:6px">
+    <button class="b primary" onclick="startOAuth('claude')">+ Claude</button>
+    <button class="b primary" onclick="startOAuth('codex')">+ Codex</button>
+    <button class="b primary" onclick="startOAuth('supergrok')">+ SuperGrok</button>
+    <button class="b primary" onclick="startOAuth('antigravity')">+ Antigravity</button>
+    <button class="b primary" onclick="startOAuth('kimi')">+ Kimi</button>
+  </div>
+  <div id="oauth-flow" class="hidden" style="background:var(--panel);border:1px solid var(--accent);border-radius:10px;padding:18px;margin:14px 0">
+    <h3 id="of-title" style="margin-bottom:10px"></h3>
+    <div id="of-code" class="hidden" style="font:700 28px ui-monospace,monospace;letter-spacing:4px;margin:10px 0;color:var(--accent)"></div>
+    <div style="margin:8px 0"><a id="of-link" target="_blank" rel="noopener" class="b" style="text-decoration:none;display:inline-block">Open login page ↗</a>
+      <button class="b" onclick="copyText($('#of-link').href)">Copy link</button></div>
+    <div id="of-paste" class="hidden" style="margin-top:10px">
+      <label>Paste the localhost redirect URL you landed on</label>
+      <div style="display:flex;gap:8px"><input type="text" id="of-redirect" placeholder="http://localhost:1455/auth/callback?code=…&state=…" style="flex:1">
+      <button class="b primary" onclick="submitCallback()">Complete</button></div>
+    </div>
+    <div id="of-status" style="margin-top:12px;color:var(--dim)">waiting for login…</div>
+    <div style="margin-top:10px"><button class="b danger" onclick="cancelOAuth()">Cancel</button></div>
+  </div>
+  <table id="acctable">
+    <thead><tr><th>Provider</th><th>Account</th><th>Type</th><th>Status</th><th>OK / fail</th><th>Last refresh</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
 </main>
 
 <dialog id="pdlg">
@@ -214,6 +248,7 @@ function showTab(name){
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
   if(name==='docs')refreshDocSel();
+  if(name==='accounts')loadAccounts();
 }
 $$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
 window.addEventListener('hashchange',()=>showTab(location.hash.slice(1)||'providers'));
@@ -468,6 +503,81 @@ async function toggleInject(){
     await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',doc_markdown:d.doc_markdown,inject_docs:!d.inject_docs})});
     toast('inject toggled');loadDocs();loadProviders();
   }catch(err){toast(err.message,true)}
+}
+
+// ---- oauth accounts ----
+let oflow=null; // {provider, state, poll}
+function copyText(t){navigator.clipboard?.writeText(t).then(()=>toast('copied'))}
+async function loadAccounts(){
+  try{
+    const r=await api('oauth/accounts');
+    const tb=$('#acctable tbody');tb.innerHTML='';
+    (r.files||[]).forEach(f=>{
+      const tr=document.createElement('tr');
+      const status=f.disabled?'<span class="badge-err">disabled</span>':(String(f.status||'ok'));
+      tr.innerHTML=`<td>${esc(f.provider||f.id.split('-')[0])}</td>
+        <td>${esc(f.email||f.account||f.label||f.name||f.id)}</td>
+        <td>${esc(f.account_type||'')}</td><td>${status}</td>
+        <td>${f.success??0} / ${f.failed??0}</td>
+        <td>${f.last_refresh?new Date(f.last_refresh).toLocaleString():''}</td>
+        <td><button class="b" onclick="toggleAccount('${esc(f.id)}',${!f.disabled})">${f.disabled?'Enable':'Disable'}</button>
+            <button class="b danger" onclick="delAccount('${esc(f.id)}')">Delete</button></td>`;
+      tb.appendChild(tr);
+    });
+  }catch(err){toast('accounts: '+err.message,true)}
+}
+async function startOAuth(provider){
+  cancelOAuth(true);
+  try{
+    const r=await api('oauth/'+provider+'/start',{method:'POST'});
+    if(r.error||!r.url){toast(r.error||'no auth url returned',true);return}
+    oflow={provider,state:r.state};
+    $('#of-title').textContent='Login: '+provider;
+    $('#of-link').href=r.url;
+    if(r.user_code){$('#of-code').textContent=r.user_code;$('#of-code').classList.remove('hidden');$('#of-paste').classList.add('hidden');}
+    else{$('#of-code').classList.add('hidden');$('#of-paste').classList.remove('hidden');}
+    $('#of-status').textContent='waiting for login… (open the login page'+(r.user_code?' and enter the code above':'')+')';
+    $('#oauth-flow').classList.remove('hidden');
+    oflow.poll=setInterval(pollOAuth,2500);
+  }catch(err){toast(err.message,true)}
+}
+async function pollOAuth(){
+  if(!oflow)return;
+  try{
+    const r=await api('oauth/status?state='+encodeURIComponent(oflow.state));
+    if(r.status==='ok'){
+      $('#of-status').innerHTML='<span class="badge-ok">✓ logged in</span>';
+      clearInterval(oflow.poll);const done=oflow.provider;oflow=null;
+      setTimeout(()=>{$('#oauth-flow').classList.add('hidden');loadAccounts();toast(done+' account added — models refresh within a minute')},1500);
+    }else if(r.status==='error'){
+      $('#of-status').innerHTML='<span class="badge-err">✗ '+esc(r.error||'failed')+'</span>';
+      clearInterval(oflow.poll);oflow=null;
+    }
+  }catch{}
+}
+async function submitCallback(){
+  if(!oflow)return;
+  const url=$('#of-redirect').value.trim();
+  if(!url){toast('paste the redirect URL first',true);return}
+  try{
+    const r=await api('oauth/callback',{method:'POST',body:JSON.stringify({provider:oflow.provider,state:oflow.state,redirect_url:url})});
+    if(r.error){toast(r.error,true);return}
+    $('#of-status').textContent='callback submitted, finalizing…';
+  }catch(err){toast(err.message,true)}
+}
+function cancelOAuth(quiet){
+  if(oflow){clearInterval(oflow.poll);api('oauth/cancel?state='+encodeURIComponent(oflow.state),{method:'POST'}).catch(()=>{});oflow=null}
+  $('#oauth-flow').classList.add('hidden');$('#of-redirect').value='';
+  if(!quiet)toast('login cancelled');
+}
+async function toggleAccount(name,disabled){
+  try{await api('oauth/accounts/status',{method:'PATCH',body:JSON.stringify({name,disabled})});loadAccounts()}
+  catch(err){toast(err.message,true)}
+}
+async function delAccount(name){
+  if(!confirm('Delete OAuth account '+name+'?'))return;
+  try{await api('oauth/accounts?name='+encodeURIComponent(name),{method:'DELETE'});toast('deleted');loadAccounts()}
+  catch(err){toast(err.message,true)}
 }
 
 // ---- boot ----

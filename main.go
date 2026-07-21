@@ -80,6 +80,8 @@ func main() {
 		cmdMap(rest)
 	case "login":
 		cmdLogin(rest)
+	case "config":
+		cmdConfig(rest)
 	case "launch":
 		if len(rest) < 1 {
 			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
@@ -117,6 +119,7 @@ Usage:
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
   cfrproxy models  [--name N]                         scan providers' live model lists
+  cfrproxy config  set KEY VALUE | get KEY            server settings (e.g. cliproxy_mgmt_key)
   cfrproxy login   codex|codex-device|claude|antigravity|kimi|supergrok [--no-browser]
                    OAuth device/browser login via CLIProxyAPI; models appear
                    under the "oauth" provider automatically
@@ -489,6 +492,35 @@ func cmdTransform(args []string) {
 		fmt.Printf("%s %sd\n", t.Name, sub)
 	default:
 		fatal("unknown transform subcommand %q", sub)
+	}
+}
+
+func cmdConfig(args []string) {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data directory")
+	fs.Parse(args)
+	rest := fs.Args()
+	s := openStore(*data)
+	defer s.Close()
+	switch {
+	case len(rest) == 3 && rest[0] == "set":
+		if err := s.SetSetting(rest[1], rest[2]); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("%s set\n", rest[1])
+	case len(rest) == 2 && rest[0] == "get":
+		v := s.Setting(rest[1])
+		if strings.Contains(strings.ToLower(rest[1]), "key") || strings.Contains(strings.ToLower(rest[1]), "pass") {
+			if v == "" {
+				fmt.Println("(unset)")
+			} else {
+				fmt.Println("(set, hidden)")
+			}
+			return
+		}
+		fmt.Println(v)
+	default:
+		fatal("usage: cfrproxy config set KEY VALUE | get KEY")
 	}
 }
 

@@ -96,6 +96,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/transforms/{id}", a.hTransformUpdate)
 	inner.HandleFunc("DELETE /admin/api/transforms/{id}", a.hTransformDelete)
 	inner.HandleFunc("POST /admin/api/transforms/{id}/toggle", a.hTransformToggle)
+	a.registerOAuth(inner)
 	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
 	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/traces", a.hTraces)
