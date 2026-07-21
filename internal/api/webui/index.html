@@ -267,6 +267,18 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </div>
 
   <div class="toolbar">
+    <h2 style="margin:0">Round table history</h2>
+    <div class="spacer"></div>
+    <button class="b" onclick="loadRTLogs()">Refresh</button>
+  </div>
+  <p class="hint">Every <code>roundtable</code> call logged: the question, panel, rounds, token burn, and latency. Click a row to read the full synthesis + panel positions.</p>
+  <table id="rtlogtable">
+    <thead><tr><th>Time</th><th>Question</th><th>Panel</th><th>Rounds</th><th>Tokens (in/out)</th><th>Latency</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="rtlog-detail" class="hidden" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-top:14px;white-space:pre-wrap;font-size:13px;max-height:520px;overflow:auto"></div>
+
+  <div class="toolbar" style="margin-top:26px">
     <h2 style="margin:0">Agent profiles (panelists)</h2>
     <div class="spacer"></div>
     <button class="b primary" onclick="openAgentDialog()">+ Add profile</button>
@@ -876,9 +888,36 @@ async function delAccount(name){
 // ---- agent profiles + roundtable + compression ----
 let agents=[];
 const adlg=document.getElementById('adlg');
+async function loadRTLogs(){
+  try{
+    const logs=await api('roundtable-logs?limit=50');
+    const tb=$('#rtlogtable tbody');tb.innerHTML='';
+    if(!logs.length){tb.innerHTML='<tr><td colspan="6" style="color:var(--dim)">No round table runs yet — call the roundtable MCP tool from an agent.</td></tr>';return;}
+    logs.forEach(l=>{
+      const tr=document.createElement('tr');tr.style.cursor='pointer';
+      tr.onclick=()=>showRTLog(l.id);
+      tr.innerHTML=`<td>${new Date(l.ts).toLocaleString()}</td>
+        <td>${esc((l.question||'').slice(0,80))}${(l.question||'').length>80?'…':''}</td>
+        <td>${esc(l.profiles)}${l.compressed?' <span class="badge-ok" title="context compressed">🗜</span>':''}</td>
+        <td>${l.rounds}</td>
+        <td>${fmtK(l.prompt_tokens)} / ${fmtK(l.completion_tokens)}</td>
+        <td>${(l.latency_ms/1000).toFixed(1)}s</td>`;
+      tb.appendChild(tr);
+    });
+  }catch(err){/* best-effort */}
+}
+async function showRTLog(id){
+  try{
+    const l=await api('roundtable-logs/'+id);
+    const d=$('#rtlog-detail');d.classList.remove('hidden');
+    d.textContent=`Q: ${l.question}\nPanel: ${l.profiles} · ${l.rounds} round(s) · moderator ${l.moderator}\nTokens: ${l.prompt_tokens} in / ${l.completion_tokens} out · ${(l.latency_ms/1000).toFixed(1)}s${l.compressed?' · context compressed':''}\n\n${l.output}`;
+    d.scrollIntoView({block:'nearest'});
+  }catch(err){toast(err.message,true)}
+}
 async function loadAgents(){
   try{
     agents=await api('agents');
+    loadRTLogs();
     const grid=$('#agentcards');grid.innerHTML='';
     agents.forEach(a=>{
       const card=document.createElement('div');
