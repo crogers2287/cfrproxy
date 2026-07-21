@@ -2,6 +2,21 @@
 
 ## 2026-07-20
 
+### REQ-013 — Curated pins + fallback chains in UI + auto router
+
+Source: chat ("build fallback chains into the UI … auto router … orchestrator model that delegates … model selector is still messy, all of the oauth models are showing … keep the top three models from each provider")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Messy selector | 🟡 fixed | `pinned_models` per provider; aggregate /v1/models 197→18; scoped oauth 143→7 pins; full catalog via `?all=1`; Hermes picker caches cleared so Telegram lists shrink |
+| 2. Fallback chains | 🟡 built | transitive candidate chain (cycle-safe, 3 hops); cards show resolved chain (Nexum → fred/agents-a1 → ollama/qwen2.5:7b); live: dead1→dead2→fred answered pong w/ alert |
+| 3. Auto router | 🟡 built | virtual model `auto`; classifier oauth/gemini-3.1-flash-lite buckets code/reasoning/quick/long/vision; WebUI editor section; verified: code→gpt-5.6-terra, quick→claude-haiku-4-5, reasoning→claude-opus-4-8 (trace notes `auto→bucket→model`) |
+| 4. Trace note column | 🟡 built | additive migration; auto/failover annotations render 🔀 without error styling |
+
+Ops findings: local Ollama runner crashing (GPUs fully claimed by agents-a1 + TWO ollama daemons running: /usr/local/bin + /bin — flagged to operator, not killed); classifier moved to cloud flash-lite; `claude-haiku*` map slot moved off flaky local → oauth/claude-haiku-4-5. Commit 7e21220; service restarted.
+
+**REQ-013 status: COMPLETE.**
+
 ### REQ-012 — Full OAuth login in the proxy WebUI (incl. SuperGrok)
 
 Source: chat ("add oauth login directly to the proxy … full featured … log into my super grok subscription … interactive login for the common providers in the webui")
