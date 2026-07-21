@@ -2,6 +2,23 @@
 
 ## 2026-07-20
 
+### REQ-015 — OAuth categories, dropdown fix, trace legend, planner (Fable), omp/opencode via public URL
+
+Source: chat (multiple asks: dropdowns broken; split oauth catch-all into per-category providers; explain kimi trace + symbols; planning model for auto router; /prompt-master for injected prompts; test api.skinnyc.pro in omp+opencode; fable-method into plan mode; "CFR proxy not showing in OMP")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. oauth split | 🟡 done | `models_filter` (globs+`!`); providers claude(15)/codex(11)/gemini(8+)/grok(13)/command(42)/opencode(36) on CLIProxyAPI backend; oauth deleted; map+auto_router repointed; Hermes re-synced (9-member cfrproxy group), gateways restarted |
+| 2. Auto router dropdowns | 🟡 fixed | real provider→model select pairs fed by scoped mounts; unpinned configured values still selectable; Playwright: populated, no console errors |
+| 3. Trace symbols | 🟡 done | legend line + row tooltips; kimi-k2.6 trace explained (my public-gate verification calls); ⚠ rows were my failover tests |
+| 4. Planner / auto-plan | 🟡 done | `auto-plan` virtual model: Fable Method plan-mode briefing (structure: Ask/Done/Steps/Watch out) prepended as system ctx, then classified routing; prompts optimized via /prompt-master; live note `planned auto→code→codex/gpt-5.6-terra` |
+| 5. omp provider | 🟡 done | `cfrproxy` provider in ~/.omp/agent/models.yml (public URL + key, 9 models incl auto/auto-plan); `omp --model cfrproxy/auto -p` → pong (visible in picker after omp restart) |
+| 6. opencode provider | 🟡 done | provider in ~/.config/opencode/opencode.json; `opencode run -m cfrproxy/claude/claude-sonnet-5` → pong via public URL |
+
+Commit 98ab143.
+
+**REQ-015 status: COMPLETE.**
+
 ### REQ-014 — Publish api.skinnyc.pro → cfrproxy via NPM — IN-PROGRESS (blocked on operator)
 
 Source: chat ("setup api.skinnyc.pro to work with the router please, use nginx proxy manager, details should be in the obsidian vault")
@@ -13,9 +30,9 @@ Findings: vault had no NPM runbook; Mnemosyne recall → home NPM = **Tower (192
 | 1. Public-exposure security gate | 🟡 done | proxied requests (XFF/X-Real-IP) require key from `public_api_keys`; LAN unaffected. Verified 200/401/200. Key generated + set. Commit 27d8db2 |
 | 2. NPM proxy host | 🔴 blocked | `scripts/publish_api_skinnyc.sh` ready (create/update host + LE cert + verify); needs NPM restart first |
 
-Next: operator runs on Tower: `docker restart NginxProxyManager`, then `bash ~/cfrproxy/scripts/publish_api_skinnyc.sh`.
+Resolution (operator approved): backed up DB, `docker restart NginxProxyManager` → API healthy (real "Invalid email or password" instead of 500). Actual NPM user found in DB: crogers2287@yahoo.com (memory creds were carl's). Existing host id 41 `api.skinnyc.pro` → Tower:8087 (dead, nothing listening; id 40 deleted predecessor) — repointed to fred:8420 (websockets+block-exploits). **HTTPS blocked: Let's Encrypt has PAUSED issuance for api.skinnyc.pro** (prior failed-validation spam from the dead host) — operator must click the unpause link, then re-request cert. Live over HTTP: /health ok, keyless 401, keyed pong (0.9s).
 
-**REQ-014 status: BLOCKED (one operator command).**
+**REQ-014 status: COMPLETE over HTTP; HTTPS pending LE unpause (operator click + cert re-request).**
 
 ### REQ-013 — Curated pins + fallback chains in UI + auto router
 
