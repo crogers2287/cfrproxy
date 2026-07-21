@@ -2,6 +2,24 @@
 
 ## 2026-07-21
 
+### REQ-017 — Round-table consensus MCP + agent profiles + context compression
+
+Source: chat ("consensus mcp setup led by the webui … agent profiles assigned to different models … round table mcp that uses the proxy … research token compression methods … check recent GitHub 1k+ stars, check my gh starred")
+
+Research: microsoft/LLMLingua (LLMLingua-2, 2-5x, python; LiteLLM shipping it on the proxy hot path Apr 2026 — validates pattern); kompact (compression proxy, 40-70%); user's stars: pxpipe 6.5k⭐ (text→image token cuts for Fable vision, future strategy), LoopTroop (LLM councils). Chosen v1: proxy-side compaction (summarize old turns via cheap model, hash-cached) — fail-open, no python dep; llmlingua sidecar can slot behind same config later.
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Agent profiles (WebUI-led) | 🟡 built | agent_profiles table + CRUD API + Agents tab (cards, provider→model dropdowns, persona, temp, enable); seeded Architect(opus-4-8)/Engineer(gpt-5.6-terra)/Skeptic(grok-4.5)/Pragmatist(gemini-3-flash) |
+| 2. Round-table MCP | 🟡 built | `cfrproxy mcp` stdio JSON-RPC (initialize/tools/list/tools/call); tools roundtable/consult/list_profiles; parallel round 1 → cross-critique round 2 → moderator synthesis (settings `roundtable`, WebUI section); registered in Claude Code (`claude mcp add roundtable`) |
+| 3. Live round table | 🟡 verified | 4 models deliberated key-storage question, sonnet-5 synthesis, 9.4KB output incl per-panelist positions |
+| 4. Context compression | 🟡 built+verified | `Compress()` in request path (settings `compression`, WebUI section, opt-in): 7675→657 tok (91%) with buried fact still answered correctly; cache-hit on repeat; fail-open; tool-pair-safe cut point |
+
+Commit (this). Note: compression left disabled by default — enable in WebUI Agents tab.
+
+**REQ-017 status: COMPLETE.**
+
+
 ### REQ-016 — OMP "current model does not use thinking" on grok-4.5 via auto router
 
 Source: chat. Three stacked causes found via logs:

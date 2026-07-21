@@ -82,6 +82,8 @@ func main() {
 		cmdLogin(rest)
 	case "config":
 		cmdConfig(rest)
+	case "mcp":
+		cmdMCP(rest)
 	case "launch":
 		if len(rest) < 1 {
 			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
@@ -119,6 +121,8 @@ Usage:
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
   cfrproxy models  [--name N]                         scan providers' live model lists
+  cfrproxy mcp                                        round-table consensus MCP server (stdio)
+                   register: claude mcp add roundtable -- cfrproxy mcp
   cfrproxy config  set KEY VALUE | get KEY            server settings (e.g. cliproxy_mgmt_key)
   cfrproxy login   codex|codex-device|claude|antigravity|kimi|supergrok [--no-browser]
                    OAuth device/browser login via CLIProxyAPI; models appear

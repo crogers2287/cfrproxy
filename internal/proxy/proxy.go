@@ -55,10 +55,11 @@ func (h *Hub) Publish(t store.Trace) {
 }
 
 type Proxy struct {
-	Store  *store.Store
-	Hub    *Hub
-	Client *http.Client
-	models modelCache
+	Store     *store.Store
+	Hub       *Hub
+	Client    *http.Client
+	models    modelCache
+	summaries summaryCache
 }
 
 func New(s *store.Store) *Proxy {
@@ -200,6 +201,9 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 		reqModel = scope + "/" + m
 	}
 	autoNote := ""
+	if cnote := p.Compress(r.Context(), req); cnote != "" {
+		autoNote = cnote + " "
+	}
 	wantPlan := reqModel == "auto-plan" || strings.HasSuffix(reqModel, "/auto-plan")
 	if wantPlan || reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto") {
 		if wantPlan {

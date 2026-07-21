@@ -146,6 +146,14 @@ CREATE TABLE IF NOT EXISTS traces (
 );
 CREATE INDEX IF NOT EXISTS traces_ts ON traces(ts);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_profiles (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  model TEXT NOT NULL,
+  persona TEXT NOT NULL DEFAULT '',
+  temperature TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1
+);
 `)
 	if err != nil {
 		return err
@@ -542,6 +550,59 @@ func (s *Store) Setting(k string) string {
 
 func (s *Store) SetSetting(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
+	return err
+}
+
+// ---- agent profiles (round-table consensus personas) ----
+
+type AgentProfile struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Model       string `json:"model"` // provider/model routed through the proxy
+	Persona     string `json:"persona"`
+	Temperature string `json:"temperature"` // "" = provider default
+	Enabled     bool   `json:"enabled"`
+}
+
+func (s *Store) AgentProfiles() ([]AgentProfile, error) {
+	rows, err := s.db.Query(`SELECT id,name,model,persona,temperature,enabled FROM agent_profiles ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AgentProfile
+	for rows.Next() {
+		var a AgentProfile
+		var en int
+		if err := rows.Scan(&a.ID, &a.Name, &a.Model, &a.Persona, &a.Temperature, &en); err != nil {
+			return nil, err
+		}
+		a.Enabled = en == 1
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SaveAgentProfile(a *AgentProfile) error {
+	if a.Name == "" || a.Model == "" {
+		return errors.New("name and model are required")
+	}
+	if a.ID == 0 {
+		res, err := s.db.Exec(`INSERT INTO agent_profiles(name,model,persona,temperature,enabled) VALUES(?,?,?,?,?)`,
+			a.Name, a.Model, a.Persona, a.Temperature, b2i(a.Enabled))
+		if err != nil {
+			return err
+		}
+		a.ID, _ = res.LastInsertId()
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE agent_profiles SET name=?,model=?,persona=?,temperature=?,enabled=? WHERE id=?`,
+		a.Name, a.Model, a.Persona, a.Temperature, b2i(a.Enabled), a.ID)
+	return err
+}
+
+func (s *Store) DeleteAgentProfile(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM agent_profiles WHERE id=?`, id)
 	return err
 }
 

@@ -97,6 +97,14 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("DELETE /admin/api/transforms/{id}", a.hTransformDelete)
 	inner.HandleFunc("POST /admin/api/transforms/{id}/toggle", a.hTransformToggle)
 	a.registerOAuth(inner)
+	inner.HandleFunc("GET /admin/api/agents", a.hAgentsList)
+	inner.HandleFunc("POST /admin/api/agents", a.hAgentSave)
+	inner.HandleFunc("PUT /admin/api/agents/{id}", a.hAgentSave)
+	inner.HandleFunc("DELETE /admin/api/agents/{id}", a.hAgentDelete)
+	inner.HandleFunc("GET /admin/api/roundtable", a.hRTGet)
+	inner.HandleFunc("PUT /admin/api/roundtable", a.hRTSet)
+	inner.HandleFunc("GET /admin/api/compression", a.hCompGet)
+	inner.HandleFunc("PUT /admin/api/compression", a.hCompSet)
 	inner.HandleFunc("GET /admin/api/autoroute", a.hAutoRouteGet)
 	inner.HandleFunc("PUT /admin/api/autoroute", a.hAutoRouteSet)
 	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
@@ -369,6 +377,73 @@ func (a *API) hTransformToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+func (a *API) hAgentsList(w http.ResponseWriter, r *http.Request) {
+	ps, err := a.Store.AgentProfiles()
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if ps == nil {
+		ps = []store.AgentProfile{}
+	}
+	writeJSON(w, 200, ps)
+}
+
+func (a *API) hAgentSave(w http.ResponseWriter, r *http.Request) {
+	var p store.AgentProfile
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if ids := r.PathValue("id"); ids != "" {
+		p.ID, _ = strconv.ParseInt(ids, 10, 64)
+	} else {
+		p.ID = 0
+	}
+	if err := a.Store.SaveAgentProfile(&p); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, p)
+}
+
+func (a *API) hAgentDelete(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := a.Store.DeleteAgentProfile(id); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func settingJSON(a *API, w http.ResponseWriter, key string, defaults string) {
+	raw := a.Store.Setting(key)
+	if raw == "" {
+		raw = defaults
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(raw))
+}
+
+func settingJSONSet(a *API, w http.ResponseWriter, r *http.Request, key string) {
+	b, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil || !json.Valid(b) {
+		httpErr(w, 400, "invalid JSON")
+		return
+	}
+	if err := a.Store.SetSetting(key, string(b)); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+}
+
+func (a *API) hRTGet(w http.ResponseWriter, r *http.Request)  { settingJSON(a, w, "roundtable", `{"moderator":"","rounds":2,"max_tokens":1200}`) }
+func (a *API) hRTSet(w http.ResponseWriter, r *http.Request)  { settingJSONSet(a, w, r, "roundtable") }
+func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) { settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`) }
+func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "compression") }
 
 func (a *API) hAutoRouteGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, a.Proxy.AutoRouterConfig())

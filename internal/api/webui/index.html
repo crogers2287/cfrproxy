@@ -77,6 +77,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <button data-tab="traces">Live Traces</button>
     <button data-tab="docs">Docs</button>
     <button data-tab="accounts">Accounts</button>
+    <button data-tab="agents">Agents</button>
   </nav>
   <div id="status"></div>
 </header>
@@ -198,7 +199,60 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </table>
 </section>
 
+<section id="tab-agents" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Agent profiles — round table</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openAgentDialog()">+ Add profile</button>
+  </div>
+  <p class="hint">Each profile pins a persona to a model behind the router. The <b>roundtable</b> MCP tool fans a question out to every enabled profile, optionally cross-critiques, then the moderator synthesizes. Register in a harness: <code>claude mcp add roundtable -- cfrproxy mcp</code></p>
+  <div id="agentcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
+
+  <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Round table settings</h2></div>
+  <div style="max-width:760px">
+    <label>Moderator model (synthesizes; blank = first panelist)</label>
+    <div style="display:flex;gap:8px"><select id="rt-mod-p" style="flex:1" onchange="fillModelSel('rt-mod')"></select><select id="rt-mod-m" style="flex:2"></select></div>
+    <div style="display:flex;gap:16px;margin-top:8px">
+      <div style="flex:1"><label>Rounds (1 = answer+synthesis, 2 = +cross-critique)</label><input type="text" id="rt-rounds"></div>
+      <div style="flex:1"><label>Max tokens per voice</label><input type="text" id="rt-maxtok"></div>
+    </div>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveRT()">Save round table</button></div>
+  </div>
+
+  <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Context compression</h2><span id="comp-state" class="pill"></span></div>
+  <p class="hint">When a request exceeds the threshold, older turns are summarized by the summarizer model and replaced with one compressed block (recent turns stay verbatim; summaries cached per conversation prefix). Trace note shows <code>compressed ~A→~B tok</code>.</p>
+  <div style="max-width:760px">
+    <div class="check"><input type="checkbox" id="comp-enabled"><span>Enabled</span></div>
+    <label>Summarizer model (cheap + fast)</label>
+    <div style="display:flex;gap:8px"><select id="comp-sum-p" style="flex:1" onchange="fillModelSel('comp-sum')"></select><select id="comp-sum-m" style="flex:2"></select></div>
+    <div style="display:flex;gap:16px;margin-top:8px">
+      <div style="flex:1"><label>Threshold (est. tokens)</label><input type="text" id="comp-threshold"></div>
+      <div style="flex:1"><label>Keep recent messages</label><input type="text" id="comp-keep"></div>
+      <div style="flex:1"><label>Summary target words</label><input type="text" id="comp-words"></div>
+    </div>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveComp()">Save compression</button></div>
+  </div>
+</section>
+
 </main>
+
+<dialog id="adlg">
+  <h3 id="adlg-title">Add agent profile</h3>
+  <form method="dialog" onsubmit="return saveAgent(event)">
+    <input type="hidden" id="a-id">
+    <label>Name</label><input type="text" id="a-name" required placeholder="Skeptic">
+    <label>Model</label>
+    <div style="display:flex;gap:8px"><select id="a-model-p" style="flex:1" onchange="fillModelSel('a-model')"></select><select id="a-model-m" style="flex:2"></select></div>
+    <label>Persona (system prompt)</label>
+    <textarea id="a-persona" placeholder="You are the panel's skeptic. Attack assumptions, find failure modes, demand evidence."></textarea>
+    <label>Temperature (blank = default)</label><input type="text" id="a-temp" placeholder="0.7">
+    <div class="check"><input type="checkbox" id="a-enabled" checked><span>Enabled (participates in round table)</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="adlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="pdlg">
   <h3 id="pdlg-title">Add provider</h3>
@@ -268,6 +322,7 @@ function showTab(name){
   $('#tab-'+name).classList.remove('hidden');
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
+  if(name==='agents')loadAgents();
 }
 $$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
 window.addEventListener('hashchange',()=>showTab(location.hash.slice(1)||'providers'));
@@ -665,6 +720,80 @@ async function toggleAccount(name,disabled){
 async function delAccount(name){
   if(!confirm('Delete OAuth account '+name+'?'))return;
   try{await api('oauth/accounts?name='+encodeURIComponent(name),{method:'DELETE'});toast('deleted');loadAccounts()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- agent profiles + roundtable + compression ----
+let agents=[];
+const adlg=document.getElementById('adlg');
+async function loadAgents(){
+  try{
+    agents=await api('agents');
+    const grid=$('#agentcards');grid.innerHTML='';
+    agents.forEach(a=>{
+      const card=document.createElement('div');
+      card.className='card'+(a.enabled?'':' off');card.style.cursor='default';
+      card.innerHTML=`<h3>${esc(a.name)}</h3>
+        <span class="type">${esc(a.model)}</span>
+        <div class="meta" style="white-space:pre-wrap">${esc((a.persona||'').slice(0,140))}${(a.persona||'').length>140?'…':''}</div>
+        <div class="row">
+          <button class="b" onclick="openAgentDialog(${a.id})">Edit</button>
+          <button class="b" onclick="toggleAgent(${a.id})">${a.enabled?'Disable':'Enable'}</button>
+          <button class="b danger" onclick="delAgent(${a.id},'${esc(a.name)}')">Delete</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+    const rt=await api('roundtable');
+    await setPair('rt-mod',rt.moderator||'');
+    $('#rt-rounds').value=rt.rounds??2;$('#rt-maxtok').value=rt.max_tokens??1200;
+    const c=await api('compression');
+    $('#comp-enabled').checked=!!c.enabled;
+    await setPair('comp-sum',c.summarizer||'');
+    $('#comp-threshold').value=c.threshold_tokens??24000;
+    $('#comp-keep').value=c.keep_recent??8;$('#comp-words').value=c.target_words??500;
+    const pill=$('#comp-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
+  }catch(err){toast('agents: '+err.message,true)}
+}
+async function openAgentDialog(id){
+  const a=agents.find(x=>x.id===id)||{};
+  $('#adlg-title').textContent=id?'Edit '+a.name:'Add agent profile';
+  $('#a-id').value=id||'';$('#a-name').value=a.name||'';
+  $('#a-persona').value=a.persona||'';$('#a-temp').value=a.temperature||'';
+  $('#a-enabled').checked=id?!!a.enabled:true;
+  await setPair('a-model',a.model||'');
+  adlg.showModal();
+}
+async function saveAgent(e){
+  e.preventDefault();
+  const id=$('#a-id').value;
+  const body={name:$('#a-name').value,model:getPair('a-model'),persona:$('#a-persona').value,
+    temperature:$('#a-temp').value,enabled:$('#a-enabled').checked};
+  if(!body.model){toast('pick a provider and model',true);return false}
+  try{
+    await api(id?'agents/'+id:'agents',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    adlg.close();toast('profile saved');loadAgents();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleAgent(id){
+  const a=agents.find(x=>x.id===id);
+  try{await api('agents/'+id,{method:'PUT',body:JSON.stringify({...a,enabled:!a.enabled})});loadAgents()}
+  catch(err){toast(err.message,true)}
+}
+async function delAgent(id,name){
+  if(!confirm('Delete profile "'+name+'"?'))return;
+  try{await api('agents/'+id,{method:'DELETE'});loadAgents()}catch(err){toast(err.message,true)}
+}
+async function saveRT(){
+  const body={moderator:getPair('rt-mod'),rounds:+$('#rt-rounds').value||2,max_tokens:+$('#rt-maxtok').value||1200};
+  try{await api('roundtable',{method:'PUT',body:JSON.stringify(body)});toast('round table saved')}
+  catch(err){toast(err.message,true)}
+}
+async function saveComp(){
+  const body={enabled:$('#comp-enabled').checked,summarizer:getPair('comp-sum'),
+    threshold_tokens:+$('#comp-threshold').value||24000,keep_recent:+$('#comp-keep').value||8,
+    target_words:+$('#comp-words').value||500};
+  try{await api('compression',{method:'PUT',body:JSON.stringify(body)});toast('compression saved');loadAgents()}
   catch(err){toast(err.message,true)}
 }
 
