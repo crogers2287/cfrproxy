@@ -228,6 +228,14 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	if cnote := p.Compress(r.Context(), req); cnote != "" {
 		autoNote = cnote + " "
 	}
+	// fusion: fan out to participants, then this request becomes the judge's
+	// synthesis call (which then routes/streams normally below).
+	if reqModel == "fusion" || strings.HasSuffix(reqModel, "/fusion") {
+		if judge, note, ok := p.Fusion(r.Context(), req); ok {
+			reqModel = judge
+			autoNote += note
+		}
+	}
 	wantPlan := reqModel == "auto-plan" || strings.HasSuffix(reqModel, "/auto-plan")
 	if wantPlan || reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto") {
 		if wantPlan {
