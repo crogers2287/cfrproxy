@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cfrproxy</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128268;</text></svg>">
+<style>
+:root{
+  --bg:#0d1117;--panel:#161b22;--panel2:#1c2129;--border:#30363d;--text:#e6edf3;
+  --dim:#8b949e;--accent:#d16ba5;--ok:#3fb950;--err:#f85149;--warn:#d29922;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;min-height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--panel)}
+header h1{font-size:17px;letter-spacing:.5px}
+header h1 span{color:var(--accent)}
+nav{display:flex;gap:4px;margin-left:24px}
+nav button{background:none;border:none;color:var(--dim);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:14px}
+nav button.on{background:var(--panel2);color:var(--text);font-weight:600}
+#status{margin-left:auto;color:var(--dim);font-size:12px}
+main{padding:24px;max-width:1200px;margin:0 auto}
+.hidden{display:none!important}
+h2{font-size:15px;margin-bottom:14px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:1px}
+/* provider cards */
+#cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;cursor:grab;position:relative;transition:border-color .15s}
+.card:hover{border-color:var(--accent)}
+.card.dragging{opacity:.4}
+.card.dragover{border-color:var(--accent);border-style:dashed}
+.card.off{opacity:.45}
+.card .prio{position:absolute;top:10px;right:12px;color:var(--dim);font-size:11px}
+.card h3{font-size:16px;margin-bottom:2px}
+.card .type{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim);margin-bottom:8px}
+.card .url{color:var(--dim);font-size:12px;word-break:break-all}
+.card .meta{margin-top:8px;font-size:12px;color:var(--dim)}
+.card .meta b{color:var(--text);font-weight:500}
+.card .row{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+button.b{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+button.b:hover{border-color:var(--accent)}
+button.b.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+button.b.danger:hover{border-color:var(--err);color:var(--err)}
+.badge-ok{color:var(--ok)} .badge-err{color:var(--err)}
+/* forms */
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:24px;width:560px;max-width:92vw}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog h3{margin-bottom:16px}
+label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px}
+input[type=text],input[type=password],select,textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit}
+textarea{font-family:ui-monospace,monospace;min-height:110px}
+.check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--dim)}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--dim);text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
+td{padding:6px 10px;border-bottom:1px solid #21262d;vertical-align:top}
+tr.err td{color:var(--err)}
+code,.mono{font-family:ui-monospace,monospace;font-size:12px}
+.pill{display:inline-block;font-size:11px;padding:0 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim)}
+.pill.on{color:var(--ok);border-color:var(--ok)}
+/* docs viewer */
+#docsview{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px;margin-top:16px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;max-height:480px;overflow:auto}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.toolbar .spacer{flex:1}
+#tracedetail{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;max-height:320px;overflow:auto}
+#toast{position:fixed;bottom:24px;right:24px;background:var(--panel2);border:1px solid var(--border);padding:10px 18px;border-radius:8px;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+.hint{color:var(--dim);font-size:12px;margin-bottom:12px}
+
+/* ---- mobile ---- */
+@media (max-width: 680px){
+  header{flex-wrap:wrap;gap:8px;padding:10px 14px;position:sticky;top:0;z-index:20}
+  header h1{font-size:16px}
+  nav{margin-left:0;width:100%;order:3;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;gap:2px;scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{flex:0 0 auto;white-space:nowrap;padding:8px 12px}
+  #status{margin-left:auto;font-size:11px;text-align:right}
+  main{padding:16px 12px}
+  /* wide tables scroll instead of clipping */
+  table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;max-width:100%}
+  /* stack side-by-side select/input pairs (auto router, agent model, oauth paste) */
+  main div[style*="display:flex"]{flex-wrap:wrap}
+  main div[style*="display:flex"]>select,
+  main div[style*="display:flex"]>input[type=text]{flex:1 1 100%!important;min-width:0}
+  main div[style*="display:flex"]>button{flex:0 0 auto}
+  #cards,#agentcards{grid-template-columns:1fr!important}
+  .toolbar{gap:6px}
+  .toolbar h2{font-size:14px}
+  dialog{padding:18px;width:96vw}
+  #toast{left:12px;right:12px;bottom:12px;text-align:center}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>cfr<span>proxy</span></h1>
+  <nav>
+    <button data-tab="providers" class="on">Providers</button>
+    <button data-tab="transforms">Transforms</button>
+    <button data-tab="traces">Live Traces</button>
+    <button data-tab="docs">Docs</button>
+    <button data-tab="accounts">Accounts</button>
+    <button data-tab="agents">Agents</button>
+  </nav>
+  <div id="status"></div>
+</header>
+<main>
+
+<section id="tab-providers">
+  <div class="toolbar">
+    <h2 style="margin:0">Provider registry</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openProviderDialog()">+ Add provider</button>
+  </div>
+  <p class="hint">Drag cards to set routing priority — the first enabled card handles bare model names. Address a provider directly with <code>provider-name/model</code>.</p>
+  <div id="cards"></div>
+
+  <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Model map</h2>
+  </div>
+  <p class="hint">Rewrite fixed harness model names to any provider/model — e.g. map <code>claude-opus*</code>, <code>claude-sonnet*</code>, <code>claude-haiku*</code> so Claude Code's built-in /model presets become switchable cfrproxy slots. Patterns: exact name or trailing <code>*</code>. Unmapped unknown names route to the top provider's default model.</p>
+  <table id="maptable" style="max-width:760px">
+    <thead><tr><th>Harness name / pattern</th><th>→ provider/model</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div style="display:flex;gap:8px;margin-top:10px;max-width:760px">
+    <input type="text" id="map-pattern" placeholder="claude-sonnet*" style="flex:1">
+    <input type="text" id="map-target" placeholder="openrouter/anthropic/claude-sonnet-4" list="allmodels" style="flex:1">
+    <datalist id="allmodels"></datalist>
+    <button class="b primary" onclick="addMapEntry()">Add</button>
+  </div>
+  <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Auto router</h2>
+    <span id="ar-state" class="pill"></span>
+  </div>
+  <p class="hint">Send model <code>auto</code> from any harness and a small classifier model buckets the request, then delegates to the model you map per task. The chosen route shows in Live Traces.</p>
+  <div style="max-width:760px">
+    <div class="check"><input type="checkbox" id="ar-enabled"><span>Enabled</span></div>
+    <label>Classifier model (small + fast)</label>
+    <div style="display:flex;gap:8px"><select id="ar-classifier-p" style="flex:1" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m" style="flex:2"></select></div>
+    <label>Planner model (strong reasoner — enables the <code>auto-plan</code> virtual model: plan first, then route + execute with the briefing)</label>
+    <div style="display:flex;gap:8px"><select id="ar-planner-p" style="flex:1" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m" style="flex:2"></select></div>
+    <table id="artable" style="margin-top:10px">
+      <thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
+  </div>
+</section>
+
+<section id="tab-transforms" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Transform rules</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openTransformDialog()">+ Add transform</button>
+  </div>
+  <p class="hint">Request-phase rules rewrite the outbound provider body; response-phase rules rewrite the body returned to the consumer. Ops: <code>set</code>, <code>default</code>, <code>rename</code>, <code>delete</code>.</p>
+  <table id="ttable">
+    <thead><tr><th></th><th>Name</th><th>Phase</th><th>Provider</th><th>Target dialect</th><th>Rules</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section id="tab-traces" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Live request trace</h2>
+    <span id="sse-state" class="pill">connecting…</span>
+    <div class="spacer"></div>
+    <button class="b" onclick="clearTraces()">Clear view</button>
+  </div>
+  <h2 style="margin:18px 0 8px">Token burn by model</h2>
+  <table id="statstable">
+    <thead><tr><th>Model</th><th>Reqs</th><th>Err</th><th>In tok</th><th>Out tok</th><th>Cached</th><th>Cache hit</th><th>Avg latency</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Tokens are in/out (cached read). Rows in red are real failures.</p>
+  <table id="trtable">
+    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Status</th><th>Latency</th><th>Stream</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="tracedetail" class="hidden"></div>
+</section>
+
+<section id="tab-docs" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Provider docs</h2>
+    <select id="docsel" onchange="loadDocs()" style="width:220px"></select>
+    <button class="b" onclick="fetchDocUrl()">Fetch from URL</button>
+    <label class="b" style="cursor:pointer">Upload .md<input type="file" id="docupload" accept=".md,.markdown,.txt" style="display:none" onchange="uploadDoc(event)"></label>
+    <span id="injectstate" class="pill"></span>
+    <button class="b" onclick="toggleInject()">Toggle inject</button>
+  </div>
+  <p class="hint">Docs attach per provider (URL fetch or Markdown upload). When inject is on, the doc is prepended as system context on every request routed to that provider.</p>
+  <div id="docsview">select a provider…</div>
+</section>
+
+<section id="tab-accounts" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">OAuth accounts</h2>
+    <div class="spacer"></div>
+    <button class="b" onclick="loadAccounts()">Refresh</button>
+  </div>
+  <p class="hint">Subscription logins (held by CLIProxyAPI, surfaced as the <code>oauth</code> provider). Device-flow providers show a code to enter; browser-flow providers give a link — after approving you'll land on a localhost URL that won't load: copy that full URL from the address bar and paste it below.</p>
+  <div class="toolbar" style="gap:6px">
+    <button class="b primary" onclick="startOAuth('claude')">+ Claude</button>
+    <button class="b primary" onclick="startOAuth('codex')">+ Codex</button>
+    <button class="b primary" onclick="startOAuth('supergrok')">+ SuperGrok</button>
+    <button class="b primary" onclick="startOAuth('antigravity')">+ Antigravity</button>
+    <button class="b primary" onclick="startOAuth('kimi')">+ Kimi</button>
+  </div>
+  <div id="oauth-flow" class="hidden" style="background:var(--panel);border:1px solid var(--accent);border-radius:10px;padding:18px;margin:14px 0">
+    <h3 id="of-title" style="margin-bottom:10px"></h3>
+    <div id="of-code" class="hidden" style="font:700 28px ui-monospace,monospace;letter-spacing:4px;margin:10px 0;color:var(--accent)"></div>
+    <div style="margin:8px 0"><a id="of-link" target="_blank" rel="noopener" class="b" style="text-decoration:none;display:inline-block">Open login page ↗</a>
+      <button class="b" onclick="copyText($('#of-link').href)">Copy link</button></div>
+    <div id="of-paste" class="hidden" style="margin-top:10px">
+      <label>Paste the localhost redirect URL you landed on</label>
+      <div style="display:flex;gap:8px"><input type="text" id="of-redirect" placeholder="http://localhost:1455/auth/callback?code=…&state=…" style="flex:1">
+      <button class="b primary" onclick="submitCallback()">Complete</button></div>
+    </div>
+    <div id="of-status" style="margin-top:12px;color:var(--dim)">waiting for login…</div>
+    <div style="margin-top:10px"><button class="b danger" onclick="cancelOAuth()">Cancel</button></div>
+  </div>
+  <table id="acctable">
+    <thead><tr><th>Provider</th><th>Account</th><th>Type</th><th>Status</th><th>OK / fail</th><th>Last refresh</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section id="tab-agents" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Agent profiles — round table</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openAgentDialog()">+ Add profile</button>
+  </div>
+  <p class="hint">Each profile pins a persona to a model behind the router. The <b>roundtable</b> MCP tool fans a question out to every enabled profile, optionally cross-critiques, then the moderator synthesizes. Register in a harness: <code>claude mcp add roundtable -- cfrproxy mcp</code></p>
+  <div id="agentcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
+
+  <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Round table settings</h2></div>
+  <div style="max-width:760px">
+    <label>Moderator model (synthesizes; blank = first panelist)</label>
+    <div style="display:flex;gap:8px"><select id="rt-mod-p" style="flex:1" onchange="fillModelSel('rt-mod')"></select><select id="rt-mod-m" style="flex:2"></select></div>
+    <div style="display:flex;gap:16px;margin-top:8px">
+      <div style="flex:1"><label>Rounds (1 = answer+synthesis, 2 = +cross-critique)</label><input type="text" id="rt-rounds"></div>
+      <div style="flex:1"><label>Max tokens per voice</label><input type="text" id="rt-maxtok"></div>
+    </div>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveRT()">Save round table</button></div>
+  </div>
+
+  <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Context compression</h2><span id="comp-state" class="pill"></span></div>
+  <p class="hint">When a request exceeds the threshold, older turns are summarized by the summarizer model and replaced with one compressed block (recent turns stay verbatim; summaries cached per conversation prefix). Trace note shows <code>compressed ~A→~B tok</code>.</p>
+  <div style="max-width:760px">
+    <div class="check"><input type="checkbox" id="comp-enabled"><span>Enabled</span></div>
+    <label>Summarizer model (cheap + fast)</label>
+    <div style="display:flex;gap:8px"><select id="comp-sum-p" style="flex:1" onchange="fillModelSel('comp-sum')"></select><select id="comp-sum-m" style="flex:2"></select></div>
+    <div style="display:flex;gap:16px;margin-top:8px">
+      <div style="flex:1"><label>Threshold (est. tokens)</label><input type="text" id="comp-threshold"></div>
+      <div style="flex:1"><label>Keep recent messages</label><input type="text" id="comp-keep"></div>
+      <div style="flex:1"><label>Summary target words</label><input type="text" id="comp-words"></div>
+    </div>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveComp()">Save compression</button></div>
+  </div>
+</section>
+
+</main>
+
+<dialog id="adlg">
+  <h3 id="adlg-title">Add agent profile</h3>
+  <form method="dialog" onsubmit="return saveAgent(event)">
+    <input type="hidden" id="a-id">
+    <label>Name</label><input type="text" id="a-name" required placeholder="Skeptic">
+    <label>Model</label>
+    <div style="display:flex;gap:8px"><select id="a-model-p" style="flex:1" onchange="fillModelSel('a-model')"></select><select id="a-model-m" style="flex:2"></select></div>
+    <label>Persona (system prompt)</label>
+    <textarea id="a-persona" placeholder="You are the panel's skeptic. Attack assumptions, find failure modes, demand evidence."></textarea>
+    <label>Temperature (blank = default)</label><input type="text" id="a-temp" placeholder="0.7">
+    <div class="check"><input type="checkbox" id="a-enabled" checked><span>Enabled (participates in round table)</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="adlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="pdlg">
+  <h3 id="pdlg-title">Add provider</h3>
+  <form method="dialog" onsubmit="return saveProvider(event)">
+    <input type="hidden" id="p-id">
+    <label>Name</label><input type="text" id="p-name" required placeholder="openrouter">
+    <label>Type</label>
+    <select id="p-type">
+      <option value="openai">openai-compatible (OpenAI, OpenRouter, xAI, most gateways…)</option>
+      <option value="anthropic">anthropic (Claude)</option>
+      <option value="ollama">ollama (local models)</option>
+    </select>
+    <label>Base URL</label><input type="text" id="p-url" required placeholder="https://openrouter.ai/api or http://127.0.0.1:11434">
+    <label>API key <span style="color:var(--dim)">(leave blank to keep existing; stored encrypted)</span></label>
+    <input type="password" id="p-key" autocomplete="off">
+    <label>Default model <button type="button" class="b" style="margin-left:8px;font-size:11px;padding:2px 8px" onclick="scanModels()">Scan models</button> <span id="scan-count" style="color:var(--dim);font-size:11px"></span></label>
+    <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
+    <datalist id="modellist"></datalist>
+    <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
+    <label>Fallback (provider/model — chains follow transitively, e.g. openrouter→local)</label><input type="text" id="p-fallback" placeholder="openrouter/anthropic/claude-sonnet-4" list="allmodels">
+    <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
+    <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
+    <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
+    <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="pdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="tdlg">
+  <h3 id="tdlg-title">Add transform</h3>
+  <form method="dialog" onsubmit="return saveTransform(event)">
+    <input type="hidden" id="t-id">
+    <label>Name</label><input type="text" id="t-name" required>
+    <label>Phase</label>
+    <select id="t-phase"><option value="request">request (outbound provider body)</option><option value="response">response (body returned to consumer)</option></select>
+    <label>Provider (blank = all)</label><select id="t-provider"><option value="0">all providers</option></select>
+    <label>Target inbound dialect (blank = any)</label>
+    <select id="t-target"><option value="">any</option><option>openai</option><option>anthropic</option><option>ollama</option></select>
+    <label>Rules (JSON array)</label>
+    <textarea id="t-rules" spellcheck="false">[
+  {"op":"set","path":"temperature","value":0.2}
+]</textarea>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="tdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const api=(path,opt={})=>fetch('/admin/api/'+path,{headers:{'Content-Type':'application/json'},...opt})
+  .then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j});
+function toast(msg,err){const t=$('#toast');t.textContent=msg;t.style.borderColor=err?'var(--err)':'var(--ok)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+
+// tabs — active tab tracked in the URL hash so refresh keeps your place
+function showTab(name){
+  const btn=$$('nav button').find(b=>b.dataset.tab===name);
+  if(!btn)return;
+  $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
+  $$('main > section').forEach(s=>s.classList.add('hidden'));
+  $('#tab-'+name).classList.remove('hidden');
+  if(name==='docs')refreshDocSel();
+  if(name==='accounts')loadAccounts();
+  if(name==='agents')loadAgents();
+  if(name==='traces')loadStats();
+}
+$$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
+window.addEventListener('hashchange',()=>showTab(location.hash.slice(1)||'providers'));
+showTab(location.hash.slice(1)||'providers');
+
+// ---- providers ----
+let providers=[];
+async function loadProviders(){
+  providers=await api('providers');
+  const grid=$('#cards');grid.innerHTML='';
+  providers.forEach((p,i)=>{
+    const card=document.createElement('div');
+    card.className='card'+(p.enabled?'':' off');
+    card.draggable=true;card.dataset.id=p.id;
+    card.innerHTML=`
+      <div class="prio">#${i+1}</div>
+      <h3>${esc(p.name)}</h3>
+      <span class="type">${p.type}</span>
+      <div class="url">${esc(p.base_url)}</div>
+      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · chain:<b>${esc(fbChain(p))}</b>`:''}${p.pinned_models?` · pins:<b>${p.pinned_models.split(',').filter(x=>x.trim()).length}</b>`:''}</div>
+      <div class="row">
+        <button class="b" onclick="openProviderDialog(${p.id})">Edit</button>
+        <button class="b" onclick="testProvider(${p.id},this)">Test</button>
+        <button class="b" onclick="toggleProvider(${p.id})">${p.enabled?'Disable':'Enable'}</button>
+        <button class="b danger" onclick="delProvider(${p.id},'${esc(p.name)}')">Delete</button>
+      </div>
+      <div class="meta test-out"></div>`;
+    addDnD(card);grid.appendChild(card);
+  });
+  refreshDocSel();
+}
+function fbChain(p){
+  let chain=p.name, cur=p, seen=new Set([p.id]);
+  for(let i=0;i<3&&cur.fallback;i++){
+    chain+=' → '+cur.fallback;
+    const nm=cur.fallback.split('/')[0].toLowerCase();
+    cur=providers.find(x=>x.name.toLowerCase()===nm&&!seen.has(x.id));
+    if(!cur)break; seen.add(cur.id);
+  }
+  return chain.replace(p.name+' → ','');
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+// drag to reorder
+let dragEl=null;
+function addDnD(card){
+  card.addEventListener('dragstart',()=>{dragEl=card;card.classList.add('dragging')});
+  card.addEventListener('dragend',()=>{card.classList.remove('dragging');dragEl=null});
+  card.addEventListener('dragover',e=>{e.preventDefault();card.classList.add('dragover')});
+  card.addEventListener('dragleave',()=>card.classList.remove('dragover'));
+  card.addEventListener('drop',async e=>{
+    e.preventDefault();card.classList.remove('dragover');
+    if(!dragEl||dragEl===card)return;
+    const grid=$('#cards'),kids=[...grid.children];
+    grid.insertBefore(dragEl,kids.indexOf(dragEl)<kids.indexOf(card)?card.nextSibling:card);
+    const ids=[...grid.children].map(c=>+c.dataset.id);
+    try{await api('providers/reorder',{method:'POST',body:JSON.stringify({ids})});toast('routing order saved');loadProviders()}
+    catch(err){toast(err.message,true)}
+  });
+}
+
+const pdlg=$('#pdlg');
+function openProviderDialog(id){
+  const p=providers.find(x=>x.id===id)||{};
+  $('#pdlg-title').textContent=id?'Edit '+p.name:'Add provider';
+  $('#p-id').value=id||'';$('#p-name').value=p.name||'';$('#p-type').value=p.type||'openai';
+  $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
+  $('#p-models').value=p.models||'';$('#p-fallback').value=p.fallback||'';$('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
+  $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
+  pdlg.showModal();
+}
+async function saveProvider(e){
+  e.preventDefault();
+  const id=$('#p-id').value;
+  const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
+    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,
+    doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
+  try{
+    const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    pdlg.close();toast(r.note||'provider saved',(r.note||'').startsWith('warning'));loadProviders();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function scanModels(){
+  const id=$('#p-id').value;
+  if(!id){toast('save the provider first, then scan',true);return}
+  $('#scan-count').textContent='scanning…';
+  try{
+    const r=await api('providers/'+id+'/models');
+    if(r.error){$('#scan-count').textContent='';toast('scan failed: '+r.error,true);return}
+    $('#modellist').innerHTML=r.models.map(m=>`<option value="${esc(m)}">`).join('');
+    $('#scan-count').textContent=r.count+' models found — type to filter';
+    if(!$('#p-model').value)$('#p-model').focus();
+  }catch(err){$('#scan-count').textContent='';toast(err.message,true)}
+}
+async function toggleProvider(id){
+  const p=providers.find(x=>x.id===id);
+  try{await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',enabled:!p.enabled})});loadProviders()}
+  catch(err){toast(err.message,true)}
+}
+async function delProvider(id,name){
+  if(!confirm('Delete provider "'+name+'"?'))return;
+  try{await api('providers/'+id,{method:'DELETE'});toast('deleted');loadProviders()}
+  catch(err){toast(err.message,true)}
+}
+async function testProvider(id,btn){
+  const out=btn.closest('.card').querySelector('.test-out');
+  out.textContent='testing…';
+  try{
+    const r=await api('providers/'+id+'/test',{method:'POST',body:JSON.stringify({})});
+    out.innerHTML=r.ok?`<span class="badge-ok">✓ ${r.latency_ms}ms</span> ${esc(r.content).slice(0,120)}`
+                      :`<span class="badge-err">✗ ${esc(r.error)}</span>`;
+  }catch(err){out.innerHTML=`<span class="badge-err">✗ ${esc(err.message)}</span>`}
+}
+
+// ---- model map ----
+let modelMap={};
+async function loadModelMap(){
+  modelMap=await api('modelmap');
+  const tb=$('#maptable tbody');tb.innerHTML='';
+  Object.entries(modelMap).sort().forEach(([k,v])=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="mono">${esc(k)}</td><td class="mono">${esc(v)}</td>
+      <td><button class="b danger" onclick="rmMapEntry('${esc(k)}')">Del</button></td>`;
+    tb.appendChild(tr);
+  });
+  // datalist of proxy-wide models for the target field
+  try{
+    const r=await fetch('/v1/models').then(r=>r.json());
+    $('#allmodels').innerHTML=r.data.map(m=>`<option value="${esc(m.id)}">`).join('');
+  }catch{}
+}
+async function addMapEntry(){
+  const k=$('#map-pattern').value.trim(),v=$('#map-target').value.trim();
+  if(!k||!v){toast('pattern and target required',true);return}
+  modelMap[k]=v;
+  try{await api('modelmap',{method:'PUT',body:JSON.stringify(modelMap)});
+    $('#map-pattern').value='';$('#map-target').value='';toast('map saved');loadModelMap()}
+  catch(err){toast(err.message,true)}
+}
+async function rmMapEntry(k){
+  delete modelMap[k];
+  try{await api('modelmap',{method:'PUT',body:JSON.stringify(modelMap)});loadModelMap()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- auto router ----
+const AR_BUCKETS=['code','reasoning','quick','long','vision','default'];
+const scopedModelCache={};
+async function scopedModels(provName){
+  if(scopedModelCache[provName])return scopedModelCache[provName];
+  try{
+    const r=await fetch('/p/'+encodeURIComponent(provName)+'/v1/models').then(r=>r.json());
+    return scopedModelCache[provName]=r.data.map(m=>m.id);
+  }catch{return scopedModelCache[provName]=[]}
+}
+async function fillModelSel(prefix,wanted){
+  const pv=$('#'+prefix+'-p').value, ms=$('#'+prefix+'-m');
+  ms.innerHTML='<option value="">—</option>';
+  if(!pv)return;
+  const models=await scopedModels(pv);
+  models.forEach(m=>ms.insertAdjacentHTML('beforeend',`<option value="${esc(m)}">${esc(m)}</option>`));
+  if(wanted){
+    if(!models.includes(wanted))ms.insertAdjacentHTML('beforeend',`<option value="${esc(wanted)}">${esc(wanted)} (unpinned)</option>`);
+    ms.value=wanted;
+  }
+}
+async function setPair(prefix,val){
+  const ps=$('#'+prefix+'-p');
+  ps.innerHTML='<option value="">—</option>'+providers.filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  if(val&&val.includes('/')){
+    const i=val.indexOf('/');
+    ps.value=val.slice(0,i);
+    await fillModelSel(prefix,val.slice(i+1));
+  }
+}
+function getPair(prefix){
+  const p=$('#'+prefix+'-p').value,m=$('#'+prefix+'-m').value;
+  return p&&m?p+'/'+m:'';
+}
+async function loadAutoRoute(){
+  try{
+    const c=await api('autoroute');
+    $('#ar-enabled').checked=!!c.enabled;
+    const tb=$('#artable tbody');tb.innerHTML='';
+    AR_BUCKETS.forEach(b=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${b}</td><td><div style="display:flex;gap:8px"><select id="ar-${b}-p" style="flex:1" onchange="fillModelSel('ar-${b}')"></select><select id="ar-${b}-m" style="flex:2"></select></div></td>`;
+      tb.appendChild(tr);
+    });
+    await setPair('ar-classifier',c.classifier||'');
+    await setPair('ar-planner',c.planner||'');
+    for(const b of AR_BUCKETS)await setPair('ar-'+b,(c.routes||{})[b]||'');
+    const pill=$('#ar-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
+  }catch(err){toast('autoroute: '+err.message,true)}
+}
+async function saveAutoRoute(){
+  const routes={};
+  AR_BUCKETS.forEach(b=>{const v=getPair('ar-'+b);if(v)routes[b]=v});
+  const body={enabled:$('#ar-enabled').checked,classifier:getPair('ar-classifier'),planner:getPair('ar-planner'),routes};
+  try{await api('autoroute',{method:'PUT',body:JSON.stringify(body)});toast('auto router saved');loadAutoRoute()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- transforms ----
+let transforms=[];
+async function loadTransforms(){
+  transforms=await api('transforms');
+  const tb=$('#ttable tbody');tb.innerHTML='';
+  transforms.forEach(t=>{
+    const prov=providers.find(p=>p.id===t.provider_id);
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><span class="pill ${t.enabled?'on':''}" style="cursor:pointer" onclick="toggleTransform(${t.id},${!t.enabled})">${t.enabled?'on':'off'}</span></td>
+      <td>${esc(t.name)}</td><td>${t.phase}</td>
+      <td>${prov?esc(prov.name):'all'}</td><td>${t.target||'any'}</td>
+      <td><code>${esc(JSON.stringify(t.rules)).slice(0,80)}</code></td>
+      <td><button class="b" onclick="openTransformDialog(${t.id})">Edit</button>
+          <button class="b danger" onclick="delTransform(${t.id})">Del</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+const tdlg=$('#tdlg');
+function openTransformDialog(id){
+  const t=transforms.find(x=>x.id===id)||{};
+  $('#tdlg-title').textContent=id?'Edit '+t.name:'Add transform';
+  const sel=$('#t-provider');sel.innerHTML='<option value="0">all providers</option>';
+  providers.forEach(p=>sel.insertAdjacentHTML('beforeend',`<option value="${p.id}">${esc(p.name)}</option>`));
+  $('#t-id').value=id||'';$('#t-name').value=t.name||'';$('#t-phase').value=t.phase||'request';
+  sel.value=t.provider_id||0;$('#t-target').value=t.target||'';
+  if(id)$('#t-rules').value=JSON.stringify(t.rules,null,2);
+  tdlg.showModal();
+}
+async function saveTransform(e){
+  e.preventDefault();
+  let rules;
+  try{rules=JSON.parse($('#t-rules').value)}catch{toast('rules is not valid JSON',true);return false}
+  const id=$('#t-id').value;
+  const body={name:$('#t-name').value,phase:$('#t-phase').value,provider_id:+$('#t-provider').value,
+    target:$('#t-target').value,rules,enabled:true};
+  if(id){const ex=transforms.find(x=>x.id==id);if(ex)body.enabled=ex.enabled}
+  try{
+    await api(id?'transforms/'+id:'transforms',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    tdlg.close();toast('transform saved');loadTransforms();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleTransform(id,enabled){
+  try{await api('transforms/'+id+'/toggle',{method:'POST',body:JSON.stringify({enabled})});loadTransforms()}
+  catch(err){toast(err.message,true)}
+}
+async function delTransform(id){
+  if(!confirm('Delete this transform?'))return;
+  try{await api('transforms/'+id,{method:'DELETE'});loadTransforms()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- traces ----
+const trbody=()=>$('#trtable tbody');
+function traceRow(t){
+  const tr=document.createElement('tr');
+  if(t.status>=400||(t.err&&!t.err.startsWith('failover')))tr.classList.add('err');
+  tr.style.cursor='pointer';
+  tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
+    d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
+  tr.title=(t.note?t.note+'  ':'')+(t.err||'');
+  const cached=t.cached_tokens?`<span class="badge-ok">${t.cached_tokens}</span>`:'·';
+  tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
+    <td class="mono">${esc(t.model)}</td>
+    <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td>${cached}</td>
+    <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
+  return tr;
+}
+async function loadStats(){
+  try{
+    const st=await api('stats');
+    const tb=$('#statstable tbody');tb.innerHTML='';
+    let tin=0,tout=0,tcache=0;
+    st.forEach(m=>{
+      tin+=m.prompt_tokens;tout+=m.completion_tokens;tcache+=m.cached_tokens;
+      const hit=m.prompt_tokens?Math.round(100*m.cached_tokens/m.prompt_tokens):0;
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td class="mono">${esc(m.provider)}/${esc(m.model)}</td>
+        <td>${m.requests}</td><td>${m.errors?'<span class="badge-err">'+m.errors+'</span>':'0'}</td>
+        <td>${fmtK(m.prompt_tokens)}</td><td>${fmtK(m.completion_tokens)}</td>
+        <td>${fmtK(m.cached_tokens)}</td><td>${hit?'<span class="badge-ok">'+hit+'%</span>':'0%'}</td>
+        <td>${m.avg_latency_ms}ms</td>`;
+      tb.appendChild(tr);
+    });
+    if(st.length>1){
+      const hit=tin?Math.round(100*tcache/tin):0;
+      const tr=document.createElement('tr');tr.style.borderTop='2px solid var(--border)';
+      tr.innerHTML=`<td><b>All models</b></td><td></td><td></td><td><b>${fmtK(tin)}</b></td><td><b>${fmtK(tout)}</b></td><td><b>${fmtK(tcache)}</b></td><td><b>${hit}%</b></td><td></td>`;
+      tb.appendChild(tr);
+    }
+  }catch(err){/* stats best-effort */}
+}
+function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
+async function loadTraces(){
+  const ts=await api('traces?limit=100');
+  trbody().innerHTML='';ts.forEach(t=>trbody().appendChild(traceRow(t)));
+  loadStats();
+}
+function clearTraces(){trbody().innerHTML='';$('#tracedetail').classList.add('hidden')}
+function connectSSE(){
+  const es=new EventSource('/admin/api/logs/stream');
+  es.onopen=()=>{const p=$('#sse-state');p.textContent='live';p.classList.add('on')};
+  es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on')};
+  let statsDebounce=null;
+  es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));
+    while(trbody().children.length>200)trbody().lastChild.remove();
+    clearTimeout(statsDebounce);statsDebounce=setTimeout(loadStats,1500)};
+}
+
+// ---- docs ----
+function refreshDocSel(){
+  const sel=$('#docsel');const cur=sel.value;sel.innerHTML='';
+  providers.forEach(p=>sel.insertAdjacentHTML('beforeend',`<option value="${p.id}">${esc(p.name)}</option>`));
+  if(cur)sel.value=cur;
+  if(providers.length)loadDocs();
+}
+async function loadDocs(){
+  const id=$('#docsel').value;if(!id)return;
+  try{
+    const d=await api('providers/'+id+'/docs');
+    $('#docsview').textContent=d.doc_markdown||('(no markdown stored)'+(d.doc_url?'\ndoc_url: '+d.doc_url+'  — use "Fetch from URL"':''));
+    const pill=$('#injectstate');pill.textContent=d.inject_docs?'inject: on':'inject: off';
+    pill.classList.toggle('on',d.inject_docs);
+  }catch(err){toast(err.message,true)}
+}
+async function fetchDocUrl(){
+  const id=$('#docsel').value;if(!id)return;
+  try{const r=await api('providers/'+id+'/docs/fetch',{method:'POST'});toast('fetched '+r.bytes+' bytes');loadDocs()}
+  catch(err){toast(err.message,true)}
+}
+async function uploadDoc(ev){
+  const id=$('#docsel').value;if(!id||!ev.target.files.length)return;
+  const text=await ev.target.files[0].text();
+  const p=providers.find(x=>x.id==id);
+  try{
+    await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',doc_markdown:text})});
+    toast('doc uploaded ('+text.length+' bytes)');loadDocs();
+  }catch(err){toast(err.message,true)}
+  ev.target.value='';
+}
+async function toggleInject(){
+  const id=$('#docsel').value;if(!id)return;
+  const p=providers.find(x=>x.id==id);
+  const d=await api('providers/'+id+'/docs');
+  try{
+    await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',doc_markdown:d.doc_markdown,inject_docs:!d.inject_docs})});
+    toast('inject toggled');loadDocs();loadProviders();
+  }catch(err){toast(err.message,true)}
+}
+
+// ---- oauth accounts ----
+let oflow=null; // {provider, state, poll}
+function copyText(t){navigator.clipboard?.writeText(t).then(()=>toast('copied'))}
+async function loadAccounts(){
+  try{
+    const r=await api('oauth/accounts');
+    const tb=$('#acctable tbody');tb.innerHTML='';
+    (r.files||[]).forEach(f=>{
+      const tr=document.createElement('tr');
+      const status=f.disabled?'<span class="badge-err">disabled</span>':(String(f.status||'ok'));
+      tr.innerHTML=`<td>${esc(f.provider||f.id.split('-')[0])}</td>
+        <td>${esc(f.email||f.account||f.label||f.name||f.id)}</td>
+        <td>${esc(f.account_type||'')}</td><td>${status}</td>
+        <td>${f.success??0} / ${f.failed??0}</td>
+        <td>${f.last_refresh?new Date(f.last_refresh).toLocaleString():''}</td>
+        <td><button class="b" onclick="toggleAccount('${esc(f.id)}',${!f.disabled})">${f.disabled?'Enable':'Disable'}</button>
+            <button class="b danger" onclick="delAccount('${esc(f.id)}')">Delete</button></td>`;
+      tb.appendChild(tr);
+    });
+  }catch(err){toast('accounts: '+err.message,true)}
+}
+async function startOAuth(provider){
+  cancelOAuth(true);
+  try{
+    const r=await api('oauth/'+provider+'/start',{method:'POST'});
+    if(r.error||!r.url){toast(r.error||'no auth url returned',true);return}
+    oflow={provider,state:r.state};
+    $('#of-title').textContent='Login: '+provider;
+    $('#of-link').href=r.url;
+    if(r.user_code){$('#of-code').textContent=r.user_code;$('#of-code').classList.remove('hidden');$('#of-paste').classList.add('hidden');}
+    else{$('#of-code').classList.add('hidden');$('#of-paste').classList.remove('hidden');}
+    $('#of-status').textContent='waiting for login… (open the login page'+(r.user_code?' and enter the code above':'')+')';
+    $('#oauth-flow').classList.remove('hidden');
+    oflow.poll=setInterval(pollOAuth,2500);
+  }catch(err){toast(err.message,true)}
+}
+async function pollOAuth(){
+  if(!oflow)return;
+  try{
+    const r=await api('oauth/status?state='+encodeURIComponent(oflow.state));
+    if(r.status==='ok'){
+      $('#of-status').innerHTML='<span class="badge-ok">✓ logged in</span>';
+      clearInterval(oflow.poll);const done=oflow.provider;oflow=null;
+      setTimeout(()=>{$('#oauth-flow').classList.add('hidden');loadAccounts();toast(done+' account added — models refresh within a minute')},1500);
+    }else if(r.status==='error'){
+      $('#of-status').innerHTML='<span class="badge-err">✗ '+esc(r.error||'failed')+'</span>';
+      clearInterval(oflow.poll);oflow=null;
+    }
+  }catch{}
+}
+async function submitCallback(){
+  if(!oflow)return;
+  const url=$('#of-redirect').value.trim();
+  if(!url){toast('paste the redirect URL first',true);return}
+  try{
+    const r=await api('oauth/callback',{method:'POST',body:JSON.stringify({provider:oflow.provider,state:oflow.state,redirect_url:url})});
+    if(r.error){toast(r.error,true);return}
+    $('#of-status').textContent='callback submitted, finalizing…';
+  }catch(err){toast(err.message,true)}
+}
+function cancelOAuth(quiet){
+  if(oflow){clearInterval(oflow.poll);api('oauth/cancel?state='+encodeURIComponent(oflow.state),{method:'POST'}).catch(()=>{});oflow=null}
+  $('#oauth-flow').classList.add('hidden');$('#of-redirect').value='';
+  if(!quiet)toast('login cancelled');
+}
+async function toggleAccount(name,disabled){
+  try{await api('oauth/accounts/status',{method:'PATCH',body:JSON.stringify({name,disabled})});loadAccounts()}
+  catch(err){toast(err.message,true)}
+}
+async function delAccount(name){
+  if(!confirm('Delete OAuth account '+name+'?'))return;
+  try{await api('oauth/accounts?name='+encodeURIComponent(name),{method:'DELETE'});toast('deleted');loadAccounts()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- agent profiles + roundtable + compression ----
+let agents=[];
+const adlg=document.getElementById('adlg');
+async function loadAgents(){
+  try{
+    agents=await api('agents');
+    const grid=$('#agentcards');grid.innerHTML='';
+    agents.forEach(a=>{
+      const card=document.createElement('div');
+      card.className='card'+(a.enabled?'':' off');card.style.cursor='default';
+      card.innerHTML=`<h3>${esc(a.name)}</h3>
+        <span class="type">${esc(a.model)}</span>
+        <div class="meta" style="white-space:pre-wrap">${esc((a.persona||'').slice(0,140))}${(a.persona||'').length>140?'…':''}</div>
+        <div class="row">
+          <button class="b" onclick="openAgentDialog(${a.id})">Edit</button>
+          <button class="b" onclick="toggleAgent(${a.id})">${a.enabled?'Disable':'Enable'}</button>
+          <button class="b danger" onclick="delAgent(${a.id},'${esc(a.name)}')">Delete</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+    const rt=await api('roundtable');
+    await setPair('rt-mod',rt.moderator||'');
+    $('#rt-rounds').value=rt.rounds??2;$('#rt-maxtok').value=rt.max_tokens??1200;
+    const c=await api('compression');
+    $('#comp-enabled').checked=!!c.enabled;
+    await setPair('comp-sum',c.summarizer||'');
+    $('#comp-threshold').value=c.threshold_tokens??24000;
+    $('#comp-keep').value=c.keep_recent??8;$('#comp-words').value=c.target_words??500;
+    const pill=$('#comp-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
+  }catch(err){toast('agents: '+err.message,true)}
+}
+async function openAgentDialog(id){
+  const a=agents.find(x=>x.id===id)||{};
+  $('#adlg-title').textContent=id?'Edit '+a.name:'Add agent profile';
+  $('#a-id').value=id||'';$('#a-name').value=a.name||'';
+  $('#a-persona').value=a.persona||'';$('#a-temp').value=a.temperature||'';
+  $('#a-enabled').checked=id?!!a.enabled:true;
+  await setPair('a-model',a.model||'');
+  adlg.showModal();
+}
+async function saveAgent(e){
+  e.preventDefault();
+  const id=$('#a-id').value;
+  const body={name:$('#a-name').value,model:getPair('a-model'),persona:$('#a-persona').value,
+    temperature:$('#a-temp').value,enabled:$('#a-enabled').checked};
+  if(!body.model){toast('pick a provider and model',true);return false}
+  try{
+    await api(id?'agents/'+id:'agents',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    adlg.close();toast('profile saved');loadAgents();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleAgent(id){
+  const a=agents.find(x=>x.id===id);
+  try{await api('agents/'+id,{method:'PUT',body:JSON.stringify({...a,enabled:!a.enabled})});loadAgents()}
+  catch(err){toast(err.message,true)}
+}
+async function delAgent(id,name){
+  if(!confirm('Delete profile "'+name+'"?'))return;
+  try{await api('agents/'+id,{method:'DELETE'});loadAgents()}catch(err){toast(err.message,true)}
+}
+async function saveRT(){
+  const body={moderator:getPair('rt-mod'),rounds:+$('#rt-rounds').value||2,max_tokens:+$('#rt-maxtok').value||1200};
+  try{await api('roundtable',{method:'PUT',body:JSON.stringify(body)});toast('round table saved')}
+  catch(err){toast(err.message,true)}
+}
+async function saveComp(){
+  const body={enabled:$('#comp-enabled').checked,summarizer:getPair('comp-sum'),
+    threshold_tokens:+$('#comp-threshold').value||24000,keep_recent:+$('#comp-keep').value||8,
+    target_words:+$('#comp-words').value||500};
+  try{await api('compression',{method:'PUT',body:JSON.stringify(body)});toast('compression saved');loadAgents()}
+  catch(err){toast(err.message,true)}
+}
+
+// ---- boot ----
+async function boot(){
+  try{
+    await loadProviders();await loadTransforms();await loadTraces();connectSSE();loadModelMap();loadAutoRoute();
+    const st=await api('status');
+    $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
+  }catch(err){toast(err.message,true)}
+}
+boot();
+</script>
+</body>
+</html>
