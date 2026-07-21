@@ -148,8 +148,37 @@ func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request, scope string)
 	writeJSON(w, 200, map[string]any{"models": models})
 }
 
+// publicKeyOK gates data-plane requests that arrived through a reverse proxy
+// (identified by X-Forwarded-For / X-Real-IP, which LAN-direct clients never
+// send). When settings key "public_api_keys" is set, proxied requests must
+// carry one of those keys as Bearer or x-api-key. Direct LAN traffic is
+// unaffected, so local harnesses keep working keyless.
+func (p *Proxy) publicKeyOK(r *http.Request) bool {
+	if r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("X-Real-IP") == "" {
+		return true // direct connection — not via the public proxy
+	}
+	keys := splitList(p.Store.Setting("public_api_keys"))
+	if len(keys) == 0 {
+		return true // gate not configured
+	}
+	got := r.Header.Get("x-api-key")
+	if got == "" {
+		got = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	for _, k := range keys {
+		if got == k {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope string) {
 	start := time.Now()
+	if !p.publicKeyOK(r) {
+		httpErr(w, inbound, 401, "public access requires a valid API key (Authorization: Bearer <key> or x-api-key)")
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
 	if err != nil {
 		httpErr(w, inbound, 400, "read body: "+err.Error())
