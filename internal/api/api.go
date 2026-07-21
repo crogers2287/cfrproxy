@@ -97,6 +97,10 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("DELETE /admin/api/transforms/{id}", a.hTransformDelete)
 	inner.HandleFunc("POST /admin/api/transforms/{id}/toggle", a.hTransformToggle)
 	a.registerOAuth(inner)
+	inner.HandleFunc("GET /admin/api/endpoints", a.hEndpointsList)
+	inner.HandleFunc("POST /admin/api/endpoints", a.hEndpointSave)
+	inner.HandleFunc("PUT /admin/api/endpoints/{id}", a.hEndpointSave)
+	inner.HandleFunc("DELETE /admin/api/endpoints/{id}", a.hEndpointDelete)
 	inner.HandleFunc("GET /admin/api/agents", a.hAgentsList)
 	inner.HandleFunc("POST /admin/api/agents", a.hAgentSave)
 	inner.HandleFunc("PUT /admin/api/agents/{id}", a.hAgentSave)
@@ -375,6 +379,50 @@ func (a *API) hTransformToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.Store.SetTransformEnabled(id, body.Enabled); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *API) hEndpointsList(w http.ResponseWriter, r *http.Request) {
+	eps, err := a.Store.Endpoints()
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if eps == nil {
+		eps = []store.Endpoint{}
+	}
+	writeJSON(w, 200, eps)
+}
+
+func (a *API) hEndpointSave(w http.ResponseWriter, r *http.Request) {
+	var e store.Endpoint
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if ids := r.PathValue("id"); ids != "" {
+		e.ID, _ = strconv.ParseInt(ids, 10, 64)
+	} else {
+		e.ID = 0
+		if e.APIKey == "" {
+			raw := make([]byte, 18)
+			rand.Read(raw)
+			e.APIKey = "cfr_" + base64.RawURLEncoding.EncodeToString(raw)
+		}
+	}
+	if err := a.Store.SaveEndpoint(&e); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, e)
+}
+
+func (a *API) hEndpointDelete(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := a.Store.DeleteEndpoint(id); err != nil {
 		httpErr(w, 500, err.Error())
 		return
 	}

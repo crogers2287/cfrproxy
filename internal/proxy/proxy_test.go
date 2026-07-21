@@ -267,3 +267,19 @@ func TestAutoRoute(t *testing.T) {
 		t.Errorf("disabled router should return empty, got %s", tgt)
 	}
 }
+
+func TestEndsWithVersion(t *testing.T) {
+	cases := map[string]bool{
+		"https://api.z.ai/api/coding/paas/v4": true,
+		"https://x/router/v1":                 true,
+		"https://api.anthropic.com/v1beta":    true,
+		"http://fred:9069":                    false,
+		"https://openrouter.ai/api":           false,
+		"https://openrouter.ai/api/v1":        true,
+	}
+	for in, want := range cases {
+		if got := endsWithVersion(in); got != want {
+			t.Errorf("endsWithVersion(%q)=%v want %v", in, got, want)
+		}
+	}
+}
