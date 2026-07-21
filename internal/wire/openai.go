@@ -176,8 +176,11 @@ type oaiResp struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -192,7 +195,7 @@ func ParseOpenAIResponse(body []byte) (*Response, error) {
 	if in.Error != nil {
 		return nil, fmt.Errorf("provider error: %s", in.Error.Message)
 	}
-	r := &Response{ID: in.ID, Model: in.Model, PromptTokens: in.Usage.PromptTokens, CompletionTokens: in.Usage.CompletionTokens, FinishReason: "stop"}
+	r := &Response{ID: in.ID, Model: in.Model, PromptTokens: in.Usage.PromptTokens, CompletionTokens: in.Usage.CompletionTokens, CachedTokens: in.Usage.PromptTokensDetails.CachedTokens, FinishReason: "stop"}
 	if len(in.Choices) > 0 {
 		c := in.Choices[0]
 		r.Content = oaiContentText(c.Message.Content)
@@ -237,7 +240,7 @@ func ReadOpenAIStream(body io.Reader, out chan<- Delta) {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	finish := ""
-	var pt, ct int
+	var pt, ct, cached int
 	for sc.Scan() {
 		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -256,15 +259,18 @@ func ReadOpenAIStream(body io.Reader, out chan<- Delta) {
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				PromptTokensDetails struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal(data, &chunk); err != nil {
 			continue
 		}
 		if chunk.Usage != nil {
-			pt, ct = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens
+			pt, ct, cached = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.PromptTokensDetails.CachedTokens
 		}
 		for _, c := range chunk.Choices {
 			if c.Delta.Content != "" {
@@ -289,7 +295,7 @@ func ReadOpenAIStream(body io.Reader, out chan<- Delta) {
 	if finish == "" {
 		finish = "stop"
 	}
-	out <- Delta{Finish: finish, PromptTokens: pt, CompletionTokens: ct}
+	out <- Delta{Finish: finish, PromptTokens: pt, CompletionTokens: ct, CachedTokens: cached}
 }
 
 // WriteOpenAIStream frames normalized deltas as OpenAI SSE chunks.

@@ -168,9 +168,14 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <div class="spacer"></div>
     <button class="b" onclick="clearTraces()">Clear view</button>
   </div>
-  <p class="hint">⚠ = error or failover (hover / click row for detail) · 🔀 = auto-routed (note shows chosen bucket) · ✓ Stream = streamed response. Rows in red are real failures.</p>
+  <h2 style="margin:18px 0 8px">Token burn by model</h2>
+  <table id="statstable">
+    <thead><tr><th>Model</th><th>Reqs</th><th>Err</th><th>In tok</th><th>Out tok</th><th>Cached</th><th>Cache hit</th><th>Avg latency</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Tokens are in/out (cached read). Rows in red are real failures.</p>
   <table id="trtable">
-    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Inbound</th><th>Status</th><th>Latency</th><th>Stream</th></tr></thead>
+    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Status</th><th>Latency</th><th>Stream</th></tr></thead>
     <tbody></tbody>
   </table>
   <div id="tracedetail" class="hidden"></div>
@@ -346,6 +351,7 @@ function showTab(name){
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
+  if(name==='traces')loadStats();
 }
 $$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
 window.addEventListener('hashchange',()=>showTab(location.hash.slice(1)||'providers'));
@@ -612,22 +618,52 @@ function traceRow(t){
   tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
     d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
   tr.title=(t.note?t.note+'  ':'')+(t.err||'');
+  const cached=t.cached_tokens?`<span class="badge-ok">${t.cached_tokens}</span>`:'·';
   tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
-    <td class="mono">${esc(t.model)}</td><td>${t.inbound}</td>
+    <td class="mono">${esc(t.model)}</td>
+    <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td>${cached}</td>
     <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
   return tr;
 }
+async function loadStats(){
+  try{
+    const st=await api('stats');
+    const tb=$('#statstable tbody');tb.innerHTML='';
+    let tin=0,tout=0,tcache=0;
+    st.forEach(m=>{
+      tin+=m.prompt_tokens;tout+=m.completion_tokens;tcache+=m.cached_tokens;
+      const hit=m.prompt_tokens?Math.round(100*m.cached_tokens/m.prompt_tokens):0;
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td class="mono">${esc(m.provider)}/${esc(m.model)}</td>
+        <td>${m.requests}</td><td>${m.errors?'<span class="badge-err">'+m.errors+'</span>':'0'}</td>
+        <td>${fmtK(m.prompt_tokens)}</td><td>${fmtK(m.completion_tokens)}</td>
+        <td>${fmtK(m.cached_tokens)}</td><td>${hit?'<span class="badge-ok">'+hit+'%</span>':'0%'}</td>
+        <td>${m.avg_latency_ms}ms</td>`;
+      tb.appendChild(tr);
+    });
+    if(st.length>1){
+      const hit=tin?Math.round(100*tcache/tin):0;
+      const tr=document.createElement('tr');tr.style.borderTop='2px solid var(--border)';
+      tr.innerHTML=`<td><b>All models</b></td><td></td><td></td><td><b>${fmtK(tin)}</b></td><td><b>${fmtK(tout)}</b></td><td><b>${fmtK(tcache)}</b></td><td><b>${hit}%</b></td><td></td>`;
+      tb.appendChild(tr);
+    }
+  }catch(err){/* stats best-effort */}
+}
+function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
 async function loadTraces(){
   const ts=await api('traces?limit=100');
   trbody().innerHTML='';ts.forEach(t=>trbody().appendChild(traceRow(t)));
+  loadStats();
 }
 function clearTraces(){trbody().innerHTML='';$('#tracedetail').classList.add('hidden')}
 function connectSSE(){
   const es=new EventSource('/admin/api/logs/stream');
   es.onopen=()=>{const p=$('#sse-state');p.textContent='live';p.classList.add('on')};
   es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on')};
+  let statsDebounce=null;
   es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));
-    while(trbody().children.length>200)trbody().lastChild.remove()};
+    while(trbody().children.length>200)trbody().lastChild.remove();
+    clearTimeout(statsDebounce);statsDebounce=setTimeout(loadStats,1500)};
 }
 
 // ---- docs ----

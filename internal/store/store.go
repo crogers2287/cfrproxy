@@ -60,6 +60,9 @@ type Trace struct {
 	LatencyMS int64  `json:"latency_ms"`
 	Err       string `json:"err"`
 	Note      string `json:"note"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
 	ReqSnip   string `json:"req_snippet"`
 	RespSnip  string `json:"resp_snippet"`
 }
@@ -141,6 +144,9 @@ CREATE TABLE IF NOT EXISTS traces (
   latency_ms INTEGER NOT NULL DEFAULT 0,
   err TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens INTEGER NOT NULL DEFAULT 0,
   req_snippet TEXT NOT NULL DEFAULT '',
   resp_snippet TEXT NOT NULL DEFAULT ''
 );
@@ -163,6 +169,9 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN pinned_models TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN models_filter TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -463,8 +472,8 @@ func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
 // ---- traces ----
 
 func (s *Store) AddTrace(t *Trace) {
-	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.ReqSnip, t.RespSnip)
+	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.ReqSnip, t.RespSnip)
 	if err == nil {
 		t.ID, _ = res.LastInsertId()
 	}
@@ -476,7 +485,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +494,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	for rows.Next() {
 		var t Trace
 		var stream int
-		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.ReqSnip, &t.RespSnip); err != nil {
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.ReqSnip, &t.RespSnip); err != nil {
 			return nil, err
 		}
 		t.Stream = stream == 1
@@ -538,6 +547,44 @@ func (s *Store) ModelMapLookup(model string, match func(pattern, model string) b
 		}
 	}
 	return ""
+}
+
+// ---- per-model stats ----
+
+type ModelStat struct {
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Requests     int    `json:"requests"`
+	Errors       int    `json:"errors"`
+	PromptTokens int64  `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	CachedTokens int64  `json:"cached_tokens"`
+	AvgLatencyMS int64  `json:"avg_latency_ms"`
+}
+
+// Stats aggregates the trace table per provider/model (most-used first).
+func (s *Store) Stats() ([]ModelStat, error) {
+	rows, err := s.db.Query(`SELECT provider, model,
+	  COUNT(*), SUM(CASE WHEN status>=400 OR (err!='' AND err NOT LIKE 'failover%') THEN 1 ELSE 0 END),
+	  COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(cached_tokens),0),
+	  COALESCE(AVG(latency_ms),0)
+	  FROM traces GROUP BY provider, model ORDER BY COUNT(*) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelStat
+	for rows.Next() {
+		var m ModelStat
+		var avg float64
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Requests, &m.Errors,
+			&m.PromptTokens, &m.CompletionTokens, &m.CachedTokens, &avg); err != nil {
+			return nil, err
+		}
+		m.AvgLatencyMS = int64(avg)
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // ---- settings ----

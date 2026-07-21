@@ -49,6 +49,7 @@ type Response struct {
 	FinishReason     string // stop | tool_calls | length
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int // cache-read/cached prompt tokens
 }
 
 // Delta is one unit of a normalized stream.
@@ -58,6 +59,7 @@ type Delta struct {
 	Finish           string // non-empty on the final delta
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int
 	Err              error
 }
 

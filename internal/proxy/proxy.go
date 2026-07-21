@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -346,30 +347,35 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 	}
 
 	if passth {
-		p.copyRaw(w, resp, req.Stream, tr)
+		p.copyRaw(w, resp, req.Stream, used.prov.Type, tr)
 		return
 	}
 
 	if req.Stream {
 		deltas := make(chan wire.Delta, 16)
 		go readStream(used.prov.Type, resp.Body, deltas)
-		if alert != "" {
-			withAlert := make(chan wire.Delta, 16)
-			go func(in <-chan wire.Delta) {
-				withAlert <- wire.Delta{Text: alert}
-				for d := range in {
-					withAlert <- d
+		// capture usage from the final delta as it flows through
+		var upt, uct, ucached int
+		cap := make(chan wire.Delta, 16)
+		go func(in <-chan wire.Delta) {
+			if alert != "" {
+				cap <- wire.Delta{Text: alert}
+			}
+			for d := range in {
+				if d.Finish != "" {
+					upt, uct, ucached = d.PromptTokens, d.CompletionTokens, d.CachedTokens
 				}
-				close(withAlert)
-			}(deltas)
-			deltas = withAlert
-		}
-		if err := writeStream(inbound, w, req.Model, deltas); err != nil {
+				cap <- d
+			}
+			close(cap)
+		}(deltas)
+		if err := writeStream(inbound, w, req.Model, cap); err != nil {
 			tr.Status, tr.Err = 200, "stream aborted: "+err.Error()
 			return
 		}
 		tr.Status = 200
 		tr.RespSnip = "(streamed)"
+		tr.PromptTokens, tr.CompletionTokens, tr.CachedTokens = upt, uct, ucached
 		return
 	}
 
@@ -386,6 +392,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 		return
 	}
 	norm.Model = req.Model
+	tr.PromptTokens, tr.CompletionTokens, tr.CachedTokens = norm.PromptTokens, norm.CompletionTokens, norm.CachedTokens
 	norm.Content = alert + norm.Content
 	final := buildInboundResponse(inbound, norm)
 	final = transform.Apply(final, respRules)
@@ -411,6 +418,13 @@ func transientStatus(code int) bool {
 	return false
 }
 
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func rawWithModel(body []byte, model string) []byte {
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -424,8 +438,10 @@ func rawWithModel(body []byte, model string) []byte {
 	return b
 }
 
-// copyRaw streams the provider's bytes through untouched (passthrough mode).
-func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool, tr *store.Trace) {
+// copyRaw streams the provider's bytes through untouched (passthrough mode),
+// scanning them for usage so token/cache stats are captured without altering
+// the response.
+func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool, ptype string, tr *store.Trace) {
 	for _, h := range []string{"Content-Type", "Cache-Control"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
@@ -436,23 +452,99 @@ func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool,
 	if stream {
 		tr.RespSnip = "(streamed passthrough)"
 		fl, _ := w.(http.Flusher)
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := resp.Body.Read(buf)
-			if n > 0 {
-				w.Write(buf[:n])
-				if fl != nil {
-					fl.Flush()
-				}
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		sc.Split(scanLinesKeepEnds)
+		for sc.Scan() {
+			chunk := sc.Bytes()
+			w.Write(chunk)
+			if fl != nil {
+				fl.Flush()
 			}
-			if err != nil {
-				return
+			// anthropic splits usage across message_start (input+cache) and
+			// message_delta (output); keep the max so neither is clobbered.
+			if pt, ct, cached, ok := usageFromStreamLine(ptype, chunk); ok {
+				tr.PromptTokens = maxInt(tr.PromptTokens, pt)
+				tr.CompletionTokens = maxInt(tr.CompletionTokens, ct)
+				tr.CachedTokens = maxInt(tr.CachedTokens, cached)
 			}
 		}
+		return
 	}
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	tr.RespSnip = snip(rb)
+	if pt, ct, cached, ok := usageFromBody(ptype, rb); ok {
+		tr.PromptTokens, tr.CompletionTokens, tr.CachedTokens = pt, ct, cached
+	}
 	w.Write(rb)
+}
+
+// scanLinesKeepEnds splits on \n while preserving the newline, so passthrough
+// bytes are forwarded verbatim.
+func scanLinesKeepEnds(data []byte, atEOF bool) (int, []byte, error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i+1], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+// usageFromBody extracts token usage from a complete non-streamed response.
+func usageFromBody(ptype string, body []byte) (pt, ct, cached int, ok bool) {
+	switch ptype {
+	case "anthropic":
+		var v struct {
+			Usage struct {
+				InputTokens          int `json:"input_tokens"`
+				OutputTokens         int `json:"output_tokens"`
+				CacheReadInputTokens int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(body, &v) == nil && (v.Usage.InputTokens > 0 || v.Usage.OutputTokens > 0) {
+			return v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.CacheReadInputTokens, true
+		}
+	case "ollama":
+		var v struct {
+			PromptEvalCount int `json:"prompt_eval_count"`
+			EvalCount       int `json:"eval_count"`
+		}
+		if json.Unmarshal(body, &v) == nil && (v.PromptEvalCount > 0 || v.EvalCount > 0) {
+			return v.PromptEvalCount, v.EvalCount, 0, true
+		}
+	default:
+		var v struct {
+			Usage struct {
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				PromptTokensDetails struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(body, &v) == nil && (v.Usage.PromptTokens > 0 || v.Usage.CompletionTokens > 0) {
+			return v.Usage.PromptTokens, v.Usage.CompletionTokens, v.Usage.PromptTokensDetails.CachedTokens, true
+		}
+	}
+	return 0, 0, 0, false
+}
+
+// usageFromStreamLine pulls usage out of one SSE/NDJSON line if present.
+// Anthropic splits usage across message_start (input+cache) and message_delta
+// (output), so callers keep the last non-zero values seen.
+func usageFromStreamLine(ptype string, line []byte) (pt, ct, cached int, ok bool) {
+	data := line
+	if i := bytes.Index(line, []byte("data:")); i >= 0 {
+		data = bytes.TrimSpace(line[i+5:])
+	}
+	if !bytes.Contains(data, []byte("usage")) && !bytes.Contains(data, []byte("eval_count")) {
+		return 0, 0, 0, false
+	}
+	return usageFromBody(ptype, data)
 }
 
 func (p *Proxy) send(ctx context.Context, prov store.Provider, path string, body []byte) (*http.Response, error) {

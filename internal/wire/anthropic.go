@@ -185,8 +185,9 @@ type antResp struct {
 	Content    []antBlock `json:"content"`
 	StopReason string     `json:"stop_reason"`
 	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens          int `json:"input_tokens"`
+		OutputTokens         int `json:"output_tokens"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -202,7 +203,7 @@ func ParseAnthropicResponse(body []byte) (*Response, error) {
 		return nil, fmt.Errorf("provider error: %s", in.Error.Message)
 	}
 	r := &Response{ID: in.ID, Model: in.Model, FinishReason: FinishFromAnthropic(in.StopReason),
-		PromptTokens: in.Usage.InputTokens, CompletionTokens: in.Usage.OutputTokens}
+		PromptTokens: in.Usage.InputTokens, CompletionTokens: in.Usage.OutputTokens, CachedTokens: in.Usage.CacheReadInputTokens}
 	for _, bl := range in.Content {
 		switch bl.Type {
 		case "text":
@@ -245,7 +246,7 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	finish := "stop"
-	var pt, ct int
+	var pt, ct, cached int
 	tcIndex := -1
 	for sc.Scan() {
 		line := sc.Bytes()
@@ -258,8 +259,9 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 			Index   int    `json:"index"`
 			Message struct {
 				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
+					InputTokens          int `json:"input_tokens"`
+					OutputTokens         int `json:"output_tokens"`
+					CacheReadInputTokens int `json:"cache_read_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock struct {
@@ -286,6 +288,7 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 		switch ev.Type {
 		case "message_start":
 			pt = ev.Message.Usage.InputTokens
+			cached = ev.Message.Usage.CacheReadInputTokens
 		case "content_block_start":
 			if ev.ContentBlock.Type == "tool_use" {
 				tcIndex++
@@ -322,7 +325,7 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 		out <- Delta{Err: err}
 		return
 	}
-	out <- Delta{Finish: finish, PromptTokens: pt, CompletionTokens: ct}
+	out <- Delta{Finish: finish, PromptTokens: pt, CompletionTokens: ct, CachedTokens: cached}
 }
 
 // WriteAnthropicStream frames normalized deltas as Anthropic SSE events.
