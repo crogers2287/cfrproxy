@@ -274,8 +274,21 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 			ids = append(ids, id)
 		}
 	}
+	if c := p.AutoRouterConfig(); c.Enabled && len(c.Routes) > 0 {
+		add("auto") // virtual task-routing model, listed first
+	}
 	for i, prov := range provs {
 		if !prov.Enabled {
+			continue
+		}
+		// pinned list caps what pickers see for this provider
+		if pins := splitList(prov.PinnedModels); len(pins) > 0 {
+			for _, m := range pins {
+				add(prov.Name + "/" + m)
+			}
+			for _, alias := range strings.Split(prov.Models, ",") {
+				add(strings.TrimSpace(alias))
+			}
 			continue
 		}
 		for _, m := range byIdx[i] {

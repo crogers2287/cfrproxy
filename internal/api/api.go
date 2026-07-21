@@ -97,6 +97,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("DELETE /admin/api/transforms/{id}", a.hTransformDelete)
 	inner.HandleFunc("POST /admin/api/transforms/{id}/toggle", a.hTransformToggle)
 	a.registerOAuth(inner)
+	inner.HandleFunc("GET /admin/api/autoroute", a.hAutoRouteGet)
+	inner.HandleFunc("PUT /admin/api/autoroute", a.hAutoRouteSet)
 	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
 	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/traces", a.hTraces)
@@ -366,6 +368,24 @@ func (a *API) hTransformToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *API) hAutoRouteGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, a.Proxy.AutoRouterConfig())
+}
+
+func (a *API) hAutoRouteSet(w http.ResponseWriter, r *http.Request) {
+	var c proxy.AutoRouterConfig
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	b, _ := json.Marshal(c)
+	if err := a.Store.SetSetting("auto_router", string(b)); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, c)
 }
 
 func (a *API) hModelMapGet(w http.ResponseWriter, r *http.Request) {

@@ -108,7 +108,7 @@ Usage:
   cfrproxy serve   [--addr :8420] [--data DIR]        run the proxy + WebUI
   cfrproxy tui     [--data DIR]                       full-screen management TUI
   cfrproxy provider add --name N (--preset P | --type T --base-url U)
-                   [--key K] [--model M] [--models a,b] [--fallback P/M] [--doc-url U]
+                   [--key K] [--model M] [--models a,b] [--fallback P/M] [--pinned m1,m2] [--doc-url U]
                    [--doc-file F.md] [--inject-docs]
   cfrproxy provider list | rm --name N | edit --name N [flags]
   cfrproxy route   [set N1,N2,...]                    show / set routing priority
@@ -194,7 +194,7 @@ func cmdTUI(args []string) {
 
 func providerFlags(fs *flag.FlagSet) map[string]*string {
 	m := map[string]*string{}
-	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback"} {
+	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned"} {
 		m[f] = fs.String(f, "", "")
 	}
 	return m
@@ -270,6 +270,9 @@ func cmdProvider(args []string) {
 		}
 		if *f["fallback"] != "" {
 			p.Fallback = *f["fallback"]
+		}
+		if *f["pinned"] != "" {
+			p.PinnedModels = *f["pinned"]
 		}
 		if *f["doc-file"] != "" {
 			b, err := os.ReadFile(*f["doc-file"])

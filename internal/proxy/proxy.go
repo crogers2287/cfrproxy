@@ -91,12 +91,18 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	})
 }
 
-// scopedModelIDs returns bare model ids for one provider (its live scan, or
-// alias/default fallback), for the /p/{provider}/v1/models mount.
-func (p *Proxy) scopedModelIDs(ctx context.Context, provider string) []string {
+// scopedModelIDs returns bare model ids for one provider. When the provider
+// has a pinned (curated) list and all==false, only pins are returned — this
+// is what keeps harness pickers short. all==true returns the live catalog.
+func (p *Proxy) scopedModelIDs(ctx context.Context, provider string, all bool) []string {
 	prov, ok := p.Store.ProviderByName(provider)
 	if !ok {
 		return nil
+	}
+	if !all {
+		if pins := splitList(prov.PinnedModels); len(pins) > 0 {
+			return pins
+		}
 	}
 	ids := p.ModelsCached(ctx, prov)
 	if len(ids) == 0 {
@@ -117,7 +123,7 @@ func (p *Proxy) scopedModelIDs(ctx context.Context, provider string) []string {
 func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope string) {
 	var ids []string
 	if scope != "" {
-		ids = p.scopedModelIDs(r.Context(), scope)
+		ids = p.scopedModelIDs(r.Context(), scope, r.URL.Query().Get("all") != "")
 	} else {
 		ids = p.AllModelIDs(r.Context())
 	}
@@ -131,7 +137,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope strin
 func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request, scope string) {
 	var ids []string
 	if scope != "" {
-		ids = p.scopedModelIDs(r.Context(), scope)
+		ids = p.scopedModelIDs(r.Context(), scope, r.URL.Query().Get("all") != "")
 	} else {
 		ids = p.AllModelIDs(r.Context())
 	}
@@ -164,6 +170,14 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 		}
 		reqModel = scope + "/" + m
 	}
+	autoNote := ""
+	if reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto") {
+		routed, bucket := p.AutoRoute(r.Context(), req)
+		if routed != "" {
+			reqModel = routed
+			autoNote = "auto→" + bucket + "→" + routed
+		}
+	}
 	prov, model, err := p.ResolveModel(r.Context(), reqModel)
 	if err != nil {
 		httpErr(w, inbound, 503, err.Error())
@@ -172,20 +186,27 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 	req.Model = model
 
 	tr := &store.Trace{TS: start.UnixMilli(), Provider: prov.Name, Model: model, Inbound: inbound,
-		Stream: req.Stream, ReqSnip: snip(body)}
+		Stream: req.Stream, ReqSnip: snip(body), Note: autoNote}
 	defer func() {
 		tr.LatencyMS = time.Since(start).Milliseconds()
 		p.Store.AddTrace(tr)
 		p.Hub.Publish(*tr)
 	}()
 
-	// candidate chain: primary, then its configured fallback (single hop).
-	// Transient failures (transport, 408/429/5xx) retry once, then fail over.
+	// candidate chain: primary, then its fallback chain followed transitively
+	// (cycle-safe, max 3 hops). Transient failures retry once per candidate,
+	// then move down the chain.
 	cands := []candidate{{prov: prov, model: model}}
-	if prov.Fallback != "" {
-		if fprov, fmodel, ferr := p.ResolveModel(r.Context(), prov.Fallback); ferr == nil && fprov.ID != prov.ID {
-			cands = append(cands, candidate{prov: fprov, model: fmodel, failover: true})
+	seen := map[int64]bool{prov.ID: true}
+	cur := prov
+	for hop := 0; hop < 3 && cur.Fallback != ""; hop++ {
+		fprov, fmodel, ferr := p.ResolveModel(r.Context(), cur.Fallback)
+		if ferr != nil || seen[fprov.ID] {
+			break
 		}
+		seen[fprov.ID] = true
+		cands = append(cands, candidate{prov: fprov, model: fmodel, failover: true})
+		cur = fprov
 	}
 
 	var resp *http.Response

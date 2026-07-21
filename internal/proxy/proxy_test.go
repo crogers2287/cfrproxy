@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
+	"github.com/crogers2287/cfrproxy/internal/wire"
 )
 
 func TestNormalizeBase(t *testing.T) {
@@ -237,5 +238,32 @@ func TestScopedProviderMount(t *testing.T) {
 		strings.NewReader(`{"model":"alpha","messages":[{"role":"user","content":"hi"}]}`)))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "ok") {
 		t.Errorf("scoped chat failed: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// auto router: classifier answer picks the bucket route; failures use default
+func TestAutoRoute(t *testing.T) {
+	classifier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"code"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer classifier.Close()
+	s := newDiscoveryStore(t)
+	s.SaveProvider(&store.Provider{Name: "cls", Type: "openai", BaseURL: classifier.URL, DefaultModel: "tiny", Priority: 10, Enabled: true})
+	s.SetSetting("auto_router", `{"enabled":true,"classifier":"cls/tiny","routes":{"code":"cls/coder-model","default":"cls/general"}}`)
+	p := New(s)
+	req := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "write me a go function"}}}
+	target, bucket := p.AutoRoute(context.Background(), req)
+	if bucket != "code" || target != "cls/coder-model" {
+		t.Errorf("want code route, got bucket=%s target=%s", bucket, target)
+	}
+	// disabled -> no routing
+	s.SetSetting("auto_router", `{"enabled":false}`)
+	if tgt, _ := p.AutoRoute(context.Background(), req); tgt != "" {
+		t.Errorf("disabled router should return empty, got %s", tgt)
 	}
 }

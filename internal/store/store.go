@@ -33,8 +33,9 @@ type Provider struct {
 	DocURL       string `json:"doc_url"`
 	DocMarkdown  string `json:"doc_markdown,omitempty"`
 	InjectDocs   bool   `json:"inject_docs"`
-	Models       string `json:"models"`   // comma-separated aliases this provider serves
-	Fallback     string `json:"fallback"` // provider/model to fail over to on transient errors
+	Models       string `json:"models"`        // comma-separated aliases this provider serves
+	Fallback     string `json:"fallback"`      // provider/model to fail over to on transient errors
+	PinnedModels string `json:"pinned_models"` // comma-separated curated subset shown to pickers
 }
 
 type Transform struct {
@@ -57,6 +58,7 @@ type Trace struct {
 	Status    int    `json:"status"`
 	LatencyMS int64  `json:"latency_ms"`
 	Err       string `json:"err"`
+	Note      string `json:"note"`
 	ReqSnip   string `json:"req_snippet"`
 	RespSnip  string `json:"resp_snippet"`
 }
@@ -114,7 +116,8 @@ CREATE TABLE IF NOT EXISTS providers (
   doc_markdown TEXT NOT NULL DEFAULT '',
   inject_docs INTEGER NOT NULL DEFAULT 0,
   models TEXT NOT NULL DEFAULT '',
-  fallback TEXT NOT NULL DEFAULT ''
+  fallback TEXT NOT NULL DEFAULT '',
+  pinned_models TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS transforms (
   id INTEGER PRIMARY KEY,
@@ -135,6 +138,7 @@ CREATE TABLE IF NOT EXISTS traces (
   status INTEGER NOT NULL DEFAULT 0,
   latency_ms INTEGER NOT NULL DEFAULT 0,
   err TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
   req_snippet TEXT NOT NULL DEFAULT '',
   resp_snippet TEXT NOT NULL DEFAULT ''
 );
@@ -144,8 +148,10 @@ CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 	if err != nil {
 		return err
 	}
-	// additive migration for pre-fallback DBs; duplicate-column error is fine
+	// additive migrations; duplicate-column errors are fine
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN fallback TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN pinned_models TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -212,7 +218,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -222,7 +228,7 @@ func (s *Store) reload() error {
 		var p Provider
 		var enc []byte
 		var enabled, inject int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels); err != nil {
 			return err
 		}
 		p.Enabled, p.InjectDocs = enabled == 1, inject == 1
@@ -341,8 +347,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels)
 		if err != nil {
 			return err
 		}
@@ -350,11 +356,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ID)
 		}
 		if err != nil {
 			return err
@@ -446,8 +452,8 @@ func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
 // ---- traces ----
 
 func (s *Store) AddTrace(t *Trace) {
-	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.ReqSnip, t.RespSnip)
+	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.ReqSnip, t.RespSnip)
 	if err == nil {
 		t.ID, _ = res.LastInsertId()
 	}
@@ -459,7 +465,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +474,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	for rows.Next() {
 		var t Trace
 		var stream int
-		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.ReqSnip, &t.RespSnip); err != nil {
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.ReqSnip, &t.RespSnip); err != nil {
 			return nil, err
 		}
 		t.Stream = stream == 1

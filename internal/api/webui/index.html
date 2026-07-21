@@ -105,6 +105,21 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <datalist id="allmodels"></datalist>
     <button class="b primary" onclick="addMapEntry()">Add</button>
   </div>
+  <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Auto router</h2>
+    <span id="ar-state" class="pill"></span>
+  </div>
+  <p class="hint">Send model <code>auto</code> from any harness and a small classifier model buckets the request, then delegates to the model you map per task. The chosen route shows in Live Traces.</p>
+  <div style="max-width:760px">
+    <div class="check"><input type="checkbox" id="ar-enabled"><span>Enabled</span></div>
+    <label>Classifier model (small + fast; local recommended)</label>
+    <input type="text" id="ar-classifier" placeholder="ollama/qwen2.5:7b" list="allmodels">
+    <table id="artable" style="margin-top:10px">
+      <thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
+  </div>
 </section>
 
 <section id="tab-transforms" class="hidden">
@@ -200,7 +215,8 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
     <datalist id="modellist"></datalist>
     <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
-    <label>Fallback (provider/model — auto-reroute on timeouts/5xx after one retry)</label><input type="text" id="p-fallback" placeholder="fred/agents-a1" list="allmodels">
+    <label>Fallback (provider/model — chains follow transitively, e.g. Nexum→fred→ollama)</label><input type="text" id="p-fallback" placeholder="fred/agents-a1" list="allmodels">
+    <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
     <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
@@ -268,7 +284,7 @@ async function loadProviders(){
       <h3>${esc(p.name)}</h3>
       <span class="type">${p.type}</span>
       <div class="url">${esc(p.base_url)}</div>
-      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · fb:<b>${esc(p.fallback)}</b>`:''}</div>
+      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · chain:<b>${esc(fbChain(p))}</b>`:''}${p.pinned_models?` · pins:<b>${p.pinned_models.split(',').filter(x=>x.trim()).length}</b>`:''}</div>
       <div class="row">
         <button class="b" onclick="openProviderDialog(${p.id})">Edit</button>
         <button class="b" onclick="testProvider(${p.id},this)">Test</button>
@@ -279,6 +295,16 @@ async function loadProviders(){
     addDnD(card);grid.appendChild(card);
   });
   refreshDocSel();
+}
+function fbChain(p){
+  let chain=p.name, cur=p, seen=new Set([p.id]);
+  for(let i=0;i<3&&cur.fallback;i++){
+    chain+=' → '+cur.fallback;
+    const nm=cur.fallback.split('/')[0].toLowerCase();
+    cur=providers.find(x=>x.name.toLowerCase()===nm&&!seen.has(x.id));
+    if(!cur)break; seen.add(cur.id);
+  }
+  return chain.replace(p.name+' → ','');
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
@@ -306,7 +332,7 @@ function openProviderDialog(id){
   $('#pdlg-title').textContent=id?'Edit '+p.name:'Add provider';
   $('#p-id').value=id||'';$('#p-name').value=p.name||'';$('#p-type').value=p.type||'openai';
   $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
-  $('#p-models').value=p.models||'';$('#p-fallback').value=p.fallback||'';$('#p-docurl').value=p.doc_url||'';
+  $('#p-models').value=p.models||'';$('#p-fallback').value=p.fallback||'';$('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
   $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
   pdlg.showModal();
 }
@@ -314,7 +340,7 @@ async function saveProvider(e){
   e.preventDefault();
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
-    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,
+    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,
     doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
@@ -385,6 +411,30 @@ async function rmMapEntry(k){
   catch(err){toast(err.message,true)}
 }
 
+// ---- auto router ----
+const AR_BUCKETS=['code','reasoning','quick','long','vision','default'];
+async function loadAutoRoute(){
+  try{
+    const c=await api('autoroute');
+    $('#ar-enabled').checked=!!c.enabled;
+    $('#ar-classifier').value=c.classifier||'';
+    const tb=$('#artable tbody');tb.innerHTML='';
+    AR_BUCKETS.forEach(b=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${b}</td><td><input type="text" data-bucket="${b}" value="${esc((c.routes||{})[b]||'')}" list="allmodels" placeholder="provider/model"></td>`;
+      tb.appendChild(tr);
+    });
+    const pill=$('#ar-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
+  }catch(err){toast('autoroute: '+err.message,true)}
+}
+async function saveAutoRoute(){
+  const routes={};
+  $$('#artable input').forEach(i=>{if(i.value.trim())routes[i.dataset.bucket]=i.value.trim()});
+  const body={enabled:$('#ar-enabled').checked,classifier:$('#ar-classifier').value.trim(),routes};
+  try{await api('autoroute',{method:'PUT',body:JSON.stringify(body)});toast('auto router saved');loadAutoRoute()}
+  catch(err){toast(err.message,true)}
+}
+
 // ---- transforms ----
 let transforms=[];
 async function loadTransforms(){
@@ -442,13 +492,13 @@ async function delTransform(id){
 const trbody=()=>$('#trtable tbody');
 function traceRow(t){
   const tr=document.createElement('tr');
-  if(t.status>=400||t.err)tr.classList.add('err');
+  if(t.status>=400||(t.err&&!t.err.startsWith('failover')))tr.classList.add('err');
   tr.style.cursor='pointer';
   tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
     d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
   tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
     <td class="mono">${esc(t.model)}</td><td>${t.inbound}</td>
-    <td>${t.status}${t.err?' ✗':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
+    <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
   return tr;
 }
 async function loadTraces(){
@@ -583,7 +633,7 @@ async function delAccount(name){
 // ---- boot ----
 async function boot(){
   try{
-    await loadProviders();await loadTransforms();await loadTraces();connectSSE();loadModelMap();
+    await loadProviders();await loadTransforms();await loadTraces();connectSSE();loadModelMap();loadAutoRoute();
     const st=await api('status');
     $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
   }catch(err){toast(err.message,true)}
