@@ -122,6 +122,10 @@ func (u *usageAcc) add(pt, ct int) {
 	u.mu.Unlock()
 }
 
+// perCallTimeout caps how long one panelist may take before it's dropped, so
+// a single slow/overloaded model can't stall the whole round table.
+const perCallTimeout = 100 * time.Second
+
 // chatViaProxy sends one completion through the local proxy data plane. When
 // acc is non-nil, the call's token usage is added to it.
 func chatViaProxy(addr, model, system, user string, temperature string, maxTokens int, acc *usageAcc) (string, error) {
@@ -140,7 +144,7 @@ func chatViaProxy(addr, model, system, user string, temperature string, maxToken
 		}
 	}
 	b, _ := json.Marshal(body)
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := &http.Client{Timeout: perCallTimeout}
 	resp, err := client.Post(addr+"/v1/chat/completions", "application/json", bytes.NewReader(b))
 	if err != nil {
 		return "", err
