@@ -66,6 +66,29 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 #toast{position:fixed;bottom:24px;right:24px;background:var(--panel2);border:1px solid var(--border);padding:10px 18px;border-radius:8px;opacity:0;transition:opacity .3s;pointer-events:none}
 #toast.show{opacity:1}
 .hint{color:var(--dim);font-size:12px;margin-bottom:12px}
+
+/* ---- mobile ---- */
+@media (max-width: 680px){
+  header{flex-wrap:wrap;gap:8px;padding:10px 14px;position:sticky;top:0;z-index:20}
+  header h1{font-size:16px}
+  nav{margin-left:0;width:100%;order:3;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;gap:2px;scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{flex:0 0 auto;white-space:nowrap;padding:8px 12px}
+  #status{margin-left:auto;font-size:11px;text-align:right}
+  main{padding:16px 12px}
+  /* wide tables scroll instead of clipping */
+  table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;max-width:100%}
+  /* stack side-by-side select/input pairs (auto router, agent model, oauth paste) */
+  main div[style*="display:flex"]{flex-wrap:wrap}
+  main div[style*="display:flex"]>select,
+  main div[style*="display:flex"]>input[type=text]{flex:1 1 100%!important;min-width:0}
+  main div[style*="display:flex"]>button{flex:0 0 auto}
+  #cards,#agentcards{grid-template-columns:1fr!important}
+  .toolbar{gap:6px}
+  .toolbar h2{font-size:14px}
+  dialog{padding:18px;width:96vw}
+  #toast{left:12px;right:12px;bottom:12px;text-align:center}
+}
 </style>
 </head>
 <body>
