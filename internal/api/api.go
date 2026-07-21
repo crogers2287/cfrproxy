@@ -111,6 +111,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/roundtable", a.hRTSet)
 	inner.HandleFunc("GET /admin/api/compression", a.hCompGet)
 	inner.HandleFunc("PUT /admin/api/compression", a.hCompSet)
+	inner.HandleFunc("GET /admin/api/fusion", a.hFusionGet)
+	inner.HandleFunc("PUT /admin/api/fusion", a.hFusionSet)
 	inner.HandleFunc("GET /admin/api/autoroute", a.hAutoRouteGet)
 	inner.HandleFunc("PUT /admin/api/autoroute", a.hAutoRouteSet)
 	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
@@ -518,6 +520,24 @@ func (a *API) hRTLogDetail(w http.ResponseWriter, r *http.Request) {
 func (a *API) hRTSet(w http.ResponseWriter, r *http.Request)  { settingJSONSet(a, w, r, "roundtable") }
 func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) { settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`) }
 func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "compression") }
+
+func (a *API) hFusionGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, a.Proxy.FusionConfig())
+}
+
+func (a *API) hFusionSet(w http.ResponseWriter, r *http.Request) {
+	var c proxy.FusionConfig
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	b, _ := json.Marshal(c)
+	if err := a.Store.SetSetting("fusion", string(b)); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, c)
+}
 
 func (a *API) hAutoRouteGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, a.Proxy.AutoRouterConfig())

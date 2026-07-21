@@ -161,6 +161,21 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     </table>
     <div style="margin-top:10px"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
   </div>
+
+  <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Fusion</h2>
+    <span id="fusion-state" class="pill"></span>
+  </div>
+  <p class="hint">Send model <code>fusion</code> and cfrproxy asks several models the same question in parallel, then a judge model synthesizes one best answer from their drafts (à la OpenRouter Fusion). Slower and pricier than one call — reserve it for hard questions. Returns a single answer, so any tool can use it.</p>
+  <div style="max-width:760px">
+    <div class="check"><input type="checkbox" id="fusion-enabled"><span>Enabled</span></div>
+    <label>Participant models (2-4; answered in parallel)</label>
+    <select id="fusion-parts" multiple size="6" style="height:auto"></select>
+    <label>Judge model (synthesizes the final answer — use a strong reasoner)</label>
+    <div style="display:flex;gap:8px"><select id="fusion-judge-p" style="flex:1" onchange="fillModelSel('fusion-judge')"></select><select id="fusion-judge-m" style="flex:2"></select></div>
+    <div style="margin-top:8px"><label>Max tokens per draft</label><input type="text" id="fusion-maxtok" style="max-width:200px"></div>
+    <div style="margin-top:10px"><button class="b primary" onclick="saveFusion()">Save fusion</button></div>
+  </div>
 </section>
 
 <section id="tab-transforms" class="hidden">
@@ -683,6 +698,25 @@ async function loadAutoRoute(){
     const pill=$('#ar-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
   }catch(err){toast('autoroute: '+err.message,true)}
 }
+async function loadFusion(){
+  try{
+    const c=await api('fusion');
+    $('#fusion-enabled').checked=!!c.enabled;
+    $('#fusion-maxtok').value=c.max_tokens??2000;
+    const ms=$('#fusion-parts');
+    ms.innerHTML=allModels.filter(m=>m!=='fusion'&&m!=='auto'&&m!=='auto-plan').map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+    const chosen=c.participants||[];
+    [...ms.options].forEach(o=>o.selected=chosen.includes(o.value));
+    await setPair('fusion-judge',c.judge||'');
+    const pill=$('#fusion-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
+  }catch(err){/* best-effort */}
+}
+async function saveFusion(){
+  const parts=[...$('#fusion-parts').selectedOptions].map(o=>o.value);
+  const body={enabled:$('#fusion-enabled').checked,participants:parts,judge:getPair('fusion-judge'),max_tokens:+$('#fusion-maxtok').value||2000};
+  try{await api('fusion',{method:'PUT',body:JSON.stringify(body)});toast('fusion saved');loadFusion()}
+  catch(err){toast(err.message,true)}
+}
 async function saveAutoRoute(){
   const routes={};
   AR_BUCKETS.forEach(b=>{const v=getPair('ar-'+b);if(v)routes[b]=v});
@@ -1092,7 +1126,7 @@ async function delEndpoint(id,name){
 // ---- boot ----
 async function boot(){
   try{
-    await loadProviders();await loadTransforms();await loadTraces();connectSSE();await loadModelMap();loadAutoRoute();renderLaunch();
+    await loadProviders();await loadTransforms();await loadTraces();connectSSE();await loadModelMap();loadAutoRoute();loadFusion();renderLaunch();
     const st=await api('status');
     $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
   }catch(err){toast(err.message,true)}

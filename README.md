@@ -26,6 +26,7 @@ cfrproxy is the generic version of what `ollama launch claude --model glm-5.2:cl
 - **📊 Live dashboard.** A built-in WebUI (and TUI) shows every request in real time: which model, token burn, **cache-hit %**, latency, and auto-route decisions — per model.
 - **🔑 OAuth subscriptions as providers.** Bring your Claude, Codex, Grok/SuperGrok, Gemini, and Kimi *subscriptions* in as models (via [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) — interactive login right in the WebUI.
 - **🗜️ Context compression** (opt-in): summarize old conversation turns to cut token bills on long chats, cached per prefix, fail-open.
+- **⚗️ Fusion.** Send `fusion` and several models draft in parallel, then a judge synthesizes one best answer (à la OpenRouter Fusion) — returned as a single model would.
 - **🧠 Round-table consensus MCP.** Define agent *profiles* (a persona pinned to a model) and let a panel of different models deliberate a question, cross-critique, and synthesize — exposed as an MCP tool any agent can call.
 - **Declarative transforms, model pinning, docs injection**, and more — all editable in the UI, no code.
 
@@ -80,6 +81,7 @@ You can also **map** fixed harness names (`cfrproxy map 'claude-sonnet*' openrou
 | [docs/architecture.md](docs/architecture.md) | How a request flows through the proxy; the wire-translation layer |
 | [docs/providers.md](docs/providers.md) | Provider types, model pinning, fallback chains, transforms |
 | [docs/auto-router.md](docs/auto-router.md) | Task classification, planning stage, per-bucket model mapping |
+| [docs/fusion.md](docs/fusion.md) | Multi-model synthesis: parallel drafts → judge → one best answer |
 | [docs/oauth.md](docs/oauth.md) | Bringing Claude/Codex/Grok/Gemini/Kimi subscriptions in via OAuth |
 | [docs/roundtable.md](docs/roundtable.md) | Agent profiles + the consensus MCP server |
 | [docs/compression.md](docs/compression.md) | Context compression: how it works and when to use it |

@@ -348,6 +348,9 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 			add("auto-plan") // plan stage + routed execution
 		}
 	}
+	if f := p.FusionConfig(); f.Enabled && len(f.Participants) > 0 && f.Judge != "" {
+		add("fusion") // parallel drafts → judge synthesis
+	}
 	for i, prov := range provs {
 		if !prov.Enabled {
 			continue
