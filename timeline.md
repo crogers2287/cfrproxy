@@ -32,7 +32,9 @@ Findings: vault had no NPM runbook; Mnemosyne recall → home NPM = **Tower (192
 
 Resolution (operator approved): backed up DB, `docker restart NginxProxyManager` → API healthy (real "Invalid email or password" instead of 500). Actual NPM user found in DB: crogers2287@yahoo.com (memory creds were carl's). Existing host id 41 `api.skinnyc.pro` → Tower:8087 (dead, nothing listening; id 40 deleted predecessor) — repointed to fred:8420 (websockets+block-exploits). **HTTPS blocked: Let's Encrypt has PAUSED issuance for api.skinnyc.pro** (prior failed-validation spam from the dead host) — operator must click the unpause link, then re-request cert. Live over HTTP: /health ok, keyless 401, keyed pong (0.9s).
 
-**REQ-014 status: COMPLETE over HTTP; HTTPS pending LE unpause (operator click + cert re-request).**
+HTTPS completed after operator unpause: cert #98 issued, ssl_forced on, valid chain (ssl_verify 0), http→https 301. omp + opencode base URLs flipped to https, opencode re-verified pong over TLS.
+
+**REQ-014 status: COMPLETE (HTTPS).**
 
 ### REQ-013 — Curated pins + fallback chains in UI + auto router
 
