@@ -2,6 +2,24 @@
 
 ## 2026-07-20
 
+### REQ-012 — Full OAuth login in the proxy WebUI (incl. SuperGrok)
+
+Source: chat ("add oauth login directly to the proxy … full featured … log into my super grok subscription … interactive login for the common providers in the webui")
+
+Approach: drive CLIProxyAPI's OAuth flows (it owns working client IDs/PKCE/refresh) from cfrproxy's WebUI via its management API — not a reimplementation.
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Management-API access | 🟡 done | remote-management secret rotated (old was bcrypt-only, unrecoverable; backup written; service restarted, IP-ban cleared); plaintext stored via new `cfrproxy config set cliproxy_mgmt_key` (hidden on `get`) |
+| 2. Backend endpoints | 🟡 built | `/admin/api/oauth/{accounts,status,callback,cancel,{provider}/start}` proxying `/v0/management/*` (internal/api/oauth.go) |
+| 3. WebUI Accounts tab | 🟡 built | login buttons Claude/Codex/SuperGrok/Antigravity/Kimi; device-flow code display + link + 2.5s status polling; paste-back field for browser flows; account table w/ enable/disable/delete |
+| 4. SuperGrok verified | 🟡 live | real xAI device flow issued code Q7GW-2GKY (and D3G2-3QMV via UI click-through), status=wait, cancel ok — completing the login is just entering the code at accounts.x.ai |
+| 5. Existing accounts render | 🟡 verified | antigravity/claude/codex listed w/ status; Playwright screenshot, zero console errors |
+
+Commit 5a0ef90; service restarted. Note: management docs at help.router-for.me/management/api; xai+kimi are device flows (no callback), claude/codex/antigravity are browser flows (paste-back).
+
+**REQ-012 status: COMPLETE.**
+
 ### REQ-011 — 3-tier model selector: router → provider → model
 
 Source: chat ("subset of providers inside the model selector … select the router, then the provider, then the model from that provider")
