@@ -14,11 +14,11 @@ import (
 
 func TestNormalizeBase(t *testing.T) {
 	cases := map[string]string{
-		"https://router.example.com/api/v1/":                 "https://router.example.com/api/v1",
-		"router.example.com/api/v1":                          "https://router.example.com/api/v1",
-		"https://router.example.com/api/v1/chat/completions": "https://router.example.com/api/v1",
+		"https://router.example.com/api/v1/":                "https://router.example.com/api/v1",
+		"router.example.com/api/v1":                        "https://router.example.com/api/v1",
+		"https://router.example.com/api/v1/chat/completions":"https://router.example.com/api/v1",
 		"https://api.anthropic.com/v1/messages":           "https://api.anthropic.com/v1",
-		"myhost:9069":                                       "http://myhost:9069",
+		"myhost:9069":                                     "http://myhost:9069",
 		"localhost:11434":                                 "http://localhost:11434",
 		"192.168.1.5:8080/api/chat":                       "http://192.168.1.5:8080",
 		"  https://openrouter.ai  ":                       "https://openrouter.ai",
@@ -273,7 +273,7 @@ func TestEndsWithVersion(t *testing.T) {
 		"https://gateway.example.com/api/v4": true,
 		"https://x/router/v1":                 true,
 		"https://api.anthropic.com/v1beta":    true,
-		"http://myhost:9069":                    false,
+		"http://myhost:9069":                  false,
 		"https://openrouter.ai/api":           false,
 		"https://openrouter.ai/api/v1":        true,
 	}
