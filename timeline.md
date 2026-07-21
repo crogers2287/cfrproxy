@@ -2,6 +2,21 @@
 
 ## 2026-07-20
 
+### REQ-014 — Publish api.skinnyc.pro → cfrproxy via NPM — IN-PROGRESS (blocked on operator)
+
+Source: chat ("setup api.skinnyc.pro to work with the router please, use nginx proxy manager, details should be in the obsidian vault")
+
+Findings: vault had no NPM runbook; Mnemosyne recall → home NPM = **Tower (192.168.1.5), admin UI :7818**, container `NginxProxyManager` (linuxserver image, /config mount at /mnt/user/appdata/NginxProxyManager). DNS `api.skinnyc.pro` already → home IP 72.186.4.163 (DNS-only). NPM admin API returns 500 for ALL logins: container logs show `SQLITE_IOERR: disk I/O error` on database.sqlite — host-side read is clean (116MB/s) ⇒ stale FUSE fd inside container (classic Unraid shfs issue). Fix = `docker restart NginxProxyManager` — **blocked by permission classifier (remote state change), needs operator**.
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Public-exposure security gate | 🟡 done | proxied requests (XFF/X-Real-IP) require key from `public_api_keys`; LAN unaffected. Verified 200/401/200. Key generated + set. Commit 27d8db2 |
+| 2. NPM proxy host | 🔴 blocked | `scripts/publish_api_skinnyc.sh` ready (create/update host + LE cert + verify); needs NPM restart first |
+
+Next: operator runs on Tower: `docker restart NginxProxyManager`, then `bash ~/cfrproxy/scripts/publish_api_skinnyc.sh`.
+
+**REQ-014 status: BLOCKED (one operator command).**
+
 ### REQ-013 — Curated pins + fallback chains in UI + auto router
 
 Source: chat ("build fallback chains into the UI … auto router … orchestrator model that delegates … model selector is still messy, all of the oauth models are showing … keep the top three models from each provider")
