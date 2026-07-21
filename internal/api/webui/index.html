@@ -112,8 +112,10 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <p class="hint">Send model <code>auto</code> from any harness and a small classifier model buckets the request, then delegates to the model you map per task. The chosen route shows in Live Traces.</p>
   <div style="max-width:760px">
     <div class="check"><input type="checkbox" id="ar-enabled"><span>Enabled</span></div>
-    <label>Classifier model (small + fast; local recommended)</label>
-    <input type="text" id="ar-classifier" placeholder="ollama/qwen2.5:7b" list="allmodels">
+    <label>Classifier model (small + fast)</label>
+    <div style="display:flex;gap:8px"><select id="ar-classifier-p" style="flex:1" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m" style="flex:2"></select></div>
+    <label>Planner model (strong reasoner — enables the <code>auto-plan</code> virtual model: plan first, then route + execute with the briefing)</label>
+    <div style="display:flex;gap:8px"><select id="ar-planner-p" style="flex:1" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m" style="flex:2"></select></div>
     <table id="artable" style="margin-top:10px">
       <thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead>
       <tbody></tbody>
@@ -142,6 +144,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <div class="spacer"></div>
     <button class="b" onclick="clearTraces()">Clear view</button>
   </div>
+  <p class="hint">⚠ = error or failover (hover / click row for detail) · 🔀 = auto-routed (note shows chosen bucket) · ✓ Stream = streamed response. Rows in red are real failures.</p>
   <table id="trtable">
     <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Inbound</th><th>Status</th><th>Latency</th><th>Stream</th></tr></thead>
     <tbody></tbody>
@@ -413,24 +416,58 @@ async function rmMapEntry(k){
 
 // ---- auto router ----
 const AR_BUCKETS=['code','reasoning','quick','long','vision','default'];
+const scopedModelCache={};
+async function scopedModels(provName){
+  if(scopedModelCache[provName])return scopedModelCache[provName];
+  try{
+    const r=await fetch('/p/'+encodeURIComponent(provName)+'/v1/models').then(r=>r.json());
+    return scopedModelCache[provName]=r.data.map(m=>m.id);
+  }catch{return scopedModelCache[provName]=[]}
+}
+async function fillModelSel(prefix,wanted){
+  const pv=$('#'+prefix+'-p').value, ms=$('#'+prefix+'-m');
+  ms.innerHTML='<option value="">—</option>';
+  if(!pv)return;
+  const models=await scopedModels(pv);
+  models.forEach(m=>ms.insertAdjacentHTML('beforeend',`<option value="${esc(m)}">${esc(m)}</option>`));
+  if(wanted){
+    if(!models.includes(wanted))ms.insertAdjacentHTML('beforeend',`<option value="${esc(wanted)}">${esc(wanted)} (unpinned)</option>`);
+    ms.value=wanted;
+  }
+}
+async function setPair(prefix,val){
+  const ps=$('#'+prefix+'-p');
+  ps.innerHTML='<option value="">—</option>'+providers.filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  if(val&&val.includes('/')){
+    const i=val.indexOf('/');
+    ps.value=val.slice(0,i);
+    await fillModelSel(prefix,val.slice(i+1));
+  }
+}
+function getPair(prefix){
+  const p=$('#'+prefix+'-p').value,m=$('#'+prefix+'-m').value;
+  return p&&m?p+'/'+m:'';
+}
 async function loadAutoRoute(){
   try{
     const c=await api('autoroute');
     $('#ar-enabled').checked=!!c.enabled;
-    $('#ar-classifier').value=c.classifier||'';
     const tb=$('#artable tbody');tb.innerHTML='';
     AR_BUCKETS.forEach(b=>{
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td>${b}</td><td><input type="text" data-bucket="${b}" value="${esc((c.routes||{})[b]||'')}" list="allmodels" placeholder="provider/model"></td>`;
+      tr.innerHTML=`<td>${b}</td><td><div style="display:flex;gap:8px"><select id="ar-${b}-p" style="flex:1" onchange="fillModelSel('ar-${b}')"></select><select id="ar-${b}-m" style="flex:2"></select></div></td>`;
       tb.appendChild(tr);
     });
+    await setPair('ar-classifier',c.classifier||'');
+    await setPair('ar-planner',c.planner||'');
+    for(const b of AR_BUCKETS)await setPair('ar-'+b,(c.routes||{})[b]||'');
     const pill=$('#ar-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
   }catch(err){toast('autoroute: '+err.message,true)}
 }
 async function saveAutoRoute(){
   const routes={};
-  $$('#artable input').forEach(i=>{if(i.value.trim())routes[i.dataset.bucket]=i.value.trim()});
-  const body={enabled:$('#ar-enabled').checked,classifier:$('#ar-classifier').value.trim(),routes};
+  AR_BUCKETS.forEach(b=>{const v=getPair('ar-'+b);if(v)routes[b]=v});
+  const body={enabled:$('#ar-enabled').checked,classifier:getPair('ar-classifier'),planner:getPair('ar-planner'),routes};
   try{await api('autoroute',{method:'PUT',body:JSON.stringify(body)});toast('auto router saved');loadAutoRoute()}
   catch(err){toast(err.message,true)}
 }
@@ -496,6 +533,7 @@ function traceRow(t){
   tr.style.cursor='pointer';
   tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
     d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
+  tr.title=(t.note?t.note+'  ':'')+(t.err||'');
   tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
     <td class="mono">${esc(t.model)}</td><td>${t.inbound}</td>
     <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;

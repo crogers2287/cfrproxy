@@ -200,11 +200,23 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 		reqModel = scope + "/" + m
 	}
 	autoNote := ""
-	if reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto") {
+	wantPlan := reqModel == "auto-plan" || strings.HasSuffix(reqModel, "/auto-plan")
+	if wantPlan || reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto") {
+		if wantPlan {
+			if plan := p.Plan(r.Context(), req); plan != "" {
+				brief := "Execution briefing from the planning stage (follow unless clearly wrong):\n" + plan
+				if req.System != "" {
+					req.System = req.System + "\n\n" + brief
+				} else {
+					req.System = brief
+				}
+				autoNote = "planned "
+			}
+		}
 		routed, bucket := p.AutoRoute(r.Context(), req)
 		if routed != "" {
 			reqModel = routed
-			autoNote = "auto→" + bucket + "→" + routed
+			autoNote += "auto→" + bucket + "→" + routed
 		}
 	}
 	prov, model, err := p.ResolveModel(r.Context(), reqModel)

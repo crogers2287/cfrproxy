@@ -116,10 +116,69 @@ func (p *Proxy) ModelsCached(ctx context.Context, prov store.Provider) []string 
 	if err != nil {
 		ids = nil
 	}
+	ids = applyModelsFilter(ids, prov.ModelsFilter)
 	p.models.mu.Lock()
 	p.models.entries[prov.ID] = modelCacheEntry{models: ids, at: time.Now()}
 	p.models.mu.Unlock()
 	return ids
+}
+
+// applyModelsFilter narrows a scan to the provider's category: comma-separated
+// globs ("gpt-*"); "!" prefix excludes ("claude-*,!claude-command-*").
+func applyModelsFilter(ids []string, filter string) []string {
+	pats := splitList(filter)
+	if len(pats) == 0 {
+		return ids
+	}
+	var inc, exc []string
+	for _, p := range pats {
+		if strings.HasPrefix(p, "!") {
+			exc = append(exc, strings.TrimPrefix(p, "!"))
+		} else {
+			inc = append(inc, p)
+		}
+	}
+	match := func(pat, id string) bool {
+		pat, id = strings.ToLower(pat), strings.ToLower(id)
+		if !strings.Contains(pat, "*") {
+			return pat == id
+		}
+		parts := strings.Split(pat, "*")
+		if !strings.HasPrefix(id, parts[0]) || !strings.HasSuffix(id, parts[len(parts)-1]) {
+			return false
+		}
+		rest := id[len(parts[0]):]
+		for _, mid := range parts[1 : len(parts)-1] {
+			i := strings.Index(rest, mid)
+			if i < 0 {
+				return false
+			}
+			rest = rest[i+len(mid):]
+		}
+		return true
+	}
+	var out []string
+	for _, id := range ids {
+		ok := len(inc) == 0
+		for _, p := range inc {
+			if match(p, id) {
+				ok = true
+				break
+			}
+		}
+		if ok {
+			for _, p := range exc {
+				if match(p, id) {
+					ok = false
+					break
+				}
+			}
+		}
+		if ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // FuzzyModel matches a wanted model against a list: exact > case-insensitive
@@ -276,6 +335,9 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 	}
 	if c := p.AutoRouterConfig(); c.Enabled && len(c.Routes) > 0 {
 		add("auto") // virtual task-routing model, listed first
+		if c.Planner != "" {
+			add("auto-plan") // plan stage + routed execution
+		}
 	}
 	for i, prov := range provs {
 		if !prov.Enabled {
