@@ -240,7 +240,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		wg.Add(1)
 		go func(i int, a store.AgentProfile) {
 			defer wg.Done()
-			sys := a.Persona + "\nYou are one voice on a review panel. Give your independent position: your recommendation first, then the 2-4 strongest reasons. Be concrete and commit — no fence-sitting. Under 300 words."
+			sys := a.Persona + "\nYou are speaking on a live panel — a conversation, not a work session. You have your own expertise plus the question and any context below; that is everything you need and everything you get. Open with your verdict in one sentence, then give the 2-4 strongest concrete reasons for it. If a detail is missing, name your assumption in a short clause and reason from it — never pause for more. Take a clear side. Plain prose, under 300 words."
 			ans, err := chatViaProxy(addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens, acc)
 			if err != nil {
 				ans = "(unavailable: " + err.Error() + ")"
@@ -263,7 +263,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 						fmt.Fprintf(&others, "%s said:\n%s\n\n", b.Name, answers[j])
 					}
 				}
-				sys := a.Persona + "\nYou are one voice on a review panel, now seeing the other panelists' positions. State where they changed your mind, where they are wrong and why, and your final position. Under 250 words."
+				sys := a.Persona + "\nThe other panelists have spoken; their positions are below. This is still a live exchange — respond from judgment, not research. Say plainly where someone shifted your view, where someone is wrong and exactly why, and land on your final verdict in one clear sentence. Concede real points; hold your ground on the rest. Plain prose, under 250 words."
 				ans, err := chatViaProxy(addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens, acc)
 				if err != nil {
 					ans = answers[i] // keep round-1 answer on failure
@@ -284,7 +284,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 	for i, a := range panel {
 		fmt.Fprintf(&transcript, "## %s (%s)\n%s\n\n", a.Name, a.Model, answers[i])
 	}
-	modSys := "You moderate a panel of AI models. Synthesize their positions into: Consensus (what they agree on), Disagreements (who diverges and why it matters), Recommendation (the panel's strongest combined answer — commit to one), and Dissent worth keeping (a minority point that should not be lost, if any). Be faithful to the transcript; do not invent positions. Under 400 words."
+	modSys := "You are the panel's moderator. Using only what the panelists actually said in the transcript below, write four short sections under these exact headings: Consensus — what they genuinely agree on. Disagreements — who splits from the group and why it matters. Recommendation — the single strongest answer the panel supports; commit to one, no hedging. Dissent worth keeping — one minority point that should survive, or omit this heading if there is none. Represent each panelist faithfully and add no position that no one took. Plain prose, under 400 words."
 	synthesis, err := chatViaProxy(addr, moderator, modSys, q+"\n\nPanel transcript:\n"+transcript.String(), "", cfg.MaxTokens, acc)
 	if err != nil {
 		synthesis = "(moderator unavailable: " + err.Error() + ")"
