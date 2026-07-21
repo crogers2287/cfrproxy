@@ -13,6 +13,15 @@ import (
 	"github.com/crogers2287/cfrproxy/internal/store"
 )
 
+// endsWithVersion reports whether a base URL's last path segment is a version
+// like /v1, /v4, /v1beta — meaning the base already includes the API version
+// and cfrproxy should NOT add its own /v1.
+func endsWithVersion(base string) bool {
+	base = strings.TrimRight(base, "/")
+	seg := base[strings.LastIndex(base, "/")+1:]
+	return len(seg) >= 2 && seg[0] == 'v' && seg[1] >= '0' && seg[1] <= '9'
+}
+
 // ListModels queries a provider's native model-listing endpoint and returns
 // the model IDs it serves.
 func (p *Proxy) ListModels(ctx context.Context, prov store.Provider) ([]string, error) {
@@ -26,7 +35,7 @@ func (p *Proxy) ListModels(ctx context.Context, prov store.Provider) ([]string, 
 			url = base + "/api/tags"
 		}
 	default: // openai + anthropic both serve GET .../v1/models
-		if strings.HasSuffix(base, "/v1") {
+		if endsWithVersion(base) {
 			url = base + "/models"
 		} else {
 			url = base + "/v1/models"

@@ -152,6 +152,15 @@ CREATE TABLE IF NOT EXISTS traces (
 );
 CREATE INDEX IF NOT EXISTS traces_ts ON traces(ts);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS endpoints (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  api_key_enc BLOB,
+  models TEXT NOT NULL DEFAULT '',
+  force_model TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  note TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS roundtable_logs (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -611,6 +620,85 @@ func (s *Store) Setting(k string) string {
 
 func (s *Store) SetSetting(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
+	return err
+}
+
+// ---- share endpoints (scoped keys for others) ----
+
+type Endpoint struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	APIKey     string `json:"api_key"`      // decrypted; the shareable key
+	Models     string `json:"models"`       // comma-sep allowed model ids/globs; "" = all
+	ForceModel string `json:"force_model"`  // if set, every request routes here (e.g. "auto")
+	Enabled    bool   `json:"enabled"`
+	Note       string `json:"note"`
+}
+
+func (s *Store) Endpoints() ([]Endpoint, error) {
+	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note FROM endpoints ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Endpoint
+	for rows.Next() {
+		var e Endpoint
+		var enc []byte
+		var en int
+		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note); err != nil {
+			return nil, err
+		}
+		e.Enabled = en == 1
+		e.APIKey, _ = s.decrypt(enc)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) EndpointByName(name string) (Endpoint, bool) {
+	eps, _ := s.Endpoints()
+	for _, e := range eps {
+		if strings.EqualFold(e.Name, name) {
+			return e, true
+		}
+	}
+	return Endpoint{}, false
+}
+
+func (s *Store) SaveEndpoint(e *Endpoint) error {
+	e.Name = strings.TrimSpace(e.Name)
+	if e.Name == "" {
+		return errors.New("endpoint name is required")
+	}
+	if strings.ContainsAny(e.Name, "/ ?#") {
+		return errors.New("endpoint name must be a plain slug (no spaces or / ? #)")
+	}
+	enc, err := s.encrypt(e.APIKey)
+	if err != nil {
+		return err
+	}
+	if e.ID == 0 {
+		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note) VALUES(?,?,?,?,?,?)`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note)
+		if err != nil {
+			return err
+		}
+		e.ID, _ = res.LastInsertId()
+		return nil
+	}
+	if e.APIKey == "" { // keep existing key on blank
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=? WHERE id=?`,
+			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.ID)
+	} else {
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=? WHERE id=?`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.ID)
+	}
+	return err
+}
+
+func (s *Store) DeleteEndpoint(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM endpoints WHERE id=?`, id)
 	return err
 }
 

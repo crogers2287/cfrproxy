@@ -84,6 +84,7 @@ You can also **map** fixed harness names (`cfrproxy map 'claude-sonnet*' openrou
 | [docs/roundtable.md](docs/roundtable.md) | Agent profiles + the consensus MCP server |
 | [docs/compression.md](docs/compression.md) | Context compression: how it works and when to use it |
 | [docs/deployment.md](docs/deployment.md) | systemd, exposing it publicly (safely), the API-key gate |
+| [docs/share-endpoints.md](docs/share-endpoints.md) | Scoped URL + key to give someone access to only certain models |
 | [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md) | Optional: wiring cfrproxy into the Hermes agent platform |
 
 ## CLI reference

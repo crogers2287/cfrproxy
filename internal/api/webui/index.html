@@ -101,6 +101,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <button data-tab="docs">Docs</button>
     <button data-tab="accounts">Accounts</button>
     <button data-tab="agents">Agents</button>
+    <button data-tab="share">Share</button>
   </nav>
   <div id="status"></div>
 </header>
@@ -313,7 +314,37 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </div>
 </section>
 
+<section id="tab-share" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Share endpoints</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openEndpointDialog()">+ New endpoint</button>
+  </div>
+  <p class="hint">Create a scoped URL + API key to hand to someone else. They reach only the models you allow — or you force every request to one model or the <code>auto</code> router. Revoke anytime by deleting or disabling it.</p>
+  <div id="epcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px"></div>
+</section>
+
 </main>
+
+<dialog id="edlg">
+  <h3 id="edlg-title">New share endpoint</h3>
+  <form method="dialog" onsubmit="return saveEndpoint(event)">
+    <input type="hidden" id="e-id">
+    <label>Name (used in the URL: /e/<b>name</b>/v1)</label><input type="text" id="e-name" required placeholder="friend-bob">
+    <label>API key <span style="color:var(--dim)">(share this; blank on edit = keep)</span></label>
+    <div style="display:flex;gap:8px"><input type="text" id="e-key" style="flex:1" placeholder="auto-generated"><button type="button" class="b" onclick="genEpKey()">Generate</button></div>
+    <label>Force model <span style="color:var(--dim)">(optional — every request routes here; pick <code>auto</code> to give them your auto-router)</span></label>
+    <select id="e-force"></select>
+    <label>Allowed models <span style="color:var(--dim)">(used only when Force is none; nothing selected = ALL models)</span></label>
+    <select id="e-models" multiple size="8" style="height:auto"></select>
+    <label>Note (optional)</label><input type="text" id="e-note" placeholder="Bob — gpt + claude only">
+    <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="edlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="adlg">
   <h3 id="adlg-title">Add agent profile</h3>
@@ -403,6 +434,7 @@ function showTab(name){
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
+  if(name==='share')loadEndpoints();
   if(name==='traces')loadStats();
 }
 $$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
@@ -984,6 +1016,77 @@ async function saveComp(){
     target_words:+$('#comp-words').value||500};
   try{await api('compression',{method:'PUT',body:JSON.stringify(body)});toast('compression saved');loadAgents()}
   catch(err){toast(err.message,true)}
+}
+
+// ---- share endpoints ----
+let endpoints=[];
+const edlg=document.getElementById('edlg');
+function epURL(name){return location.origin+'/e/'+name+'/v1';}
+async function loadEndpoints(){
+  try{
+    endpoints=await api('endpoints');
+    const grid=$('#epcards');grid.innerHTML='';
+    if(!endpoints.length){grid.innerHTML='<p class="hint">No share endpoints yet.</p>';}
+    endpoints.forEach(e=>{
+      let policy = e.force_model ? ('forced → <b>'+esc(e.force_model)+'</b>')
+                 : (e.models ? ('<b>'+e.models.split(',').filter(x=>x.trim()).length+'</b> model(s) allowed')
+                             : 'ALL models');
+      const card=document.createElement('div');
+      card.className='card'+(e.enabled?'':' off');card.style.cursor='default';
+      card.innerHTML=`<h3>${esc(e.name)}</h3>
+        <div class="meta">${policy}${e.note?' · '+esc(e.note):''}</div>
+        <div class="meta" style="margin-top:8px">URL<div style="display:flex;gap:6px;margin-top:2px"><code style="flex:1;background:var(--panel2);padding:4px 6px;border-radius:5px;overflow-x:auto;white-space:nowrap">${esc(epURL(e.name))}</code><button class="b" onclick="copyText('${esc(epURL(e.name))}')">Copy</button></div></div>
+        <div class="meta" style="margin-top:6px">Key<div style="display:flex;gap:6px;margin-top:2px"><code style="flex:1;background:var(--panel2);padding:4px 6px;border-radius:5px;overflow-x:auto;white-space:nowrap">${esc(e.api_key)}</code><button class="b" onclick="copyText('${esc(e.api_key)}')">Copy</button></div></div>
+        <div class="row">
+          <button class="b" onclick="openEndpointDialog(${e.id})">Edit</button>
+          <button class="b" onclick="toggleEndpoint(${e.id})">${e.enabled?'Disable':'Enable'}</button>
+          <button class="b danger" onclick="delEndpoint(${e.id},'${esc(e.name)}')">Delete</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+  }catch(err){toast('endpoints: '+err.message,true)}
+}
+function genEpKey(){
+  const a=new Uint8Array(18);crypto.getRandomValues(a);
+  $('#e-key').value='cfr_'+btoa(String.fromCharCode(...a)).replace(/[+/=]/g,c=>({'+':'-','/':'_','=':''}[c]));
+}
+function openEndpointDialog(id){
+  const e=endpoints.find(x=>x.id===id)||{};
+  $('#edlg-title').textContent=id?'Edit '+e.name:'New share endpoint';
+  $('#e-id').value=id||'';$('#e-name').value=e.name||'';$('#e-key').value=id?'':(e.api_key||'');
+  $('#e-note').value=e.note||'';$('#e-enabled').checked=id?!!e.enabled:true;
+  // force select: none + auto/auto-plan + all models
+  const fs=$('#e-force');
+  fs.innerHTML='<option value="">— none (use allow-list) —</option>'+['auto','auto-plan'].concat(allModels.filter(m=>m!=='auto'&&m!=='auto-plan')).map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  fs.value=e.force_model||'';
+  // allowed multi-select
+  const ms=$('#e-models');
+  ms.innerHTML=allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  const allowed=(e.models||'').split(',').map(x=>x.trim()).filter(Boolean);
+  [...ms.options].forEach(o=>o.selected=allowed.includes(o.value));
+  if(!id&&!$('#e-key').value)genEpKey();
+  edlg.showModal();
+}
+async function saveEndpoint(ev){
+  ev.preventDefault();
+  const id=$('#e-id').value;
+  const models=[...$('#e-models').selectedOptions].map(o=>o.value).join(',');
+  const body={name:$('#e-name').value,api_key:$('#e-key').value,force_model:$('#e-force').value,
+    models:$('#e-force').value?'':models,note:$('#e-note').value,enabled:$('#e-enabled').checked};
+  try{
+    await api(id?'endpoints/'+id:'endpoints',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    edlg.close();toast('endpoint saved');loadEndpoints();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleEndpoint(id){
+  const e=endpoints.find(x=>x.id===id);
+  try{await api('endpoints/'+id,{method:'PUT',body:JSON.stringify({...e,api_key:'',enabled:!e.enabled})});loadEndpoints()}
+  catch(err){toast(err.message,true)}
+}
+async function delEndpoint(id,name){
+  if(!confirm('Delete endpoint "'+name+'"? Its key stops working immediately.'))return;
+  try{await api('endpoints/'+id,{method:'DELETE'});toast('deleted');loadEndpoints()}catch(err){toast(err.message,true)}
 }
 
 // ---- boot ----

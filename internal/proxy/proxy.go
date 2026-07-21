@@ -85,6 +85,15 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /p/{provider}/v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleModels(w, r, r.PathValue("provider")) })
 	mux.HandleFunc("GET /p/{provider}/api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleTags(w, r, r.PathValue("provider")) })
 
+	// Share endpoints: /e/{name}/... is a scoped, key-authed view exposing only
+	// a curated model set (or forcing every request to one model / the auto
+	// router). Share the URL + the endpoint's own API key with someone else.
+	mux.HandleFunc("POST /e/{endpoint}/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "openai") })
+	mux.HandleFunc("POST /e/{endpoint}/v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "anthropic") })
+	mux.HandleFunc("POST /e/{endpoint}/api/chat", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "ollama") })
+	mux.HandleFunc("GET /e/{endpoint}/v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleEndpointModels(w, r) })
+	mux.HandleFunc("GET /e/{endpoint}/api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleEndpointModels(w, r) })
+
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"version": "0.7.0-cfrproxy"})
 	})
@@ -176,8 +185,12 @@ func (p *Proxy) publicKeyOK(r *http.Request) bool {
 }
 
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope string) {
+	p.handleCore(w, r, inbound, scope, nil)
+}
+
+func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scope string, ep *store.Endpoint) {
 	start := time.Now()
-	if !p.publicKeyOK(r) {
+	if ep == nil && !p.publicKeyOK(r) { // share endpoints authenticate via their own key
 		httpErr(w, inbound, 401, "public access requires a valid API key (Authorization: Bearer <key> or x-api-key)")
 		return
 	}
@@ -200,6 +213,16 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 			m = m[i+1:]
 		}
 		reqModel = scope + "/" + m
+	}
+	// share-endpoint model policy: force overrides; otherwise the requested
+	// model must be on the allow-list.
+	if ep != nil {
+		if ep.ForceModel != "" {
+			reqModel = ep.ForceModel
+		} else if !p.modelAllowed(*ep, reqModel) {
+			httpErr(w, inbound, 403, "model not permitted on this endpoint: "+reqModel)
+			return
+		}
 	}
 	autoNote := ""
 	if cnote := p.Compress(r.Context(), req); cnote != "" {
@@ -557,7 +580,7 @@ func (p *Proxy) send(ctx context.Context, prov store.Provider, path string, body
 			path = strings.TrimPrefix(path, "/api")
 		}
 	default:
-		if strings.HasSuffix(base, "/v1") {
+		if endsWithVersion(base) {
 			path = strings.TrimPrefix(path, "/v1")
 		}
 	}
@@ -644,7 +667,7 @@ func NormalizeBase(raw string) string {
 func (p *Proxy) DiscoverBase(ctx context.Context, prov store.Provider) (string, string) {
 	base := NormalizeBase(prov.BaseURL)
 	candidates := []string{base}
-	if prov.Type == "openai" && !strings.HasSuffix(base, "/v1") && !strings.HasSuffix(base, "/api") {
+	if prov.Type == "openai" && !endsWithVersion(base) && !strings.HasSuffix(base, "/api") {
 		candidates = append(candidates, base+"/api/v1") // openrouter-style domain-root paste
 	}
 	model := prov.DefaultModel
