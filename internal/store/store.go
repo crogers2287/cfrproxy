@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS traces (
 );
 CREATE INDEX IF NOT EXISTS traces_ts ON traces(ts);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS roundtable_logs (
+  id INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  question TEXT NOT NULL DEFAULT '',
+  profiles TEXT NOT NULL DEFAULT '',
+  rounds INTEGER NOT NULL DEFAULT 0,
+  compressed INTEGER NOT NULL DEFAULT 0,
+  moderator TEXT NOT NULL DEFAULT '',
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  output TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS roundtable_ts ON roundtable_logs(ts);
 CREATE TABLE IF NOT EXISTS agent_profiles (
   id INTEGER PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
@@ -598,6 +612,68 @@ func (s *Store) Setting(k string) string {
 func (s *Store) SetSetting(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
 	return err
+}
+
+// ---- round table logs ----
+
+type RoundtableLog struct {
+	ID               int64  `json:"id"`
+	TS               int64  `json:"ts"`
+	Question         string `json:"question"`
+	Profiles         string `json:"profiles"`
+	Rounds           int    `json:"rounds"`
+	Compressed       bool   `json:"compressed"`
+	Moderator        string `json:"moderator"`
+	LatencyMS        int64  `json:"latency_ms"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	Output           string `json:"output,omitempty"`
+}
+
+func (s *Store) AddRoundtableLog(l *RoundtableLog) error {
+	res, err := s.db.Exec(`INSERT INTO roundtable_logs(ts,question,profiles,rounds,compressed,moderator,latency_ms,prompt_tokens,completion_tokens,output) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		l.TS, l.Question, l.Profiles, l.Rounds, b2i(l.Compressed), l.Moderator, l.LatencyMS, l.PromptTokens, l.CompletionTokens, l.Output)
+	if err == nil {
+		l.ID, _ = res.LastInsertId()
+		s.db.Exec(`DELETE FROM roundtable_logs WHERE id <= (SELECT MAX(id) FROM roundtable_logs) - 500`)
+	}
+	return err
+}
+
+// RoundtableLogs returns recent runs without the full output (list view).
+func (s *Store) RoundtableLogs(limit int) ([]RoundtableLog, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT id,ts,question,profiles,rounds,compressed,moderator,latency_ms,prompt_tokens,completion_tokens FROM roundtable_logs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RoundtableLog
+	for rows.Next() {
+		var l RoundtableLog
+		var comp int
+		if err := rows.Scan(&l.ID, &l.TS, &l.Question, &l.Profiles, &l.Rounds, &comp, &l.Moderator, &l.LatencyMS, &l.PromptTokens, &l.CompletionTokens); err != nil {
+			return nil, err
+		}
+		l.Compressed = comp == 1
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// RoundtableLogByID returns one run with its full output.
+func (s *Store) RoundtableLogByID(id int64) (RoundtableLog, bool) {
+	var l RoundtableLog
+	var comp int
+	err := s.db.QueryRow(`SELECT id,ts,question,profiles,rounds,compressed,moderator,latency_ms,prompt_tokens,completion_tokens,output FROM roundtable_logs WHERE id=?`, id).
+		Scan(&l.ID, &l.TS, &l.Question, &l.Profiles, &l.Rounds, &comp, &l.Moderator, &l.LatencyMS, &l.PromptTokens, &l.CompletionTokens, &l.Output)
+	if err != nil {
+		return l, false
+	}
+	l.Compressed = comp == 1
+	return l, true
 }
 
 // ---- agent profiles (round-table consensus personas) ----

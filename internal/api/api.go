@@ -102,6 +102,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/agents/{id}", a.hAgentSave)
 	inner.HandleFunc("DELETE /admin/api/agents/{id}", a.hAgentDelete)
 	inner.HandleFunc("GET /admin/api/roundtable", a.hRTGet)
+	inner.HandleFunc("GET /admin/api/roundtable-logs", a.hRTLogs)
+	inner.HandleFunc("GET /admin/api/roundtable-logs/{id}", a.hRTLogDetail)
 	inner.HandleFunc("PUT /admin/api/roundtable", a.hRTSet)
 	inner.HandleFunc("GET /admin/api/compression", a.hCompGet)
 	inner.HandleFunc("PUT /admin/api/compression", a.hCompSet)
@@ -442,6 +444,29 @@ func settingJSONSet(a *API, w http.ResponseWriter, r *http.Request, key string) 
 }
 
 func (a *API) hRTGet(w http.ResponseWriter, r *http.Request)  { settingJSON(a, w, "roundtable", `{"moderator":"","rounds":2,"max_tokens":1200}`) }
+
+func (a *API) hRTLogs(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	logs, err := a.Store.RoundtableLogs(limit)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if logs == nil {
+		logs = []store.RoundtableLog{}
+	}
+	writeJSON(w, 200, logs)
+}
+
+func (a *API) hRTLogDetail(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	l, ok := a.Store.RoundtableLogByID(id)
+	if !ok {
+		httpErr(w, 404, "not found")
+		return
+	}
+	writeJSON(w, 200, l)
+}
 func (a *API) hRTSet(w http.ResponseWriter, r *http.Request)  { settingJSONSet(a, w, r, "roundtable") }
 func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) { settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`) }
 func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "compression") }

@@ -105,8 +105,26 @@ func loadRTConfig(s *store.Store) rtConfig {
 	return c
 }
 
-// chatViaProxy sends one completion through the local proxy data plane.
-func chatViaProxy(addr, model, system, user string, temperature string, maxTokens int) (string, error) {
+// usageAcc thread-safely accumulates token usage across the concurrent
+// panel calls of one round table.
+type usageAcc struct {
+	mu     sync.Mutex
+	pt, ct int
+}
+
+func (u *usageAcc) add(pt, ct int) {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	u.pt += pt
+	u.ct += ct
+	u.mu.Unlock()
+}
+
+// chatViaProxy sends one completion through the local proxy data plane. When
+// acc is non-nil, the call's token usage is added to it.
+func chatViaProxy(addr, model, system, user string, temperature string, maxTokens int, acc *usageAcc) (string, error) {
 	body := map[string]any{
 		"model":      model,
 		"max_tokens": maxTokens,
@@ -135,6 +153,10 @@ func chatViaProxy(addr, model, system, user string, temperature string, maxToken
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -148,6 +170,7 @@ func chatViaProxy(addr, model, system, user string, temperature string, maxToken
 	if len(out.Choices) == 0 {
 		return "", fmt.Errorf("empty response")
 	}
+	acc.add(out.Usage.PromptTokens, out.Usage.CompletionTokens)
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
 }
 
@@ -185,17 +208,21 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 	if rounds <= 0 {
 		rounds = cfg.Rounds
 	}
+	start := time.Now()
+	acc := &usageAcc{}
 
 	// Compress the shared context ONCE before fanning out, so N panelists
 	// don't each receive the full (possibly huge) context. Round-table-only —
 	// independent of the global compression toggle.
 	compressNote := ""
+	compressed := false
 	if cfg.CompressContext && len(context) > 1500 {
 		if sum := compressionSummarizer(s); sum != "" {
 			prompt := "Compress the following context into a faithful, self-contained summary a reviewer can act on. Preserve every decision, fact, constraint, file path, identifier, number, and open question. Drop repetition and filler. Plain text, no preamble, no markdown.\n\nContext:\n" + context
-			if c, err := chatViaProxy(addr, sum, "You are a precise technical summarizer.", prompt, "", 900); err == nil && strings.TrimSpace(c) != "" {
+			if c, err := chatViaProxy(addr, sum, "You are a precise technical summarizer.", prompt, "", 900, acc); err == nil && strings.TrimSpace(c) != "" {
 				before := len(context)
 				context = strings.TrimSpace(c)
+				compressed = true
 				compressNote = fmt.Sprintf("_Context compressed for the panel: ~%d → ~%d chars (via %s)._\n\n", before, len(context), sum)
 			}
 		}
@@ -214,7 +241,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		go func(i int, a store.AgentProfile) {
 			defer wg.Done()
 			sys := a.Persona + "\nYou are one voice on a review panel. Give your independent position: your recommendation first, then the 2-4 strongest reasons. Be concrete and commit — no fence-sitting. Under 300 words."
-			ans, err := chatViaProxy(addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens)
+			ans, err := chatViaProxy(addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens, acc)
 			if err != nil {
 				ans = "(unavailable: " + err.Error() + ")"
 			}
@@ -237,7 +264,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 					}
 				}
 				sys := a.Persona + "\nYou are one voice on a review panel, now seeing the other panelists' positions. State where they changed your mind, where they are wrong and why, and your final position. Under 250 words."
-				ans, err := chatViaProxy(addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens)
+				ans, err := chatViaProxy(addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens, acc)
 				if err != nil {
 					ans = answers[i] // keep round-1 answer on failure
 				}
@@ -258,13 +285,32 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		fmt.Fprintf(&transcript, "## %s (%s)\n%s\n\n", a.Name, a.Model, answers[i])
 	}
 	modSys := "You moderate a panel of AI models. Synthesize their positions into: Consensus (what they agree on), Disagreements (who diverges and why it matters), Recommendation (the panel's strongest combined answer — commit to one), and Dissent worth keeping (a minority point that should not be lost, if any). Be faithful to the transcript; do not invent positions. Under 400 words."
-	synthesis, err := chatViaProxy(addr, moderator, modSys, q+"\n\nPanel transcript:\n"+transcript.String(), "", cfg.MaxTokens)
+	synthesis, err := chatViaProxy(addr, moderator, modSys, q+"\n\nPanel transcript:\n"+transcript.String(), "", cfg.MaxTokens, acc)
 	if err != nil {
 		synthesis = "(moderator unavailable: " + err.Error() + ")"
 	}
 
 	var out strings.Builder
 	out.WriteString("# Round Table\n\n" + compressNote + synthesis + "\n\n---\n\n# Panel positions\n\n" + transcript.String())
+
+	// record the deliberation so the WebUI can show round-table history
+	names2 := make([]string, len(panel))
+	for i, a := range panel {
+		names2[i] = a.Name
+	}
+	qsnip := question
+	if len(qsnip) > 500 {
+		qsnip = qsnip[:500] + "…"
+	}
+	acc.mu.Lock()
+	pt, ct := acc.pt, acc.ct
+	acc.mu.Unlock()
+	s.AddRoundtableLog(&store.RoundtableLog{
+		TS: start.UnixMilli(), Question: qsnip, Profiles: strings.Join(names2, ", "),
+		Rounds: rounds, Compressed: compressed, Moderator: moderator,
+		LatencyMS: time.Since(start).Milliseconds(), PromptTokens: pt, CompletionTokens: ct,
+		Output: out.String(),
+	})
 	return out.String(), nil
 }
 
@@ -344,7 +390,7 @@ func cmdMCP(args []string) {
 					if p.Args.Context != "" {
 						q = "Context:\n" + p.Args.Context + "\n\nQuestion:\n" + q
 					}
-					return chatViaProxy(addr, a.Model, a.Persona, q, a.Temperature, loadRTConfig(s).MaxTokens)
+					return chatViaProxy(addr, a.Model, a.Persona, q, a.Temperature, loadRTConfig(s).MaxTokens, nil)
 				case "list_profiles":
 					profiles, err := s.AgentProfiles()
 					if err != nil {
