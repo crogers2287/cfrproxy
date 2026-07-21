@@ -2,6 +2,23 @@
 
 ## 2026-07-21
 
+### REQ-018 — Per-model token burn + cache-hit on Live Traces
+
+Source: chat ("track token burn and cache hit on the live traces for each model when it's used")
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Capture tokens all paths | 🟡 built | translated non-stream (from norm), translated stream (usage-capturing tee on final delta), passthrough (usage scanned from copied bytes, non-stream + streamed, no mutation); traces gain prompt/completion/cached cols + migration |
+| 2. Cache-hit read | 🟡 built | OpenAI `prompt_tokens_details.cached_tokens`, Anthropic `cache_read_input_tokens` (max-accumulated across message_start/delta) |
+| 3. Per-model panel | 🟡 built | `/admin/api/stats` GROUP BY provider/model (reqs/errors/in/out/cached/hit%/avg-latency); "Token burn by model" table above traces, auto-refresh on SSE; per-row in/out/cached cols |
+| 4. Verified | 🟡 live | repeat 2815-tok prompt → 2304 cached (82%) recorded on trace; grok auto-router 189k in/126k cached (67%) over 54 reqs; all-models 65% hit |
+
+Note: rows predating the feature show 0 tokens (historical). Commit d20dea7.
+
+**REQ-018 status: COMPLETE.**
+
+## 2026-07-21
+
 ### REQ-017 — Round-table consensus MCP + agent profiles + context compression
 
 Source: chat ("consensus mcp setup led by the webui … agent profiles assigned to different models … round table mcp that uses the proxy … research token compression methods … check recent GitHub 1k+ stars, check my gh starred")
