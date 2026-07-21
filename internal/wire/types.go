@@ -17,6 +17,9 @@ type Request struct {
 	TopP        *float64
 	Stop        []string
 	Stream      bool
+	// reasoning controls, preserved across dialects
+	ReasoningEffort string          // openai reasoning_effort
+	Thinking        json.RawMessage // anthropic thinking block, verbatim
 }
 
 type Msg struct {

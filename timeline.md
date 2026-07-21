@@ -1,5 +1,16 @@
 # cfrproxy timeline
 
+## 2026-07-21
+
+### REQ-016 — OMP "current model does not use thinking" on grok-4.5 via auto router
+
+Source: chat. Three stacked causes found via logs:
+1. OMP-side: cfrproxy models registered with `reasoning: false` → OMP refuses thinking mode. Fixed: auto/auto-plan/opus-4-8/grok-4.5 now `reasoning: true` + effort-mode thinking + compat block in ~/.omp/agent/models.yml (restart OMP to load).
+2. Proxy: demo transforms (tag-response/pin-temp) still enabled — polluted every response with proxy_tag AND forced translation path which DROPPED reasoning params. Removed.
+3. Wire layer didn't carry reasoning: `reasoning_effort` (openai) and `thinking` (anthropic) now preserved same-dialect and mapped cross-dialect (effort↔budget tiers). Auto/auto-plan requests pinned to translation path (passthrough would drop the plan briefing). `TestReasoningPreserved`; live grok-4.5 w/ effort=high → correct answer, no proxy_tag.
+
+**REQ-016 status: COMPLETE (OMP restart needed on user side).**
+
 ## 2026-07-20
 
 ### REQ-015 — OAuth categories, dropdown fix, trace legend, planner (Fable), omp/opencode via public URL

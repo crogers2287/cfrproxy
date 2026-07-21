@@ -273,7 +273,10 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 		}
 		// failover responses always take the translated path so the alert
 		// notice can be injected into the visible content
-		passthrough := !c.failover && inbound == c.prov.Type && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
+		// failover and auto-routed requests take the translated path: failover
+		// injects the alert, auto/auto-plan rewrites model and system context —
+		// raw passthrough would silently drop those.
+		passthrough := !c.failover && autoNote == "" && inbound == c.prov.Type && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
 		var outBody []byte
 		if passthrough {
 			outBody = rawWithModel(body, c.model)

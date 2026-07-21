@@ -231,3 +231,32 @@ func TestBuildResponses(t *testing.T) {
 		t.Error("ollama response wrong")
 	}
 }
+
+// reasoning controls survive translation in both directions
+func TestReasoningPreserved(t *testing.T) {
+	req, err := ParseOpenAIRequest([]byte(`{"model":"m","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil || req.ReasoningEffort != "high" {
+		t.Fatalf("effort not parsed: %v %+v", err, req)
+	}
+	out, _ := BuildOpenAIRequest(req)
+	if !strings.Contains(string(out), `"reasoning_effort":"high"`) {
+		t.Errorf("effort dropped openai->openai: %s", out)
+	}
+	ant, _ := BuildAnthropicRequest(req)
+	if !strings.Contains(string(ant), `"budget_tokens":16384`) {
+		t.Errorf("effort not mapped to anthropic thinking: %s", ant)
+	}
+	// anthropic thinking passthrough + mapping back to effort
+	areq, err := ParseAnthropicRequest([]byte(`{"model":"m","max_tokens":30000,"thinking":{"type":"enabled","budget_tokens":8192},"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil || len(areq.Thinking) == 0 {
+		t.Fatalf("thinking not parsed: %v", err)
+	}
+	ant2, _ := BuildAnthropicRequest(areq)
+	if !strings.Contains(string(ant2), `"budget_tokens":8192`) {
+		t.Errorf("thinking dropped anthropic->anthropic: %s", ant2)
+	}
+	oai2, _ := BuildOpenAIRequest(areq)
+	if !strings.Contains(string(oai2), `"reasoning_effort":"medium"`) {
+		t.Errorf("thinking not mapped to effort: %s", oai2)
+	}
+}

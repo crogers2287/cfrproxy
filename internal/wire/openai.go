@@ -40,6 +40,7 @@ type oaiReq struct {
 	Stop        json.RawMessage `json:"stop,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 	StreamOpts  map[string]any  `json:"stream_options,omitempty"`
+	ReasoningEffort string      `json:"reasoning_effort,omitempty"`
 }
 
 type oaiTool struct {
@@ -81,7 +82,7 @@ func ParseOpenAIRequest(body []byte) (*Request, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, fmt.Errorf("bad openai request: %w", err)
 	}
-	r := &Request{Model: in.Model, MaxTokens: in.MaxTokens, Temperature: in.Temperature, TopP: in.TopP, Stream: in.Stream}
+	r := &Request{Model: in.Model, MaxTokens: in.MaxTokens, Temperature: in.Temperature, TopP: in.TopP, Stream: in.Stream, ReasoningEffort: in.ReasoningEffort}
 	if len(in.Stop) > 0 {
 		var one string
 		if json.Unmarshal(in.Stop, &one) == nil {
@@ -112,7 +113,23 @@ func ParseOpenAIRequest(body []byte) (*Request, error) {
 }
 
 func BuildOpenAIRequest(r *Request) ([]byte, error) {
-	out := oaiReq{Model: r.Model, MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP, Stream: r.Stream}
+	out := oaiReq{Model: r.Model, MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP, Stream: r.Stream, ReasoningEffort: r.ReasoningEffort}
+	if out.ReasoningEffort == "" && len(r.Thinking) > 0 {
+		// anthropic thinking budget → effort tier
+		var th struct {
+			BudgetTokens int `json:"budget_tokens"`
+		}
+		json.Unmarshal(r.Thinking, &th)
+		switch {
+		case th.BudgetTokens <= 0:
+		case th.BudgetTokens <= 2048:
+			out.ReasoningEffort = "low"
+		case th.BudgetTokens <= 8192:
+			out.ReasoningEffort = "medium"
+		default:
+			out.ReasoningEffort = "high"
+		}
+	}
 	if r.Stream {
 		out.StreamOpts = map[string]any{"include_usage": true}
 	}

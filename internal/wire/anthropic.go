@@ -38,6 +38,7 @@ type antReq struct {
 	TopP        *float64        `json:"top_p,omitempty"`
 	Stop        []string        `json:"stop_sequences,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
+	Thinking    json.RawMessage `json:"thinking,omitempty"`
 }
 
 type antTool struct {
@@ -73,7 +74,7 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 		return nil, fmt.Errorf("bad anthropic request: %w", err)
 	}
 	r := &Request{Model: in.Model, System: antText(in.System), MaxTokens: in.MaxTokens,
-		Temperature: in.Temperature, TopP: in.TopP, Stop: in.Stop, Stream: in.Stream}
+		Temperature: in.Temperature, TopP: in.TopP, Stop: in.Stop, Stream: in.Stream, Thinking: in.Thinking}
 	for _, m := range in.Messages {
 		// Claude Code's Agent SDK injects system-role messages mid-conversation
 		// (session hooks, reminders). Fold them into the top-level system —
@@ -121,7 +122,17 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 
 func BuildAnthropicRequest(r *Request) ([]byte, error) {
 	out := antReq{Model: r.Model, MaxTokens: r.MaxTokens, Temperature: r.Temperature,
-		TopP: r.TopP, Stop: r.Stop, Stream: r.Stream}
+		TopP: r.TopP, Stop: r.Stop, Stream: r.Stream, Thinking: r.Thinking}
+	if len(out.Thinking) == 0 && r.ReasoningEffort != "" {
+		// effort tier → anthropic thinking budget
+		budget := map[string]int{"low": 2048, "medium": 8192, "high": 16384, "xhigh": 24576}[strings.ToLower(r.ReasoningEffort)]
+		if budget > 0 {
+			out.Thinking = json.RawMessage(fmt.Sprintf(`{"type":"enabled","budget_tokens":%d}`, budget))
+			if out.MaxTokens <= budget {
+				out.MaxTokens = budget + 4096
+			}
+		}
+	}
 	if out.MaxTokens == 0 {
 		out.MaxTokens = 4096 // required field in the anthropic API
 	}
