@@ -243,6 +243,16 @@ func MatchMapPattern(pattern, model string) bool {
 	return strings.EqualFold(pattern, model)
 }
 
+// providerAllowsModel reports whether a model passes a provider's models_filter.
+// A provider with a filter is an allow-list: a model that fails it is NOT
+// served by that provider (important when several providers share one backend).
+func providerAllowsModel(prov store.Provider, model string) bool {
+	if strings.TrimSpace(prov.ModelsFilter) == "" {
+		return true
+	}
+	return len(applyModelsFilter([]string{model}, prov.ModelsFilter)) == 1
+}
+
 // ResolveModel routes an inbound model string to (provider, real model id):
 //  1. model map rewrite (harness preset names → any provider/model)
 //  2. case-insensitive "provider/model" prefix, model fuzzy-matched against
@@ -272,6 +282,12 @@ func (p *Proxy) ResolveModel(ctx context.Context, model string) (store.Provider,
 			}
 			if m, ok := FuzzyModel(p.ModelsCached(ctx, prov), rest); ok {
 				return prov, m, nil
+			}
+			// A provider with a models_filter only serves matching models — do
+			// not leak an arbitrary model to a shared backend (e.g. CLIProxyAPI
+			// serving grok + claude behind separate filtered providers).
+			if !providerAllowsModel(prov, rest) {
+				return store.Provider{}, "", fmt.Errorf("model %q is not served by provider %q", rest, prov.Name)
 			}
 			return prov, rest, nil // pass through as typed
 		}
