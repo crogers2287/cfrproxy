@@ -108,6 +108,20 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 
 <section id="tab-providers">
   <div class="toolbar">
+    <h2 style="margin:0">Launch a harness through the proxy</h2>
+  </div>
+  <p class="hint">Pick a model, then copy the command to launch a coding agent pointed at cfrproxy. The agent will use that model — and can switch to any other model mid-session from its own picker.</p>
+  <div id="launchpanel" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:8px">
+    <label style="margin-top:0">Model to launch with</label>
+    <select id="launch-model" onchange="renderLaunch()" style="max-width:520px"></select>
+    <div id="launch-cmds" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:14px"></div>
+    <details style="margin-top:14px">
+      <summary style="cursor:pointer;color:var(--dim);font-size:12px">Manual setup (env vars, no launcher)</summary>
+      <div id="launch-env" style="margin-top:10px;font-family:ui-monospace,monospace;font-size:12px;color:var(--dim);white-space:pre-wrap"></div>
+    </details>
+  </div>
+
+  <div class="toolbar" style="margin-top:26px">
     <h2 style="margin:0">Provider registry</h2>
     <div class="spacer"></div>
     <button class="b primary" onclick="openProviderDialog()">+ Add provider</button>
@@ -125,7 +139,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </table>
   <div style="display:flex;gap:8px;margin-top:10px;max-width:760px">
     <input type="text" id="map-pattern" placeholder="claude-sonnet*" style="flex:1">
-    <input type="text" id="map-target" placeholder="openrouter/anthropic/claude-sonnet-4" list="allmodels" style="flex:1">
+    <select id="map-target" style="flex:1"></select>
     <datalist id="allmodels"></datalist>
     <button class="b primary" onclick="addMapEntry()">Add</button>
   </div>
@@ -229,11 +243,35 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 
 <section id="tab-agents" class="hidden">
   <div class="toolbar">
-    <h2 style="margin:0">Agent profiles — round table</h2>
+    <h2 style="margin:0">Consensus round table (MCP)</h2>
+  </div>
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:20px">
+    <p style="font-size:13px;color:var(--text);margin-bottom:12px">Define a panel of <b>agent profiles</b> — each a persona pinned to a different model behind the router — and let them deliberate a question together. cfrproxy exposes this as an <b>MCP server</b>, so any MCP-capable agent (Claude Code, etc.) can convene the panel as a tool.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0;text-align:center;font-size:12px">
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px">1 · <b>Fan out</b><br><span style="color:var(--dim)">every enabled profile answers independently, in parallel</span></div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px">2 · <b>Cross-critique</b><br><span style="color:var(--dim)">each panelist sees the others and revises (round 2)</span></div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px">3 · <b>Synthesize</b><br><span style="color:var(--dim)">the moderator merges into consensus + dissent</span></div>
+    </div>
+    <label style="margin-top:0">Register it in a harness</label>
+    <div style="display:flex;gap:8px;align-items:center;max-width:520px">
+      <code style="flex:1;background:var(--panel2);padding:6px 8px;border-radius:6px;font-size:12px;overflow-x:auto;white-space:nowrap">claude mcp add roundtable -- cfrproxy mcp</code>
+      <button class="b" onclick="copyText('claude mcp add roundtable -- cfrproxy mcp')">Copy</button>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--dim)">
+      <b style="color:var(--text)">Tools exposed:</b>
+      <code>roundtable</code> (full panel + synthesis) ·
+      <code>consult</code> (ask one profile) ·
+      <code>list_profiles</code>.
+      Every voice routes through cfrproxy, so panelists can mix any providers — a local model, a Claude subscription, a Grok model — at the same table.
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <h2 style="margin:0">Agent profiles (panelists)</h2>
     <div class="spacer"></div>
     <button class="b primary" onclick="openAgentDialog()">+ Add profile</button>
   </div>
-  <p class="hint">Each profile pins a persona to a model behind the router. The <b>roundtable</b> MCP tool fans a question out to every enabled profile, optionally cross-critiques, then the moderator synthesizes. Register in a harness: <code>claude mcp add roundtable -- cfrproxy mcp</code></p>
+  <p class="hint">Each profile is one voice on the panel: a persona (system prompt) pinned to a model. Disabled profiles sit out the round table.</p>
   <div id="agentcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
 
   <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Round table settings</h2></div>
@@ -300,7 +338,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
     <datalist id="modellist"></datalist>
     <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
-    <label>Fallback (provider/model — chains follow transitively, e.g. openrouter→local)</label><input type="text" id="p-fallback" placeholder="openrouter/anthropic/claude-sonnet-4" list="allmodels">
+    <label>Fallback (provider/model — chains follow transitively, e.g. openrouter→local)</label><select id="p-fallback"></select>
     <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
@@ -348,6 +386,7 @@ function showTab(name){
   $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
+  if(name==='providers')renderLaunch();
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
@@ -355,7 +394,38 @@ function showTab(name){
 }
 $$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
 window.addEventListener('hashchange',()=>showTab(location.hash.slice(1)||'providers'));
-showTab(location.hash.slice(1)||'providers');
+// NOTE: the initial showTab()/renderLaunch() calls run at the very end of the
+// script (see below), after every const/let is declared — calling them here
+// would hit HARNESSES/allModels in their temporal dead zone and halt the script.
+
+// ---- launch panel ----
+const HARNESSES=[
+  {key:'claude',   name:'Claude Code', cmd:m=>`cfrproxy claude --model ${m}`,   note:'or set ANTHROPIC_BASE_URL'},
+  {key:'codex',    name:'Codex',       cmd:m=>`cfrproxy codex --model ${m}`,    note:'OpenAI-compatible'},
+  {key:'opencode', name:'OpenCode',    cmd:m=>`cfrproxy opencode --model ${m}`, note:'or any binary on PATH'},
+  {key:'omp',      name:'omp / other', cmd:m=>`cfrproxy omp --model ${m}`,      note:'works for any harness on PATH'},
+];
+function proxyBase(){return location.origin;}
+function renderLaunch(){
+  const m=($('#launch-model').value||'auto').trim();
+  const grid=$('#launch-cmds');grid.innerHTML='';
+  HARNESSES.forEach(h=>{
+    const cmd=h.cmd(m);
+    const card=document.createElement('div');
+    card.style.cssText='background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px';
+    card.innerHTML=`<div style="font-weight:600;margin-bottom:6px">${h.name} <span style="color:var(--dim);font-weight:400;font-size:11px">${h.note}</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <code style="flex:1;background:var(--panel2);padding:6px 8px;border-radius:6px;font-size:12px;overflow-x:auto;white-space:nowrap">${esc(cmd)}</code>
+        <button class="b" onclick="copyText('${esc(cmd).replace(/'/g,"\\'")}')">Copy</button>
+      </div>`;
+    grid.appendChild(card);
+  });
+  const base=proxyBase();
+  $('#launch-env').textContent=
+    `# Claude Code (Anthropic dialect)\nexport ANTHROPIC_BASE_URL=${base}\nexport ANTHROPIC_MODEL=${m}\n\n`+
+    `# Codex / OpenCode / any OpenAI-compatible tool\nexport OPENAI_BASE_URL=${base}/v1\nexport OPENAI_API_KEY=cfrproxy   # any value on LAN\n\n`+
+    `# Ollama-native tools\nexport OLLAMA_HOST=${base}`;
+}
 
 // ---- providers ----
 let providers=[];
@@ -419,7 +489,11 @@ function openProviderDialog(id){
   $('#pdlg-title').textContent=id?'Edit '+p.name:'Add provider';
   $('#p-id').value=id||'';$('#p-name').value=p.name||'';$('#p-type').value=p.type||'openai';
   $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
-  $('#p-models').value=p.models||'';$('#p-fallback').value=p.fallback||'';$('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
+  $('#p-models').value=p.models||'';
+  $('#p-fallback').innerHTML='<option value="">— none —</option>'+allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  if(p.fallback&&!allModels.includes(p.fallback))$('#p-fallback').insertAdjacentHTML('beforeend',`<option value="${esc(p.fallback)}">${esc(p.fallback)}</option>`);
+  $('#p-fallback').value=p.fallback||'';
+  $('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
   $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
   pdlg.showModal();
 }
@@ -469,6 +543,20 @@ async function testProvider(id,btn){
 
 // ---- model map ----
 let modelMap={};
+let allModels=[];
+function fillAllModelSelects(){
+  // launch-model: virtual routers first, then every model
+  const lm=$('#launch-model');
+  if(lm){
+    const cur=lm.value||'auto';
+    const opts=['auto','auto-plan',...allModels.filter(m=>m!=='auto'&&m!=='auto-plan')];
+    lm.innerHTML=opts.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+    lm.value=opts.includes(cur)?cur:'auto';
+    renderLaunch();
+  }
+  const mt=$('#map-target');
+  if(mt){const cur=mt.value;mt.innerHTML=allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');if(cur)mt.value=cur;}
+}
 async function loadModelMap(){
   modelMap=await api('modelmap');
   const tb=$('#maptable tbody');tb.innerHTML='';
@@ -481,7 +569,9 @@ async function loadModelMap(){
   // datalist of proxy-wide models for the target field
   try{
     const r=await fetch('/v1/models').then(r=>r.json());
-    $('#allmodels').innerHTML=r.data.map(m=>`<option value="${esc(m.id)}">`).join('');
+    allModels=r.data.map(m=>m.id);
+    $('#allmodels').innerHTML=allModels.map(m=>`<option value="${esc(m)}">`).join('');
+    fillAllModelSelects();
   }catch{}
 }
 async function addMapEntry(){
@@ -859,12 +949,14 @@ async function saveComp(){
 // ---- boot ----
 async function boot(){
   try{
-    await loadProviders();await loadTransforms();await loadTraces();connectSSE();loadModelMap();loadAutoRoute();
+    await loadProviders();await loadTransforms();await loadTraces();connectSSE();await loadModelMap();loadAutoRoute();renderLaunch();
     const st=await api('status');
     $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
   }catch(err){toast(err.message,true)}
 }
 boot();
+// initial tab render — must be after all const/let declarations above
+showTab(location.hash.slice(1)||'providers');
 </script>
 </body>
 </html>
