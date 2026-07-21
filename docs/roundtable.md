@@ -43,6 +43,16 @@ cfrproxy config set roundtable '{"moderator":"anthropic/claude-sonnet","rounds":
 
 `moderator` synthesizes the final answer (blank = the first panelist). `rounds` 1 = answers + synthesis; 2 = adds the cross-critique round.
 
+### Compressing the shared context
+
+A round table sends the same question + context to every panelist, so a long context is paid for N models × M rounds. Enable **`compress_context`** (WebUI → Round table settings, or the setting below) to summarize the shared context **once** before fan-out — each panelist then gets the short version instead of the full payload:
+
+```bash
+cfrproxy config set roundtable '{"moderator":"...","rounds":2,"compress_context":true}'
+```
+
+It uses the summarizer model from the [Context compression](compression.md) settings and works even if global compression is off. The panel output notes how much was compressed.
+
 ## When to use it
 
 Decisions, designs, and reviews where independent perspectives beat a single model's confident take — architecture calls, "should we do X or Y", spotting failure modes a lone model would miss. It's slower and costs more than one call (N models × rounds + synthesis), so reserve it for the questions that matter.

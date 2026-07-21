@@ -282,6 +282,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
       <div style="flex:1"><label>Rounds (1 = answer+synthesis, 2 = +cross-critique)</label><input type="text" id="rt-rounds"></div>
       <div style="flex:1"><label>Max tokens per voice</label><input type="text" id="rt-maxtok"></div>
     </div>
+    <div class="check"><input type="checkbox" id="rt-compress"><span>Compress the shared context once before fan-out (summarizes the question's context so each panelist gets the short version, not the full payload × N). Uses the summarizer from the Context compression section — works even if global compression is off.</span></div>
     <div style="margin-top:10px"><button class="b primary" onclick="saveRT()">Save round table</button></div>
   </div>
 
@@ -894,7 +895,7 @@ async function loadAgents(){
     });
     const rt=await api('roundtable');
     await setPair('rt-mod',rt.moderator||'');
-    $('#rt-rounds').value=rt.rounds??2;$('#rt-maxtok').value=rt.max_tokens??1200;
+    $('#rt-rounds').value=rt.rounds??2;$('#rt-maxtok').value=rt.max_tokens??1200;$('#rt-compress').checked=!!rt.compress_context;
     const c=await api('compression');
     $('#comp-enabled').checked=!!c.enabled;
     await setPair('comp-sum',c.summarizer||'');
@@ -934,7 +935,7 @@ async function delAgent(id,name){
   try{await api('agents/'+id,{method:'DELETE'});loadAgents()}catch(err){toast(err.message,true)}
 }
 async function saveRT(){
-  const body={moderator:getPair('rt-mod'),rounds:+$('#rt-rounds').value||2,max_tokens:+$('#rt-maxtok').value||1200};
+  const body={moderator:getPair('rt-mod'),rounds:+$('#rt-rounds').value||2,max_tokens:+$('#rt-maxtok').value||1200,compress_context:$('#rt-compress').checked};
   try{await api('roundtable',{method:'PUT',body:JSON.stringify(body)});toast('round table saved')}
   catch(err){toast(err.message,true)}
 }
