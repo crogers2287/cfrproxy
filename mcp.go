@@ -72,9 +72,23 @@ var mcpTools = []map[string]any{
 }
 
 type rtConfig struct {
-	Moderator string `json:"moderator"`
-	Rounds    int    `json:"rounds"`
-	MaxTokens int    `json:"max_tokens"`
+	Moderator       string `json:"moderator"`
+	Rounds          int    `json:"rounds"`
+	MaxTokens       int    `json:"max_tokens"`
+	CompressContext bool   `json:"compress_context"`
+}
+
+// compressionSummarizer reads the summarizer model from the compression
+// settings — the round table reuses it independently of whether global
+// compression is enabled.
+func compressionSummarizer(s *store.Store) string {
+	var c struct {
+		Summarizer string `json:"summarizer"`
+	}
+	if raw := s.Setting("compression"); raw != "" {
+		json.Unmarshal([]byte(raw), &c)
+	}
+	return c.Summarizer
 }
 
 func loadRTConfig(s *store.Store) rtConfig {
@@ -171,6 +185,22 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 	if rounds <= 0 {
 		rounds = cfg.Rounds
 	}
+
+	// Compress the shared context ONCE before fanning out, so N panelists
+	// don't each receive the full (possibly huge) context. Round-table-only —
+	// independent of the global compression toggle.
+	compressNote := ""
+	if cfg.CompressContext && len(context) > 1500 {
+		if sum := compressionSummarizer(s); sum != "" {
+			prompt := "Compress the following context into a faithful, self-contained summary a reviewer can act on. Preserve every decision, fact, constraint, file path, identifier, number, and open question. Drop repetition and filler. Plain text, no preamble, no markdown.\n\nContext:\n" + context
+			if c, err := chatViaProxy(addr, sum, "You are a precise technical summarizer.", prompt, "", 900); err == nil && strings.TrimSpace(c) != "" {
+				before := len(context)
+				context = strings.TrimSpace(c)
+				compressNote = fmt.Sprintf("_Context compressed for the panel: ~%d → ~%d chars (via %s)._\n\n", before, len(context), sum)
+			}
+		}
+	}
+
 	q := question
 	if context != "" {
 		q = "Context:\n" + context + "\n\nQuestion:\n" + question
@@ -234,7 +264,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 	}
 
 	var out strings.Builder
-	out.WriteString("# Round Table\n\n" + synthesis + "\n\n---\n\n# Panel positions\n\n" + transcript.String())
+	out.WriteString("# Round Table\n\n" + compressNote + synthesis + "\n\n---\n\n# Panel positions\n\n" + transcript.String())
 	return out.String(), nil
 }
 
