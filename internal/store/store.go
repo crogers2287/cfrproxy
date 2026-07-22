@@ -152,6 +152,14 @@ CREATE TABLE IF NOT EXISTS traces (
 );
 CREATE INDEX IF NOT EXISTS traces_ts ON traces(ts);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS routers (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  classifier TEXT NOT NULL DEFAULT '',
+  planner TEXT NOT NULL DEFAULT '',
+  routes TEXT NOT NULL DEFAULT '{}'
+);
 CREATE TABLE IF NOT EXISTS endpoints (
   id INTEGER PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
@@ -620,6 +628,82 @@ func (s *Store) Setting(k string) string {
 
 func (s *Store) SetSetting(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
+	return err
+}
+
+// ---- named auto-routers ----
+
+type Router struct {
+	ID         int64           `json:"id"`
+	Name       string          `json:"name"`
+	Enabled    bool            `json:"enabled"`
+	Classifier string          `json:"classifier"`
+	Planner    string          `json:"planner"`
+	Routes     json.RawMessage `json:"routes"` // {bucket: provider/model}
+}
+
+func (s *Store) Routers() ([]Router, error) {
+	rows, err := s.db.Query(`SELECT id,name,enabled,classifier,planner,routes FROM routers ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Router
+	for rows.Next() {
+		var r Router
+		var en int
+		var routes string
+		if err := rows.Scan(&r.ID, &r.Name, &en, &r.Classifier, &r.Planner, &routes); err != nil {
+			return nil, err
+		}
+		r.Enabled = en == 1
+		r.Routes = json.RawMessage(routes)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RouterByName(name string) (Router, bool) {
+	rs, _ := s.Routers()
+	for _, r := range rs {
+		if strings.EqualFold(r.Name, name) {
+			return r, true
+		}
+	}
+	return Router{}, false
+}
+
+func (s *Store) SaveRouter(r *Router) error {
+	r.Name = strings.TrimSpace(r.Name)
+	if r.Name == "" {
+		return errors.New("router name is required")
+	}
+	if strings.ContainsAny(r.Name, "/ :?#") {
+		return errors.New("router name must be a plain slug (no spaces, / : ? #)")
+	}
+	routes := string(r.Routes)
+	if routes == "" {
+		routes = "{}"
+	}
+	if !json.Valid([]byte(routes)) {
+		return errors.New("routes must be a JSON object")
+	}
+	if r.ID == 0 {
+		res, err := s.db.Exec(`INSERT INTO routers(name,enabled,classifier,planner,routes) VALUES(?,?,?,?,?)`,
+			r.Name, b2i(r.Enabled), r.Classifier, r.Planner, routes)
+		if err != nil {
+			return err
+		}
+		r.ID, _ = res.LastInsertId()
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE routers SET name=?,enabled=?,classifier=?,planner=?,routes=? WHERE id=?`,
+		r.Name, b2i(r.Enabled), r.Classifier, r.Planner, routes, r.ID)
+	return err
+}
+
+func (s *Store) DeleteRouter(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM routers WHERE id=?`, id)
 	return err
 }
 

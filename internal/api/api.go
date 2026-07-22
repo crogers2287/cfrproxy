@@ -111,6 +111,10 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/roundtable", a.hRTSet)
 	inner.HandleFunc("GET /admin/api/compression", a.hCompGet)
 	inner.HandleFunc("PUT /admin/api/compression", a.hCompSet)
+	inner.HandleFunc("GET /admin/api/routers", a.hRoutersList)
+	inner.HandleFunc("POST /admin/api/routers", a.hRouterSave)
+	inner.HandleFunc("PUT /admin/api/routers/{id}", a.hRouterSave)
+	inner.HandleFunc("DELETE /admin/api/routers/{id}", a.hRouterDelete)
 	inner.HandleFunc("GET /admin/api/fusion", a.hFusionGet)
 	inner.HandleFunc("PUT /admin/api/fusion", a.hFusionSet)
 	inner.HandleFunc("GET /admin/api/autoroute", a.hAutoRouteGet)
@@ -520,6 +524,45 @@ func (a *API) hRTLogDetail(w http.ResponseWriter, r *http.Request) {
 func (a *API) hRTSet(w http.ResponseWriter, r *http.Request)  { settingJSONSet(a, w, r, "roundtable") }
 func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) { settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`) }
 func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "compression") }
+
+func (a *API) hRoutersList(w http.ResponseWriter, r *http.Request) {
+	rs, err := a.Store.Routers()
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if rs == nil {
+		rs = []store.Router{}
+	}
+	writeJSON(w, 200, rs)
+}
+
+func (a *API) hRouterSave(w http.ResponseWriter, r *http.Request) {
+	var rt store.Router
+	if err := json.NewDecoder(r.Body).Decode(&rt); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if ids := r.PathValue("id"); ids != "" {
+		rt.ID, _ = strconv.ParseInt(ids, 10, 64)
+	} else {
+		rt.ID = 0
+	}
+	if err := a.Store.SaveRouter(&rt); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, rt)
+}
+
+func (a *API) hRouterDelete(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := a.Store.DeleteRouter(id); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
 
 func (a *API) hFusionGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, a.Proxy.FusionConfig())

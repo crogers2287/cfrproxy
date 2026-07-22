@@ -367,6 +367,16 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 	if f := p.FusionConfig(); f.Enabled && len(f.Participants) > 0 && f.Judge != "" {
 		add("fusion") // parallel drafts → judge synthesis
 	}
+	if routers, err := p.Store.Routers(); err == nil {
+		for _, rt := range routers {
+			if rt.Enabled {
+				add("auto:" + rt.Name)
+				if rt.Planner != "" {
+					add("auto-plan:" + rt.Name)
+				}
+			}
+		}
+	}
 	for i, prov := range provs {
 		if !prov.Enabled {
 			continue
