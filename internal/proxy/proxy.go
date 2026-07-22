@@ -236,10 +236,24 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			autoNote += note
 		}
 	}
-	wantPlan := reqModel == "auto-plan" || strings.HasSuffix(reqModel, "/auto-plan")
-	if wantPlan || reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto") {
+	// resolve the router config: default (auto/auto-plan) or a named custom
+	// router (auto:NAME / auto-plan:NAME).
+	var rcfg AutoRouterConfig
+	haveRouter, wantPlan := false, false
+	switch {
+	case reqModel == "auto-plan" || strings.HasSuffix(reqModel, "/auto-plan"):
+		rcfg, haveRouter, wantPlan = p.AutoRouterConfig(), true, true
+	case reqModel == "auto" || reqModel == "cfr-auto" || strings.HasSuffix(reqModel, "/auto"):
+		rcfg, haveRouter = p.AutoRouterConfig(), true
+	case strings.HasPrefix(reqModel, "auto-plan:"):
+		rcfg, haveRouter = p.NamedRouterConfig(reqModel[len("auto-plan:"):])
+		wantPlan = haveRouter
+	case strings.HasPrefix(reqModel, "auto:"):
+		rcfg, haveRouter = p.NamedRouterConfig(reqModel[len("auto:"):])
+	}
+	if haveRouter {
 		if wantPlan {
-			if plan := p.Plan(r.Context(), req); plan != "" {
+			if plan := p.PlanWith(r.Context(), req, rcfg); plan != "" {
 				brief := "Execution briefing from the planning stage (follow unless clearly wrong):\n" + plan
 				if req.System != "" {
 					req.System = req.System + "\n\n" + brief
@@ -249,7 +263,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				autoNote = "planned "
 			}
 		}
-		routed, bucket := p.AutoRoute(r.Context(), req)
+		routed, bucket := p.AutoRouteWith(r.Context(), req, rcfg)
 		if routed != "" {
 			reqModel = routed
 			autoNote += "auto→" + bucket + "→" + routed

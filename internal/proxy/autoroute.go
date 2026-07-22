@@ -51,7 +51,23 @@ func splitList(s string) []string {
 // Any failure degrades to the "default" route; ("", "") means auto routing
 // is not configured and the caller should resolve "auto" normally.
 func (p *Proxy) AutoRoute(ctx context.Context, req *wire.Request) (string, string) {
-	cfg := p.AutoRouterConfig()
+	return p.AutoRouteWith(ctx, req, p.AutoRouterConfig())
+}
+
+// NamedRouterConfig loads a custom router by name as an AutoRouterConfig.
+func (p *Proxy) NamedRouterConfig(name string) (AutoRouterConfig, bool) {
+	r, ok := p.Store.RouterByName(name)
+	if !ok || !r.Enabled {
+		return AutoRouterConfig{}, false
+	}
+	c := AutoRouterConfig{Enabled: true, Classifier: r.Classifier, Planner: r.Planner}
+	json.Unmarshal(r.Routes, &c.Routes)
+	return c, true
+}
+
+// AutoRouteWith classifies the request against a given router config and
+// returns (target model, bucket). Any failure degrades to "default".
+func (p *Proxy) AutoRouteWith(ctx context.Context, req *wire.Request, cfg AutoRouterConfig) (string, string) {
 	if !cfg.Enabled || len(cfg.Routes) == 0 {
 		return "", ""
 	}
@@ -120,7 +136,11 @@ func (p *Proxy) AutoRoute(ctx context.Context, req *wire.Request) (string, strin
 // briefing which the caller prepends as system context for the executor.
 // Returns "" on any failure — planning is best-effort, never blocking.
 func (p *Proxy) Plan(ctx context.Context, req *wire.Request) string {
-	cfg := p.AutoRouterConfig()
+	return p.PlanWith(ctx, req, p.AutoRouterConfig())
+}
+
+// PlanWith runs the auto-plan stage for a given router config.
+func (p *Proxy) PlanWith(ctx context.Context, req *wire.Request, cfg AutoRouterConfig) string {
 	if cfg.Planner == "" {
 		return ""
 	}

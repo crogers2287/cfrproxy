@@ -163,6 +163,14 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </div>
 
   <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Custom routers</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openRouterDialog()">+ New router</button>
+  </div>
+  <p class="hint">Named routers, each with its own classifier and per-task models. Address them as <code>auto:NAME</code> (or <code>auto-plan:NAME</code> if it has a planner) — e.g. one router for coding agents, one for cheap/bulk work. Assign a router to a share endpoint's "force model" to give someone a specific setup.</p>
+  <div id="routercards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px"></div>
+
+  <div class="toolbar" style="margin-top:32px">
     <h2 style="margin:0">Fusion</h2>
     <span id="fusion-state" class="pill"></span>
   </div>
@@ -341,6 +349,25 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 
 </main>
 
+<dialog id="rdlg">
+  <h3 id="rdlg-title">New custom router</h3>
+  <form method="dialog" onsubmit="return saveRouter(event)">
+    <input type="hidden" id="r-id">
+    <label>Name (address as <code>auto:name</code>)</label><input type="text" id="r-name" required placeholder="coding">
+    <label>Classifier model (small + fast)</label>
+    <div style="display:flex;gap:8px"><select id="r-classifier-p" style="flex:1" onchange="fillModelSel('r-classifier')"></select><select id="r-classifier-m" style="flex:2"></select></div>
+    <label>Planner model (optional — enables <code>auto-plan:name</code>)</label>
+    <div style="display:flex;gap:8px"><select id="r-planner-p" style="flex:1" onchange="fillModelSel('r-planner')"></select><select id="r-planner-m" style="flex:2"></select></div>
+    <label style="margin-top:14px">Task routes</label>
+    <table id="rtable"><thead><tr><th>bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table>
+    <div class="check"><input type="checkbox" id="r-enabled" checked><span>Enabled</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="rdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="edlg">
   <h3 id="edlg-title">New share endpoint</h3>
   <form method="dialog" onsubmit="return saveEndpoint(event)">
@@ -445,7 +472,7 @@ function showTab(name){
   $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
-  if(name==='providers')renderLaunch();
+  if(name==='providers'){renderLaunch();loadRouters();}
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
@@ -1050,6 +1077,70 @@ async function saveComp(){
     target_words:+$('#comp-words').value||500};
   try{await api('compression',{method:'PUT',body:JSON.stringify(body)});toast('compression saved');loadAgents()}
   catch(err){toast(err.message,true)}
+}
+
+// ---- custom routers ----
+const R_BUCKETS=['code','reasoning','quick','long','vision','default'];
+let routers=[];
+const rdlg=document.getElementById('rdlg');
+async function loadRouters(){
+  try{
+    routers=await api('routers');
+    const grid=$('#routercards');grid.innerHTML='';
+    if(!routers.length)grid.innerHTML='<p class="hint">No custom routers yet.</p>';
+    routers.forEach(rt=>{
+      const routes=rt.routes||{};
+      const nb=Object.keys(routes).filter(k=>routes[k]).length;
+      const card=document.createElement('div');
+      card.className='card'+(rt.enabled?'':' off');card.style.cursor='default';
+      card.innerHTML=`<h3>auto:${esc(rt.name)}</h3>
+        <div class="meta">${nb} route(s) · classifier <b>${esc(rt.classifier||'—')}</b>${rt.planner?' · has planner':''}</div>
+        <div class="row">
+          <button class="b" onclick="openRouterDialog(${rt.id})">Edit</button>
+          <button class="b" onclick="toggleRouter(${rt.id})">${rt.enabled?'Disable':'Enable'}</button>
+          <button class="b danger" onclick="delRouter(${rt.id},'${esc(rt.name)}')">Delete</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+  }catch(err){toast('routers: '+err.message,true)}
+}
+async function openRouterDialog(id){
+  const rt=routers.find(x=>x.id===id)||{};
+  const routes=rt.routes||{};
+  $('#rdlg-title').textContent=id?'Edit auto:'+rt.name:'New custom router';
+  $('#r-id').value=id||'';$('#r-name').value=rt.name||'';$('#r-enabled').checked=id?!!rt.enabled:true;
+  const tb=$('#rtable tbody');tb.innerHTML='';
+  R_BUCKETS.forEach(b=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${b}</td><td><div style="display:flex;gap:8px"><select id="r-${b}-p" style="flex:1" onchange="fillModelSel('r-${b}')"></select><select id="r-${b}-m" style="flex:2"></select></div></td>`;
+    tb.appendChild(tr);
+  });
+  await setPair('r-classifier',rt.classifier||'');
+  await setPair('r-planner',rt.planner||'');
+  for(const b of R_BUCKETS)await setPair('r-'+b,routes[b]||'');
+  rdlg.showModal();
+}
+async function saveRouter(ev){
+  ev.preventDefault();
+  const id=$('#r-id').value;
+  const routes={};
+  R_BUCKETS.forEach(b=>{const v=getPair('r-'+b);if(v)routes[b]=v});
+  const body={name:$('#r-name').value,enabled:$('#r-enabled').checked,
+    classifier:getPair('r-classifier'),planner:getPair('r-planner'),routes};
+  try{
+    await api(id?'routers/'+id:'routers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    rdlg.close();toast('router saved');loadRouters();loadModelMap();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleRouter(id){
+  const rt=routers.find(x=>x.id===id);
+  try{await api('routers/'+id,{method:'PUT',body:JSON.stringify({...rt,enabled:!rt.enabled})});loadRouters()}
+  catch(err){toast(err.message,true)}
+}
+async function delRouter(id,name){
+  if(!confirm('Delete router "'+name+'"?'))return;
+  try{await api('routers/'+id,{method:'DELETE'});toast('deleted');loadRouters()}catch(err){toast(err.message,true)}
 }
 
 // ---- share endpoints ----
