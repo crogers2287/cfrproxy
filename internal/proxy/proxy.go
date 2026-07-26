@@ -354,10 +354,15 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			}
 			outBody = transform.Apply(outBody, reqRules)
 		}
-		for attempt := 0; attempt < 2 && resp == nil; attempt++ {
-			if attempt > 0 {
+		// maxAttempts is 2 (one transient retry). Dropping a provider-rejected
+		// parameter buys one extra attempt, so the recovery never eats the
+		// transient budget.
+		maxAttempts, droppedParam, paramRetry := 2, false, false
+		for attempt := 0; attempt < maxAttempts && resp == nil; attempt++ {
+			if attempt > 0 && !paramRetry {
 				time.Sleep(1200 * time.Millisecond)
 			}
+			paramRetry = false
 			r2, err := p.send(r.Context(), c.prov, providerPath(c.prov.Type), outBody)
 			if err != nil {
 				lastErr = c.prov.Name + ": " + err.Error()
@@ -395,6 +400,21 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 					lastErr = fmt.Sprintf("%s: context overflow (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
 					softErrs = append(softErrs, lastErr)
 					break
+				}
+				// A parameter the harness always sends but this model refuses
+				// (omp's enable_thinking:false vs Alibaba's thinking models).
+				// Passthrough forwards the client's body verbatim, so this is
+				// the only layer that can recover it: drop the named key and
+				// retry once. Structural keys are never dropped.
+				if !droppedParam {
+					if k := rejectedParam(eb); k != "" {
+						if nb, ok := stripBodyParam(outBody, k); ok {
+							outBody, droppedParam, paramRetry = nb, true, true
+							maxAttempts++
+							softErrs = append(softErrs, fmt.Sprintf("%s rejected parameter %q — dropped and retried", c.prov.Name, k))
+							continue
+						}
+					}
 				}
 				// genuine 4xx (bad request/auth) — restore the body for the error path
 				r2.Body = io.NopCloser(bytes.NewReader(eb))

@@ -141,6 +141,29 @@ A fresh install already has logins sitting in CLIProxyAPI; turning them into pro
 
 **REQ-031 status: COMPLETE.**
 
+### REQ-032 — omp 400s on Qwen: "enable_thinking is restricted to True"
+
+Source: chat ("getting this in omp") + screenshot of `400 provider Qwen: invalid_parameter_error … The value of the enable_thinking parameter is restricted to True.`
+
+#### Root cause
+omp sends `"enable_thinking": false` in the request body (confirmed in its own captured request, `~/.omp/logs/http-400-requests/1785098192894-*.json`, model `Qwen/qwen3.8-max-preview`). Alibaba's thinking models refuse that value. cfrproxy never sets the parameter — in **passthrough** mode (`inbound == provider type`, no transforms/alert/docs) it forwards the harness's raw JSON with only the model rewritten, which is what makes provider-specific tuning work at all.
+
+So: the harness can't know the constraint per-model, the provider won't budge, and cfrproxy is the only layer that sees both. Reproduced exactly — with the param **400**, without it **200**.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Drop-and-retry recovery | 🟡 built | `internal/proxy/paramfix.go`: on a 4xx, `rejectedParam()` extracts the offending key (structured `error.param`, else 4 message patterns), `stripBodyParam()` removes that one top-level key, request retried **once** |
+| Doesn't eat the transient budget | ✅ | `maxAttempts` incremented for the recovery attempt, and the 1200 ms backoff is skipped since this isn't a transient |
+| Structural keys never dropped | ✅ | `protectedParams` (model, messages, stream, system, tools, tool_choice, prompt, input) and nested paths like `messages[0].content` are rejected — those are real errors and must reach the harness |
+| Unrelated 400s still fail fast | ✅ | `TestUnrelated400IsNotRetried`: "invalid api key" → exactly **1** upstream call, 400 surfaced |
+| Not silent | ✅ | trace: `recovered after transient: Qwen rejected parameter "enable_thinking" — dropped and retried` |
+| Tests | ✅ | `paramfix_test.go` — 10 extraction cases (incl. the verbatim production body and 4 must-not-fire cases), strip round-trip, and an E2E asserting 2 upstream calls where the retry no longer carries the key |
+| Live | ✅ | omp's exact body → **200** both non-streaming (`PARAMFIX_OK`) and streaming |
+
+Generic by design: the same path recovers any provider that names a rejected parameter, not just this one.
+
+**REQ-032 status: COMPLETE.**
+
 #### Diagnosed, NOT fixed (different repo, awaiting go-ahead)
 **Telegram "Message delivery failed after multiple attempts"** is *not* a timeout and not cfrproxy. Gateway logs show `Flood control exceeded. Retry in 31 seconds`, while `~/.hermes/hermes-agent/gateway/platforms/base.py:3429` retries with `max_retries=2, base_delay=2.0` → ~2.3s then ~4.6s (≈7s) and gives up. Telegram's `retry_after` is ignored in favour of blind exponential backoff. `telegram.py` has a flood-aware path (`retrying in 31.0s`) that the outer `base.py` send loop doesn't use. Flood pressure itself comes from streaming `editMessageText` calls. Fix = honour `retry_after` in the outer loop.
 
