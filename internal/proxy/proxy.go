@@ -417,12 +417,12 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	alert := ""
 	if used.failover {
 		tr.Err = "failover from " + prov.Name + " (" + lastErr + ")"
-		// Deliberately terse, and shown once per conversation. The banner is
-		// prepended to the model's reply, so the upstream error body and the
-		// failed provider name used to be repeated into the chat on every call
-		// of a tool-loop turn. The full reason stays on tr.Err — visible in the
-		// trace and the WebUI errors panel — where it belongs.
-		if noticeCache.announce(conversationFingerprint(req) + "|" + used.prov.Name + "/" + used.model) {
+		// Deliberately terse, and rate-limited per "from -> to" pair rather than
+		// per conversation: harnesses inject the current time and other volatile
+		// text into the system prompt, so any content-derived key looks new on
+		// every call and suppresses nothing. The full reason stays on tr.Err —
+		// visible in the trace and the WebUI errors panel — where it belongs.
+		if noticeCache.announce(prov.Name + "->" + used.prov.Name + "/" + used.model) {
 			alert = fmt.Sprintf("⚠️ failover: %s active\n\n", used.model)
 		}
 	} else if len(softErrs) > 0 && resp.StatusCode < 400 {

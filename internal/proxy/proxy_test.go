@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -361,9 +362,9 @@ func resetFailoverNotices() {
 }
 
 // A harness tool-loop makes several model calls per user turn. The failover
-// banner must appear on the first and then stay quiet, instead of stacking up
-// four copies of itself in one chat message.
-func TestFailoverBannerAnnouncedOncePerConversation(t *testing.T) {
+// banner must fire once and then stay quiet, instead of stacking a copy into
+// every reply — even though the prompt churns between calls.
+func TestFailoverBannerRateLimited(t *testing.T) {
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			w.WriteHeader(404)
@@ -386,7 +387,6 @@ func TestFailoverBannerAnnouncedOncePerConversation(t *testing.T) {
 	New(s).Register(mux)
 	resetFailoverNotices()
 
-	// four calls of one tool-loop turn: same system + same first user message
 	call := func(body string) string {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
@@ -395,15 +395,15 @@ func TestFailoverBannerAnnouncedOncePerConversation(t *testing.T) {
 		}
 		return rec.Body.String()
 	}
-	const convo = `{"model":"primary/pm","max_tokens":10,"system":"You are a bot.","messages":[{"role":"user","content":"load the products"}`
+	// Every call carries a DIFFERENT system prompt, exactly as a live harness
+	// does (Hermes injects the current time, memories, system-reminders). This
+	// is what defeated the original conversation-fingerprint key.
+	turn := func(i int) string {
+		return fmt.Sprintf(`{"model":"primary/pm","max_tokens":10,"system":"You are a bot. Current time 19:4%d","messages":[{"role":"user","content":"step %d"}]}`, i, i)
+	}
 	banners := 0
-	for i, body := range []string{
-		convo + `]}`,
-		convo + `,{"role":"assistant","content":"reading"},{"role":"user","content":"tool result 1"}]}`,
-		convo + `,{"role":"assistant","content":"reading"},{"role":"user","content":"tool result 2"}]}`,
-		convo + `,{"role":"assistant","content":"reading"},{"role":"user","content":"tool result 3"}]}`,
-	} {
-		out := call(body)
+	for i := 0; i < 6; i++ {
+		out := call(turn(i))
 		if strings.Contains(out, "failover:") {
 			banners++
 		} else if i == 0 {
@@ -411,12 +411,11 @@ func TestFailoverBannerAnnouncedOncePerConversation(t *testing.T) {
 		}
 	}
 	if banners != 1 {
-		t.Errorf("failover banner should appear once per conversation, got %d copies", banners)
+		t.Errorf("banner should be rate-limited to 1, got %d across 6 prompt-churning calls", banners)
 	}
-
-	// a DIFFERENT conversation still gets told
-	out := call(`{"model":"primary/pm","max_tokens":10,"system":"You are a bot.","messages":[{"role":"user","content":"totally different task"}]}`)
-	if !strings.Contains(out, "⚠️ failover: backup-model active") {
-		t.Errorf("a separate conversation must get its own banner: %s", out)
+	// the one that fired must be the terse form, not the old verbose one
+	resetFailoverNotices()
+	if out := call(turn(9)); !strings.Contains(out, "⚠️ failover: backup-model active") || strings.Contains(out, "[cfrproxy]") {
+		t.Errorf("expected terse banner after TTL reset: %s", out)
 	}
 }

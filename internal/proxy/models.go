@@ -132,6 +132,13 @@ func (p *Proxy) ModelsCached(ctx context.Context, prov store.Provider) []string 
 	return ids
 }
 
+// ApplyModelsFilter is applyModelsFilter for callers outside the package —
+// the OAuth scan uses it to preview which models a candidate provider's filter
+// would actually match before creating it.
+func ApplyModelsFilter(ids []string, filter string) []string {
+	return applyModelsFilter(ids, filter)
+}
+
 // applyModelsFilter narrows a scan to the provider's category: comma-separated
 // globs ("gpt-*"); "!" prefix excludes ("claude-*,!claude-command-*").
 func applyModelsFilter(ids []string, filter string) []string {

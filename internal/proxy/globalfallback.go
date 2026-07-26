@@ -104,13 +104,18 @@ func contextExceeded(body []byte) bool {
 	return false
 }
 
-// failoverNotices suppresses repeat failover banners inside one conversation.
+// failoverNotices rate-limits the failover banner.
 //
-// The banner is injected per model call, but a harness tool-loop makes several
-// calls per user turn — so a single Telegram message ended up carrying the same
-// "failed over" line four times. Keyed on the conversation fingerprint plus the
-// destination, a given failover is announced once and then stays quiet; the
-// full diagnostics remain on every trace and in the WebUI errors panel.
+// The banner is injected per model call, so without this a harness tool-loop
+// stacks a copy into every reply of a turn.
+//
+// The key is deliberately GLOBAL — just "from -> to" — and not tied to the
+// conversation. An earlier version keyed on conversationFingerprint (system +
+// first user message) and was useless in practice: Hermes injects the current
+// time, memories and system-reminders into the system prompt, so every single
+// call hashed to a "new" conversation and every single call re-announced. Any
+// key derived from prompt content has that failure mode; the provider pair does
+// not.
 //
 // The TTL means a provider that is still down hours later re-announces itself
 // rather than failing over silently forever.
@@ -120,15 +125,13 @@ type failoverNotices struct {
 }
 
 const (
-	failoverNoticeTTL = 10 * time.Minute
+	failoverNoticeTTL = 30 * time.Minute
 	failoverNoticeMax = 4096
 )
 
 var noticeCache = &failoverNotices{m: map[string]time.Time{}}
 
 // announce reports whether this failover should be shown, recording it when so.
-// An empty key (a request with no stable conversation head to fingerprint) is
-// always announced — better a duplicate than a silent reroute.
 func (f *failoverNotices) announce(key string) bool {
 	if key == "" {
 		return true

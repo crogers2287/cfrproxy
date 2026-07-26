@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -170,14 +171,7 @@ func noteIfChanged(typed, resolved string) string {
 // Kimi). New accounts land in its auth dir; models flow into cfrproxy via
 // the registered "oauth" provider's live scan.
 func cmdLogin(args []string) {
-	bin := os.Getenv("CLIPROXY_BIN")
-	if bin == "" {
-		if p, err := exec.LookPath("cli-proxy-api"); err == nil {
-			bin = p
-		} else {
-			bin = "cli-proxy-api" // rely on PATH; override with CLIPROXY_BIN
-		}
-	}
+	bin := findCLIProxyBin()
 	cfg := os.Getenv("CLIPROXY_CONFIG")
 	if cfg == "" {
 		home, _ := os.UserHomeDir()
@@ -307,4 +301,31 @@ func cmdModels(args []string) {
 			fmt.Printf("  %s/%s\n", prov.Name, m)
 		}
 	}
+}
+
+// findCLIProxyBin locates the CLIProxyAPI binary: an explicit CLIPROXY_BIN
+// wins, then PATH, then the usual install spots. Checking those spots matters
+// because CLIProxyAPI is commonly built from source into its own directory and
+// never linked onto PATH — without this, `cfrproxy login` fails on a machine
+// where the daemon is plainly running.
+func findCLIProxyBin() string {
+	if v := os.Getenv("CLIPROXY_BIN"); v != "" {
+		return v
+	}
+	if p, err := exec.LookPath("cli-proxy-api"); err == nil {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	for _, c := range []string{
+		filepath.Join(home, "cliproxyapi", "cli-proxy-api"),
+		filepath.Join(home, "cli-proxy-api", "cli-proxy-api"),
+		filepath.Join(home, ".cli-proxy-api", "cli-proxy-api"),
+		"/usr/local/bin/cli-proxy-api",
+		"/opt/cli-proxy-api/cli-proxy-api",
+	} {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	return "cli-proxy-api" // last resort; the caller reports a clear not-found
 }
