@@ -58,14 +58,33 @@ def fetch_providers():
     return [p for p in data if p.get("enabled")]
 
 
+# Real usable context for providers whose models can't be discovered from
+# /v1/models (local llama-swap servers report no context_length). Without this
+# Hermes assumes a huge default (256k) and lets the conversation overflow the
+# model's real window before compressing. Example: a local 27B server started
+# with n_ctx=131072 — input + reserved output + MTP/vision overhead (~22k
+# observed) must fit, so 98304 leaves a ~32k safety margin.
+# Key = cfrproxy provider name; add an entry per local provider you run.
+CONTEXT_LENGTHS = {
+    "myhost": 98304,
+}
+
+
 def hermes_entry(name):
-    return {
+    # Trim: a provider named "Qwen " (trailing space) produced base_url
+    # ".../p/Qwen /v1" -> "/p/Qwen%20/v1", which matched no provider and made
+    # the Telegram picker show the provider with zero models.
+    name = name.strip()
+    e = {
         "name": f"cfrproxy-{name}",
         "base_url": f"{DATA_HOST}/p/{name}/v1",
         "api_key": "cfrproxy",
         "api_mode": "chat_completions",
         "discover_models": True,
     }
+    if name in CONTEXT_LENGTHS:
+        e["context_length"] = CONTEXT_LENGTHS[name]
+    return e
 
 
 def sync_profile(cfg_path, providers):
@@ -130,13 +149,47 @@ def clear_caches():
                 pass
 
 
+STATE_FILE = os.path.join(HERMES_ROOT, ".cfrproxy_sync_state")
+
+
+def restart_gateways():
+    """Restart hermes gateways so they reload config.yaml custom_providers."""
+    import subprocess
+    try:
+        subprocess.run(["systemctl", "--user", "restart", "hermes-gateway-*"],
+                       check=False, timeout=60)
+        return True
+    except Exception as e:
+        print(f"  gateway restart failed: {e}")
+        return False
+
+
 def main():
+    # --auto (or CFRPROXY_SYNC_AUTO=1): change-detecting mode for the timer —
+    # no-op when the enabled provider set is unchanged; otherwise sync AND
+    # restart gateways automatically. Manual runs stay verbose and hands-off.
+    auto = "--auto" in sys.argv or os.environ.get("CFRPROXY_SYNC_AUTO") == "1"
+
     providers = fetch_providers()
     if not providers:
         raise SystemExit("no enabled providers from cfrproxy admin API")
     names = [p["name"] for p in providers]
-    print(f"cfrproxy enabled providers: {names}")
 
+    # signature of the provider SET (add/remove is all that needs a re-sync;
+    # models within a provider are probed live by Hermes). Case-preserving:
+    # the name goes into base_url verbatim, so a rename that only changes case
+    # still has to re-sync — lowercasing here hid exactly that and left stale
+    # entries in place.
+    sig = ",".join(sorted(n.strip() for n in names))
+    prev = ""
+    try:
+        prev = open(STATE_FILE).read().strip()
+    except OSError:
+        pass
+    if auto and sig == prev:
+        return  # unchanged — cheap no-op, no gateway churn
+
+    print(f"cfrproxy enabled providers: {names}")
     profiles = sorted(glob.glob(os.path.join(HERMES_ROOT, "profiles", "*", "config.yaml")))
     if not profiles:
         # single-config install
@@ -150,8 +203,18 @@ def main():
     slugs = patch_provider_groups(providers)
     print(f"PROVIDER_GROUPS['cfrproxy'] members: {slugs}")
     clear_caches()
-    print("picker caches cleared. Restart gateways to load config:")
-    print("  systemctl --user restart 'hermes-gateway-*'")
+    try:
+        open(STATE_FILE, "w").write(sig)
+    except OSError:
+        pass
+
+    if auto:
+        print("provider set changed — restarting gateways to load config…")
+        restart_gateways()
+        print("done.")
+    else:
+        print("picker caches cleared. Restart gateways to load config:")
+        print("  systemctl --user restart 'hermes-gateway-*'")
 
 
 if __name__ == "__main__":

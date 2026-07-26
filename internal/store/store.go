@@ -327,9 +327,25 @@ func (s *Store) maybeReload() {
 	}
 }
 
+// ProviderByName resolves a provider by name. Exact match wins; failing that
+// it retries trimmed + case-insensitively, so a scoped mount like
+// /p/qwen/v1/models (or a stale "/p/Qwen%20/" carrying a trailing space from
+// an old config) still finds the provider named "Qwen". This matches how
+// ResolveModel already compares the "provider/model" prefix (EqualFold) — a
+// case-sensitive lookup here silently returned an empty model list instead.
 func (s *Store) ProviderByName(name string) (Provider, bool) {
-	for _, p := range s.Providers() {
+	provs := s.Providers()
+	for _, p := range provs {
 		if p.Name == name {
+			return p, true
+		}
+	}
+	want := strings.TrimSpace(name)
+	if want == "" {
+		return Provider{}, false
+	}
+	for _, p := range provs {
+		if strings.EqualFold(strings.TrimSpace(p.Name), want) {
 			return p, true
 		}
 	}
@@ -387,6 +403,10 @@ func (s *Store) SaveProvider(p *Provider) error {
 	if !ValidTypes[p.Type] {
 		return fmt.Errorf("invalid provider type %q (want openai|anthropic|ollama)", p.Type)
 	}
+	// Trim first: a stray trailing space in a provider name is invisible in the
+	// UI but breaks every scoped mount built from it (/p/<name>/v1).
+	p.Name = strings.TrimSpace(p.Name)
+	p.BaseURL = strings.TrimSpace(p.BaseURL)
 	if p.Name == "" || p.BaseURL == "" {
 		return errors.New("name and base_url are required")
 	}

@@ -126,9 +126,13 @@ func (u *usageAcc) add(pt, ct int) {
 // a single slow/overloaded model can't stall the whole round table.
 const perCallTimeout = 100 * time.Second
 
+// consultTimeout is looser than perCallTimeout: a single-model consult has no
+// panel to stall, and reasoning models on hard prompts routinely need minutes.
+const consultTimeout = 300 * time.Second
+
 // chatViaProxy sends one completion through the local proxy data plane. When
 // acc is non-nil, the call's token usage is added to it.
-func chatViaProxy(addr, model, system, user string, temperature string, maxTokens int, acc *usageAcc) (string, error) {
+func chatViaProxy(addr, model, system, user string, temperature string, maxTokens int, timeout time.Duration, acc *usageAcc) (string, error) {
 	body := map[string]any{
 		"model":      model,
 		"max_tokens": maxTokens,
@@ -144,7 +148,7 @@ func chatViaProxy(addr, model, system, user string, temperature string, maxToken
 		}
 	}
 	b, _ := json.Marshal(body)
-	client := &http.Client{Timeout: perCallTimeout}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Post(addr+"/v1/chat/completions", "application/json", bytes.NewReader(b))
 	if err != nil {
 		return "", err
@@ -223,7 +227,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 	if cfg.CompressContext && len(context) > 1500 {
 		if sum := compressionSummarizer(s); sum != "" {
 			prompt := "Compress the following context into a faithful, self-contained summary a reviewer can act on. Preserve every decision, fact, constraint, file path, identifier, number, and open question. Drop repetition and filler. Plain text, no preamble, no markdown.\n\nContext:\n" + context
-			if c, err := chatViaProxy(addr, sum, "You are a precise technical summarizer.", prompt, "", 900, acc); err == nil && strings.TrimSpace(c) != "" {
+			if c, err := chatViaProxy(addr, sum, "You are a precise technical summarizer.", prompt, "", 900, perCallTimeout, acc); err == nil && strings.TrimSpace(c) != "" {
 				before := len(context)
 				context = strings.TrimSpace(c)
 				compressed = true
@@ -245,7 +249,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		go func(i int, a store.AgentProfile) {
 			defer wg.Done()
 			sys := a.Persona + "\nYou are speaking on a live panel — a conversation, not a work session. You have your own expertise plus the question and any context below; that is everything you need and everything you get. Open with your verdict in one sentence, then give the 2-4 strongest concrete reasons for it. If a detail is missing, name your assumption in a short clause and reason from it — never pause for more. Take a clear side. Plain prose, under 300 words."
-			ans, err := chatViaProxy(addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens, acc)
+			ans, err := chatViaProxy(addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens, perCallTimeout, acc)
 			if err != nil {
 				ans = "(unavailable: " + err.Error() + ")"
 			}
@@ -268,7 +272,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 					}
 				}
 				sys := a.Persona + "\nThe other panelists have spoken; their positions are below. This is still a live exchange — respond from judgment, not research. Say plainly where someone shifted your view, where someone is wrong and exactly why, and land on your final verdict in one clear sentence. Concede real points; hold your ground on the rest. Plain prose, under 250 words."
-				ans, err := chatViaProxy(addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens, acc)
+				ans, err := chatViaProxy(addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens, perCallTimeout, acc)
 				if err != nil {
 					ans = answers[i] // keep round-1 answer on failure
 				}
@@ -289,7 +293,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		fmt.Fprintf(&transcript, "## %s (%s)\n%s\n\n", a.Name, a.Model, answers[i])
 	}
 	modSys := "You are the panel's moderator. Using only what the panelists actually said in the transcript below, write four short sections under these exact headings: Consensus — what they genuinely agree on. Disagreements — who splits from the group and why it matters. Recommendation — the single strongest answer the panel supports; commit to one, no hedging. Dissent worth keeping — one minority point that should survive, or omit this heading if there is none. Represent each panelist faithfully and add no position that no one took. Plain prose, under 400 words."
-	synthesis, err := chatViaProxy(addr, moderator, modSys, q+"\n\nPanel transcript:\n"+transcript.String(), "", cfg.MaxTokens, acc)
+	synthesis, err := chatViaProxy(addr, moderator, modSys, q+"\n\nPanel transcript:\n"+transcript.String(), "", cfg.MaxTokens, perCallTimeout, acc)
 	if err != nil {
 		synthesis = "(moderator unavailable: " + err.Error() + ")"
 	}
@@ -394,7 +398,7 @@ func cmdMCP(args []string) {
 					if p.Args.Context != "" {
 						q = "Context:\n" + p.Args.Context + "\n\nQuestion:\n" + q
 					}
-					return chatViaProxy(addr, a.Model, a.Persona, q, a.Temperature, loadRTConfig(s).MaxTokens, nil)
+					return chatViaProxy(addr, a.Model, a.Persona, q, a.Temperature, loadRTConfig(s).MaxTokens, consultTimeout, nil)
 				case "list_profiles":
 					profiles, err := s.AgentProfiles()
 					if err != nil {

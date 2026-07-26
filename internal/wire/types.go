@@ -27,6 +27,10 @@ type Msg struct {
 	Content    string
 	ToolCalls  []ToolCall // assistant messages
 	ToolCallID string     // tool result messages
+	// ReasoningContent carries a reasoning model's thinking (deepseek et al.)
+	// on assistant messages. Some reasoning APIs REQUIRE it to be passed back
+	// on the next turn, so it must survive dialect translation, not be dropped.
+	ReasoningContent string
 }
 
 type ToolCall struct {
@@ -45,6 +49,7 @@ type Response struct {
 	ID               string
 	Model            string
 	Content          string
+	ReasoningContent string // reasoning model thinking (deepseek et al.)
 	ToolCalls        []ToolCall
 	FinishReason     string // stop | tool_calls | length
 	PromptTokens     int
@@ -55,6 +60,7 @@ type Response struct {
 // Delta is one unit of a normalized stream.
 type Delta struct {
 	Text             string
+	Reasoning        string // streamed reasoning_content fragment (reasoning models)
 	TC               *TCDelta
 	Finish           string // non-empty on the final delta
 	PromptTokens     int
