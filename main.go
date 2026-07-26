@@ -80,6 +80,8 @@ func main() {
 		cmdMap(rest)
 	case "login":
 		cmdLogin(rest)
+	case "oauth":
+		cmdOAuth(rest)
 	case "config":
 		cmdConfig(rest)
 	case "mcp":
@@ -124,6 +126,9 @@ Usage:
   cfrproxy mcp                                        round-table consensus MCP server (stdio)
                    register: claude mcp add roundtable -- cfrproxy mcp
   cfrproxy config  set KEY VALUE | get KEY            server settings (e.g. cliproxy_mgmt_key)
+  cfrproxy oauth   scan [--apply] [--key K]           auto-register providers for
+                   every OAuth account CLIProxyAPI already holds (claude, codex,
+                   grok/xai, antigravity/gemini, kimi) with the right models_filter
   cfrproxy login   codex|codex-device|claude|antigravity|kimi|supergrok [--no-browser]
                    OAuth device/browser login via CLIProxyAPI; models appear
                    under the "oauth" provider automatically
@@ -546,4 +551,48 @@ func cmdPasswd(args []string) {
 		fatal("%v", err)
 	}
 	fmt.Println("password updated")
+}
+
+// cmdOAuth — `cfrproxy oauth scan [--apply]`. Turns the OAuth logins
+// CLIProxyAPI already holds into cfrproxy providers, so a fresh install doesn't
+// have to hand-build one provider per backend with the right models_filter.
+func cmdOAuth(args []string) {
+	if len(args) == 0 || args[0] != "scan" {
+		fatal("usage: cfrproxy oauth scan [--apply] [--key K] [--data DIR]")
+	}
+	fs := flag.NewFlagSet("oauth scan", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data directory")
+	apply := fs.Bool("apply", false, "actually create the providers (default: preview only)")
+	key := fs.String("key", "", "CLIProxyAPI api-key (default: reuse an existing provider's, else read config.yaml)")
+	fs.Parse(args[1:])
+
+	s := openStore(*data)
+	defer s.Close()
+	a := &api.API{Store: s, Proxy: proxy.New(s)}
+
+	results, keySrc, err := a.ScanOAuth(context.Background(), *apply, *key)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if len(results) == 0 {
+		fmt.Println("no OAuth accounts found in CLIProxyAPI.")
+		fmt.Println("log in first, e.g.: cfrproxy login claude   (also: codex, antigravity, supergrok, kimi)")
+		return
+	}
+	fmt.Printf("CLIProxyAPI api-key: %s\n\n", keySrc)
+	fmt.Printf("%-13s %-10s %-12s %-7s %s\n", "AUTH", "PROVIDER", "ACTION", "MODELS", "DEFAULT / DETAIL")
+	for _, r := range results {
+		d := r.Default
+		if d == "" {
+			d = r.Detail
+		}
+		fmt.Printf("%-13s %-10s %-12s %-7d %s\n", r.Auth, r.Provider, r.Action, r.Models, d)
+	}
+	if !*apply {
+		fmt.Println("\npreview only — re-run with --apply to create these providers.")
+		return
+	}
+	fmt.Println("\ndone. Next:")
+	fmt.Println("  cfrproxy models              # confirm each provider's catalog")
+	fmt.Println("  python3 scripts/sync_hermes_cfrproxy.py   # expose them in Hermes/Telegram pickers")
 }

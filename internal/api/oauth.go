@@ -35,12 +35,23 @@ func (a *API) mgmtURL() string {
 	return "http://127.0.0.1:8317"
 }
 
+// mgmtKey is the management API bearer token: the stored setting wins, but a
+// box that already runs CLIProxyAPI locally has it in that daemon's own
+// config.yaml, so fall back to reading it there rather than making a fresh
+// install hand-copy a secret before anything works.
+func (a *API) mgmtKey() string {
+	if v := a.Store.Setting("cliproxy_mgmt_key"); v != "" {
+		return v
+	}
+	return mgmtKeyFromCLIProxyConfig()
+}
+
 // mgmt performs an authenticated call against the CLIProxyAPI management API
 // and returns the raw response body.
 func (a *API) mgmt(method, path string, body io.Reader, contentType string) (int, []byte, error) {
-	key := a.Store.Setting("cliproxy_mgmt_key")
+	key := a.mgmtKey()
 	if key == "" {
-		return 0, nil, fmt.Errorf("cliproxy_mgmt_key not configured — set it with: cfrproxy config set cliproxy_mgmt_key <key>")
+		return 0, nil, fmt.Errorf("cliproxy_mgmt_key not configured.\n%s", MgmtKeyHint())
 	}
 	req, err := http.NewRequest(method, a.mgmtURL()+"/v0/management"+path, body)
 	if err != nil {

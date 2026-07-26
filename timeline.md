@@ -62,6 +62,88 @@ Source: chat ("yeah apply it. also, the failover is putting way too much garbage
 
 **REQ-029 status: COMPLETE.**
 
+### REQ-030 — banner dedupe didn't work in production (my bug) + share-endpoint chaining test
+
+Source: chat ("I'm still getting a ton of failover garbage in Hermes in telegram" + ~30 pasted copies) and ("edit the share proxy… to point only to the nexum router provider and see if we add that proxy inside of his CFR proxy, if it pulls all the models correctly and routes correctly")
+
+#### Part A — REQ-029's dedupe was ineffective against real traffic
+
+The terse banner shipped, but the **suppression never fired in production**. REQ-029 keyed it on `conversationFingerprint` = sha256(system + first user message). Hermes injects the current time, memories, and system-reminders into the system prompt, so **every call hashed to a different "conversation"** and every call re-announced. The REQ-029 test passed only because it used a *fixed* prompt — it never exercised the thing that breaks it.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Root cause | ✅ | Reproduced live: 4 calls, same conversation, system prompt differing only by a timestamp → **4 banners** |
+| Deployment ruled out first | ✅ | Serving pid started 13:15:35 vs binary mtime 13:15:36 — the new build *was* live; the logic was wrong, not stale |
+| Fix | 🟡 | Key is now the failover **pair** (`from -> to/model`), global, no conversation component — nothing derived from prompt content can be trusted. TTL 10 → **30 min** |
+| Test now covers it | ✅ | `TestFailoverBannerRateLimited` churns the system prompt across 6 calls. **Verified non-vacuous**: restoring the fingerprint key fails with `got 6 across 6 prompt-churning calls` |
+| Live | ✅ | 8 calls, each with a distinct system prompt + random token → **1 banner**, calls 2–8 clean |
+
+Trade-off accepted: suppression is global, so a second conversation inside the 30-min window is not told it's on a fallback. The trace and WebUI errors panel still record every hop. Say the word if you'd rather have a setting to silence it entirely — grok is exhausted indefinitely, so this fires forever otherwise.
+
+#### Part B — share endpoint scoped to one provider, consumed by a second cfrproxy
+
+`todd-api` re-scoped from `models=""` (all 92) to `models="Nexum/*"` (3). **Reversible**: set it back to empty to restore full access.
+
+| Check | Result |
+|---|---|
+| Endpoint lists only Nexum | ✅ 92 → 3: `Nexum/qwen-3.8-max-preview-thinking`, `Nexum/qwen-3.7-max`, `Nexum/nexum-router` |
+| Allowed model routes | ✅ 200 `SHARE_OK` |
+| Non-Nexum model refused | ✅ **403** `model not permitted on this endpoint: claude/claude-sonnet-5` |
+| Missing key refused | ✅ **401** |
+| 2nd cfrproxy (separate `--data`, port 8421) discovers models | ✅ `cfrproxy models --name shared` → all 3, as `shared/Nexum/<model>` |
+| Its `/v1/models` (what his harnesses see) | ✅ exactly those 3, nothing else leaks |
+| Chained routing, full nested id | ✅ `shared/Nexum/qwen-3.7-max` → `CHAIN_OK` |
+| Chained routing, **bare** id | ✅ `qwen-3.7-max` → `BARE_OK` (fuzzy-matches through both hops) |
+| All 3 models individually | ✅ each returns 200 with the right upstream model |
+| Streaming | ✅ SSE chunks pass through both hops |
+| **Public URL** (what he actually uses) | ✅ `https://api.skinnyc.pro/e/todd-api/v1` — list + chat both 200 (`PUBLIC_OK`) |
+
+Note the model ids nest: his side addresses them as `shared/Nexum/<model>`. That resolves correctly at both hops, and bare ids work too, so his harness pickers are usable either way.
+
+Test instance stopped; its data dir was in scratch, so nothing was left behind.
+
+**REQ-030 status: COMPLETE.**
+
+### REQ-031 — auto-register existing OAuth subscriptions + setup skill
+
+Source: chat ("It should scan and automatically add any oauths that are existing, like his codex login or Claude login or grok build, antigravity, etc… you need to add a skill. basically that explains how to do all of this to our GitHub repo") — raised while a friend's agent was installing cfrproxy from scratch.
+
+#### Part A — `cfrproxy oauth scan [--apply]`
+
+A fresh install already has logins sitting in CLIProxyAPI; turning them into providers was manual (one provider per backend, same base URL, separated by `models_filter`). Get a filter wrong and model families silently mix.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Discovery | 🟡 built | `internal/api/oauthscan.go`: reads CLIProxyAPI `/v0/management/auth-files`; live box → antigravity, claude, codex, xai |
+| Provider creation | 🟡 built | one provider per backend at CLIProxyAPI `/v1` with filter + default model picked from the **live catalog** |
+| Idempotent | ✅ | existing providers reported `exists`, never modified — re-run is safe |
+| Data-plane key auto-found | ✅ | explicit `--key` → key already on a same-base provider → `api-keys:` in CLIProxyAPI `config.yaml` (plaintext) |
+| **Management key can NOT be auto-found** | ✅ | CLIProxyAPI stores `remote-management.secret-key` **bcrypt-hashed** (60-char `$2a$…`). Sending the digest = bare 401. Detected via `looksHashed`, so the error explains it instead of the user chasing a 401 |
+| Claude filter is an allow-list, not exclusions | 🟡 fixed | `claude-opus-*,claude-sonnet-*,claude-haiku-*,claude-fable-*,claude-3-*,claude-4-*`. CLIProxyAPI's `oauth-model-alias` mints forks (`claude-gpt-*`, `claude-command-*`, `claude-fred-*`…) and every machine differs — an exclusion list absorbs any family we hadn't enumerated. Yields exactly the same 16 models as the hand-tuned filter |
+| Fresh-install E2E | ✅ | clean `--data` dir → preview → `--apply` → served `claude/claude-sonnet-5`, `codex/gpt-5.6-terra`, `gemini/gemini-3-flash` all **200**; `claude/gpt-5.6-terra` correctly **refused** (no leak) |
+| Tests | ✅ | 8 in `oauthscan_test.go`: config parsing (top-level vs nested vs inline), bcrypt rejection + hint wording, default-model precedence, and alias-fork leak-proofing incl. an unknown `claude-somethingnew-*` family |
+
+#### Part B — setup skill
+
+`skills/cfrproxy-setup/SKILL.md` — build → OAuth scan → manual providers → Hermes/Telegram picker wiring (`cfrproxy ▸ cfrproxy-grok ▸ grok-4.5`) → share endpoints + chaining one cfrproxy behind another → troubleshooting. The troubleshooting section is drawn from REQ-028/029/030 and today's live debugging, not invented: bcrypt mgmt key, `models_filter` leaks, scoped-mount name matching, gateways caching Python modules at import, the models.dev context-length fallback and its dash-sensitive substring match, `tool_choice` naming an absent tool, and Telegram flood control.
+
+#### Part C — incidental fix
+`launch.go` had a hardcoded `/home/crogers2287/cliproxyapi/cli-proxy-api`, which would break any other machine (the public mirror already carried a generic form, so a future port would have re-leaked the path). Replaced with `findCLIProxyBin()`: `CLIPROXY_BIN` → `PATH` → common install dirs → bare name. Verified `cfrproxy login` still resolves here, where the binary is **not** on `PATH`.
+
+#### Files modified
+- new `internal/api/oauthscan.go`, `internal/api/oauthscan_test.go`, `skills/cfrproxy-setup/SKILL.md`
+- `internal/api/oauth.go` — `mgmtKey()` + hash-aware hint
+- `internal/proxy/models.go` — exported `ApplyModelsFilter` for filter previewing
+- `main.go` — `oauth` subcommand + usage; `launch.go` — binary discovery
+
+#### Deploy + verify
+`go vet` clean, `go test ./...` all pass; rebuilt, `systemctl --user restart cfrproxy.service` → active, `/health` 200.
+
+**REQ-031 status: COMPLETE.**
+
+#### Diagnosed, NOT fixed (different repo, awaiting go-ahead)
+**Telegram "Message delivery failed after multiple attempts"** is *not* a timeout and not cfrproxy. Gateway logs show `Flood control exceeded. Retry in 31 seconds`, while `~/.hermes/hermes-agent/gateway/platforms/base.py:3429` retries with `max_retries=2, base_delay=2.0` → ~2.3s then ~4.6s (≈7s) and gives up. Telegram's `retry_after` is ignored in favour of blind exponential backoff. `telegram.py` has a flood-aware path (`retrying in 31.0s`) that the outer `base.py` send loop doesn't use. Flood pressure itself comes from streaming `editMessageText` calls. Fix = honour `retry_after` in the outer loop.
+
 #### Pre-existing, untouched
 `gofmt -l` flags `internal/store/store.go` (field alignment in the `Trace` struct), plus `internal/api/api.go`, `internal/tui/tui.go`, `internal/wire/{anthropic,ollama,openai}.go`, `launch_test.go`. Unrelated to REQ-028/029 — not reformatted, to keep those diffs clean.
 
