@@ -27,6 +27,11 @@ type AutoRouterConfig struct {
 	Classifier string            `json:"classifier"`
 	Planner    string            `json:"planner"` // provider/model for the auto-plan stage
 	Routes     map[string]string `json:"routes"`
+	// Sticky pins a conversation to the model it was first routed to, so later
+	// turns reuse a warm prompt cache instead of re-classifying onto a
+	// different model with a cold prefix. nil = on (cache-friendly default).
+	Sticky           *bool `json:"sticky,omitempty"`
+	StickyTTLMinutes int   `json:"sticky_ttl_minutes,omitempty"`
 }
 
 func (p *Proxy) AutoRouterConfig() AutoRouterConfig {
@@ -74,6 +79,15 @@ func (p *Proxy) AutoRouteWith(ctx context.Context, req *wire.Request, cfg AutoRo
 	def := cfg.Routes["default"]
 	if cfg.Classifier == "" {
 		return def, "default"
+	}
+	// Same conversation as a previous turn? Reuse that model so its prompt
+	// cache stays warm — and skip the classifier call while we're at it.
+	fp := ""
+	if cfg.sticky() {
+		fp = conversationFingerprint(req)
+		if m, b, ok := routeCache.get(fp, cfg.stickyTTL()); ok {
+			return m, b + "·sticky"
+		}
 	}
 
 	// snapshot of the request for the classifier
@@ -126,9 +140,11 @@ func (p *Proxy) AutoRouteWith(ctx context.Context, req *wire.Request, cfg AutoRo
 	answer := strings.ToLower(strings.TrimSpace(norm.Content))
 	for _, b := range buckets {
 		if strings.Contains(answer, strings.ToLower(b)) {
+			routeCache.put(fp, cfg.Routes[b], b) // pin this conversation
 			return cfg.Routes[b], b
 		}
 	}
+	routeCache.put(fp, def, "default")
 	return def, "default"
 }
 

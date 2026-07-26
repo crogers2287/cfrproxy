@@ -55,6 +55,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 th{color:var(--dim);text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
 td{padding:6px 10px;border-bottom:1px solid #21262d;vertical-align:top}
 tr.err td{color:var(--err)}
+tr.warn td{color:var(--warn)}
 code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 .pill{display:inline-block;font-size:11px;padding:0 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim)}
 .pill.on{color:var(--ok);border-color:var(--ok)}
@@ -145,6 +146,20 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <button class="b primary" onclick="addMapEntry()">Add</button>
   </div>
   <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Auto fallback chain</h2>
+    <span id="gf-state" class="pill"></span>
+  </div>
+  <p class="hint">The catch-all safety net for <b>every</b> model. If the model a harness asked for can't serve — subscription/quota exhausted, rate limited, provider overloaded or unreachable, or the prompt overflows its context — the request continues down this list instead of failing. Runs <i>after</i> a provider's own <code>fallback</code> field, so you don't have to wire each provider by hand. Order matters; the first target that answers wins, and the reply is tagged with a ⚠️ notice saying what was skipped. Up to 5 targets are tried per request.</p>
+  <div style="max-width:760px">
+    <div class="check"><input type="checkbox" id="gf-enabled" onchange="renderGF()"><span>Enabled</span></div>
+    <div id="gf-list" style="margin-top:8px"></div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="b" onclick="gfAdd()">+ Add target</button>
+      <button class="b primary" onclick="saveGlobalFallback()">Save fallback chain</button>
+    </div>
+  </div>
+
+  <div class="toolbar" style="margin-top:32px">
     <h2 style="margin:0">Auto router</h2>
     <span id="ar-state" class="pill"></span>
   </div>
@@ -155,6 +170,10 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <div style="display:flex;gap:8px"><select id="ar-classifier-p" style="flex:1" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m" style="flex:2"></select></div>
     <label>Planner model (strong reasoner — enables the <code>auto-plan</code> virtual model: plan first, then route + execute with the briefing)</label>
     <div style="display:flex;gap:8px"><select id="ar-planner-p" style="flex:1" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m" style="flex:2"></select></div>
+    <div class="check" style="margin-top:10px"><input type="checkbox" id="ar-sticky"><span>Sticky routing <span style="color:var(--dim)">— keep a conversation on the model it was first routed to</span></span></div>
+    <p class="hint" style="margin:2px 0 0">Strongly recommended. Prompt caches are per model, so re-classifying every turn can land turn 2 on a different model with a <b>cold</b> prefix — you pay full price for the whole context again. Sticky routing decides once per conversation, keeps the cache warm, and skips the classifier call on later turns (cheaper + faster). Turn it off only if you want every single turn re-classified. Sticky reuse shows as <code>·sticky</code> in Live Traces.</p>
+    <label>Sticky window (minutes — how long a conversation stays pinned; blank = 30)</label>
+    <input type="number" id="ar-sticky-ttl" min="1" max="1440" placeholder="30" style="max-width:160px">
     <table id="artable" style="margin-top:10px">
       <thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead>
       <tbody></tbody>
@@ -205,6 +224,16 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <span id="sse-state" class="pill">connecting…</span>
     <div class="spacer"></div>
     <button class="b" onclick="clearTraces()">Clear view</button>
+  </div>
+  <div id="errpanel" style="margin:12px 0;border:1px solid var(--err);border-radius:10px;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:10px;background:rgba(248,81,73,.12);padding:9px 12px">
+      <strong style="color:var(--err)">⚠ Recent errors</strong>
+      <span id="errcount" class="pill">0</span>
+      <span class="hint" style="margin:0">full provider error text — rate limits, quota, bad requests</span>
+      <div class="spacer"></div>
+      <button class="b" onclick="clearErrs()">Clear</button>
+    </div>
+    <div id="errlist" style="max-height:280px;overflow:auto"></div>
   </div>
   <h2 style="margin:18px 0 8px">Token burn by model</h2>
   <table id="statstable">
@@ -259,7 +288,17 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <div id="of-status" style="margin-top:12px;color:var(--dim)">waiting for login…</div>
     <div style="margin-top:10px"><button class="b danger" onclick="cancelOAuth()">Cancel</button></div>
   </div>
-  <table id="acctable">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin:14px 0">
+    <h3 style="margin:0 0 4px">API-key accounts</h3>
+    <p class="hint" style="margin:0 0 10px">Ollama Cloud isn't OAuth — create a key at <code>ollama.com/settings/keys</code> and paste it here. Saved as the <code>ollama-cloud</code> provider (base <code>https://ollama.com/v1</code>); its models appear in the picker automatically.</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <strong style="min-width:110px">🦙 Ollama Cloud</strong>
+      <input type="password" id="oc-key" placeholder="ollama.com API key" style="flex:1;min-width:220px">
+      <button class="b primary" onclick="saveOllamaCloud()">Save</button>
+      <span id="oc-status" style="color:var(--dim)"></span>
+    </div>
+  </div>
+  <table id="acctable"
     <thead><tr><th>Provider</th><th>Account</th><th>Type</th><th>Status</th><th>OK / fail</th><th>Last refresh</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
@@ -472,7 +511,7 @@ function showTab(name){
   $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
-  if(name==='providers'){renderLaunch();loadRouters();}
+  if(name==='providers'){renderLaunch();loadRouters();loadGlobalFallback();}
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
@@ -628,6 +667,49 @@ async function testProvider(id,btn){
   }catch(err){out.innerHTML=`<span class="badge-err">✗ ${esc(err.message)}</span>`}
 }
 
+// ---- global auto fallback chain ----
+let gfTargets=[];
+function renderGF(){
+  const box=$('#gf-list');if(!box)return;
+  if(!gfTargets.length){box.innerHTML='<div class="hint" style="margin:0">No targets yet — add the models you want requests to fall back to, strongest/cheapest first.</div>';}
+  else{
+    box.innerHTML=gfTargets.map((t,i)=>{
+      const opts=['<option value="">— pick a model —</option>']
+        .concat(allModels.map(m=>`<option value="${esc(m)}"${m===t?' selected':''}>${esc(m)}</option>`));
+      // keep a stale/unknown target visible instead of silently dropping it
+      if(t&&!allModels.includes(t))opts.push(`<option value="${esc(t)}" selected>${esc(t)} (not in catalog)</option>`);
+      return `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <span class="mono" style="color:var(--dim);min-width:18px">${i+1}.</span>
+        <select style="flex:1" onchange="gfSet(${i},this.value)">${opts.join('')}</select>
+        <button class="b" title="move up" onclick="gfMove(${i},-1)"${i===0?' disabled':''}>↑</button>
+        <button class="b" title="move down" onclick="gfMove(${i},1)"${i===gfTargets.length-1?' disabled':''}>↓</button>
+        <button class="b danger" onclick="gfDel(${i})">Del</button></div>`;
+    }).join('');
+  }
+  const p=$('#gf-state');
+  if(p){const on=$('#gf-enabled').checked;p.textContent=on?`on · ${gfTargets.filter(Boolean).length} targets`:'off';p.classList.toggle('on',on)}
+}
+function gfSet(i,v){gfTargets[i]=v;renderGF()}
+function gfAdd(){gfTargets.push('');renderGF()}
+function gfDel(i){gfTargets.splice(i,1);renderGF()}
+function gfMove(i,d){const j=i+d;if(j<0||j>=gfTargets.length)return;[gfTargets[i],gfTargets[j]]=[gfTargets[j],gfTargets[i]];renderGF()}
+async function loadGlobalFallback(){
+  try{
+    const c=await api('global-fallback');
+    $('#gf-enabled').checked=!!c.enabled;
+    gfTargets=(c.targets||[]).slice();
+    renderGF();
+  }catch(err){/* panel is best-effort */}
+}
+async function saveGlobalFallback(){
+  const targets=gfTargets.map(t=>(t||'').trim()).filter(Boolean);
+  try{
+    await api('global-fallback',{method:'PUT',body:JSON.stringify({enabled:$('#gf-enabled').checked,targets})});
+    gfTargets=targets;renderGF();
+    toast(targets.length?`fallback chain saved (${targets.length} targets)`:'fallback chain cleared');
+  }catch(err){toast('fallback: '+err.message,true)}
+}
+
 // ---- model map ----
 let modelMap={};
 let allModels=[];
@@ -643,6 +725,7 @@ function fillAllModelSelects(){
   }
   const mt=$('#map-target');
   if(mt){const cur=mt.value;mt.innerHTML=allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');if(cur)mt.value=cur;}
+  renderGF(); // repopulate fallback-chain pickers once the catalog is in
 }
 async function loadModelMap(){
   modelMap=await api('modelmap');
@@ -722,6 +805,9 @@ async function loadAutoRoute(){
     await setPair('ar-classifier',c.classifier||'');
     await setPair('ar-planner',c.planner||'');
     for(const b of AR_BUCKETS)await setPair('ar-'+b,(c.routes||{})[b]||'');
+    // sticky defaults to ON when the key is absent (cache-friendly default)
+    $('#ar-sticky').checked=(c.sticky===undefined||c.sticky===null)?true:!!c.sticky;
+    $('#ar-sticky-ttl').value=c.sticky_ttl_minutes||'';
     const pill=$('#ar-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
   }catch(err){toast('autoroute: '+err.message,true)}
 }
@@ -747,7 +833,8 @@ async function saveFusion(){
 async function saveAutoRoute(){
   const routes={};
   AR_BUCKETS.forEach(b=>{const v=getPair('ar-'+b);if(v)routes[b]=v});
-  const body={enabled:$('#ar-enabled').checked,classifier:getPair('ar-classifier'),planner:getPair('ar-planner'),routes};
+  const body={enabled:$('#ar-enabled').checked,classifier:getPair('ar-classifier'),planner:getPair('ar-planner'),routes,
+    sticky:$('#ar-sticky').checked,sticky_ttl_minutes:parseInt($('#ar-sticky-ttl').value,10)||0};
   try{await api('autoroute',{method:'PUT',body:JSON.stringify(body)});toast('auto router saved');loadAutoRoute()}
   catch(err){toast(err.message,true)}
 }
@@ -807,9 +894,35 @@ async function delTransform(id){
 
 // ---- traces ----
 const trbody=()=>$('#trtable tbody');
+// a real failure (not an informational failover note on a 200)
+function isErr(t){return t.status>=400||(t.err&&!t.err.startsWith('failover'))}
+let errShown=0;
+function bumpErrCount(){$('#errcount').textContent=errShown}
+function errRow(t){
+  const warn=t.status<400; // recovered-after-retry (e.g. rate-limit that succeeded on retry)
+  const col=warn?'var(--warn)':'var(--err)';
+  const badge=warn?'RETRIED · recovered':('HTTP '+t.status);
+  const d=document.createElement('div');
+  d.style.cssText='border-top:1px solid var(--border);padding:8px 12px';
+  const msg=(t.err||t.resp_snippet||'(no error text captured)');
+  d.innerHTML=`<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+      <span class="mono" style="color:var(--dim)">${new Date(t.ts).toLocaleTimeString()}</span>
+      <b>${esc(t.provider)}/${esc(t.model)}</b>
+      <span class="badge" style="color:${col};border:1px solid ${col};border-radius:5px;padding:0 5px;font-size:11px">${badge}</span>
+      <span style="color:var(--dim)">${t.latency_ms}ms</span></div>
+    <div class="mono" style="white-space:pre-wrap;word-break:break-word;margin-top:4px;color:${col}">${esc(msg)}</div>`;
+  return d;
+}
+function pushErr(t){
+  const list=$('#errlist');list.prepend(errRow(t));
+  errShown++;bumpErrCount();
+  while(list.children.length>50)list.lastChild.remove();
+}
+function clearErrs(){$('#errlist').innerHTML='';errShown=0;bumpErrCount()}
 function traceRow(t){
   const tr=document.createElement('tr');
-  if(t.status>=400||(t.err&&!t.err.startsWith('failover')))tr.classList.add('err');
+  if(t.status>=400)tr.classList.add('err');
+  else if(t.err&&!t.err.startsWith('failover'))tr.classList.add('warn');
   tr.style.cursor='pointer';
   tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
     d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
@@ -849,6 +962,9 @@ function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
 async function loadTraces(){
   const ts=await api('traces?limit=100');
   trbody().innerHTML='';ts.forEach(t=>trbody().appendChild(traceRow(t)));
+  // seed the errors panel from history (oldest→newest so newest ends up on top)
+  $('#errlist').innerHTML='';errShown=0;
+  ts.slice().reverse().filter(isErr).forEach(pushErr);
   loadStats();
 }
 function clearTraces(){trbody().innerHTML='';$('#tracedetail').classList.add('hidden')}
@@ -858,6 +974,7 @@ function connectSSE(){
   es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on')};
   let statsDebounce=null;
   es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));
+    if(isErr(t))pushErr(t);
     while(trbody().children.length>200)trbody().lastChild.remove();
     clearTimeout(statsDebounce);statsDebounce=setTimeout(loadStats,1500)};
 }
@@ -923,6 +1040,21 @@ async function loadAccounts(){
       tb.appendChild(tr);
     });
   }catch(err){toast('accounts: '+err.message,true)}
+}
+async function saveOllamaCloud(){
+  const key=$('#oc-key').value.trim();
+  if(!key){toast('paste an ollama.com API key first',true);return}
+  $('#oc-status').textContent='saving…';
+  try{
+    const list=await api('providers');
+    const existing=(list||[]).find(p=>p.name==='ollama-cloud');
+    const body={name:'ollama-cloud',type:'openai',base_url:'https://ollama.com/v1',
+      api_key:key,default_model:'',models:'',fallback:'',pinned_models:''};
+    if(existing){await api('providers/'+existing.id,{method:'PUT',body:JSON.stringify({...existing,...body,enabled:true})});}
+    else{await api('providers',{method:'POST',body:JSON.stringify({...body,enabled:true})});}
+    $('#oc-key').value='';$('#oc-status').textContent='saved ✓';
+    toast('Ollama Cloud saved — models appear in the picker within a minute');
+  }catch(err){$('#oc-status').textContent='';toast('ollama cloud: '+err.message,true)}
 }
 async function startOAuth(provider){
   cancelOAuth(true);

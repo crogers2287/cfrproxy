@@ -184,7 +184,22 @@ func (p *Proxy) publicKeyOK(r *http.Request) bool {
 	return false
 }
 
+// handle serves the /p/{provider}/... mounts. The path segment is canonicalised
+// to the provider's stored name before it becomes a "provider/model" string:
+// ResolveModel compares that prefix with EqualFold, so an off-by-a-space or
+// off-by-case mount ("/p/Qwen%20/", "/p/qwen/") failed the prefix match and fell
+// through to the global fuzzy search — silently answering a Qwen request from
+// whichever other provider happened to fuzzy-match the model id. An unknown
+// provider is now a 404 rather than a silent reroute.
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope string) {
+	if scope != "" {
+		prov, ok := p.Store.ProviderByName(scope)
+		if !ok {
+			httpErr(w, inbound, 404, "unknown provider mount: "+scope)
+			return
+		}
+		scope = prov.Name
+	}
 	p.handleCore(w, r, inbound, scope, nil)
 }
 
@@ -255,11 +270,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		if wantPlan {
 			if plan := p.PlanWith(r.Context(), req, rcfg); plan != "" {
 				brief := "Execution briefing from the planning stage (follow unless clearly wrong):\n" + plan
-				if req.System != "" {
-					req.System = req.System + "\n\n" + brief
-				} else {
-					req.System = brief
-				}
+				appendBriefing(req, brief)
 				autoNote = "planned "
 			}
 		}
@@ -299,12 +310,16 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		cands = append(cands, candidate{prov: fprov, model: fmodel, failover: true})
 		cur = fprov
 	}
+	// then the global auto-fallback chain, so every model has a safety net even
+	// when its provider has no `fallback` of its own
+	cands = p.appendGlobalFallback(r.Context(), cands, ep)
 
 	var resp *http.Response
 	var used candidate
 	var respRules []transform.Rule
 	var passth bool
 	lastErr := ""
+	var softErrs []string // transient errors that were retried/failed-over past
 	for _, c := range cands {
 		creq := *req
 		creq.Model = c.model
@@ -355,7 +370,34 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				eb, _ := io.ReadAll(io.LimitReader(r2.Body, 1<<20))
 				r2.Body.Close()
 				lastErr = fmt.Sprintf("%s: HTTP %d %s", c.prov.Name, r2.StatusCode, snip(eb))
+				softErrs = append(softErrs, lastErr)
 				continue
+			}
+			// Usage/quota exhaustion often comes back as a 4xx rather than 429 —
+			// e.g. Anthropic returns "out of extra usage" as a 400 invalid_request_error
+			// when a subscription's rolling usage window trips under load. Retrying the
+			// same provider won't help, but it IS exactly what a fallback chain is for,
+			// so move to the next candidate instead of hard-failing the harness.
+			if r2.StatusCode >= 400 && r2.StatusCode < 500 {
+				eb, _ := io.ReadAll(io.LimitReader(r2.Body, 1<<20))
+				r2.Body.Close()
+				// 402 Payment Required is definitionally an exhausted account,
+				// whatever wording the provider chose — don't play whack-a-mole
+				// with error strings for it.
+				if r2.StatusCode == 402 || usageExhausted(eb) {
+					lastErr = fmt.Sprintf("%s: usage cap (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					softErrs = append(softErrs, lastErr)
+					break // stop retrying this provider; try the next candidate
+				}
+				// context overflow: a larger-window model down the chain can
+				// still serve this, so don't hard-fail the harness either
+				if contextExceeded(eb) {
+					lastErr = fmt.Sprintf("%s: context overflow (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					softErrs = append(softErrs, lastErr)
+					break
+				}
+				// genuine 4xx (bad request/auth) — restore the body for the error path
+				r2.Body = io.NopCloser(bytes.NewReader(eb))
 			}
 			resp = r2
 		}
@@ -375,12 +417,20 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	alert := ""
 	if used.failover {
 		tr.Err = "failover from " + prov.Name + " (" + lastErr + ")"
-		reason := lastErr
-		if len(reason) > 160 {
-			reason = reason[:160] + "…"
+		// Deliberately terse, and shown once per conversation. The banner is
+		// prepended to the model's reply, so the upstream error body and the
+		// failed provider name used to be repeated into the chat on every call
+		// of a tool-loop turn. The full reason stays on tr.Err — visible in the
+		// trace and the WebUI errors panel — where it belongs.
+		if noticeCache.announce(conversationFingerprint(req) + "|" + used.prov.Name + "/" + used.model) {
+			alert = fmt.Sprintf("⚠️ failover: %s active\n\n", used.model)
 		}
-		alert = fmt.Sprintf("⚠️ [cfrproxy] %s unavailable — failed over to %s/%s (%s)\n\n",
-			prov.Name, used.prov.Name, used.model, reason)
+	} else if len(softErrs) > 0 && resp.StatusCode < 400 {
+		// request recovered on the same provider after one or more transient
+		// errors (429 rate limit, 5xx, overload). The final response is a
+		// success, but record what was hit so it surfaces in the WebUI errors
+		// panel — otherwise a retried rate-limit is completely invisible.
+		tr.Err = "recovered after transient: " + strings.Join(softErrs, " | ")
 	}
 
 	if resp.StatusCode >= 400 { // non-transient provider error (auth, bad request)
@@ -459,6 +509,36 @@ func transientStatus(code int) bool {
 	switch code {
 	case 408, 429, 500, 502, 503, 504, 524, 529:
 		return true
+	}
+	return false
+}
+
+// usageExhausted detects provider usage/quota-exhaustion errors that arrive as
+// a 4xx (not 429) — these should fail over to the next candidate, not hard-fail.
+func usageExhausted(body []byte) bool {
+	s := strings.ToLower(string(body))
+	for _, m := range []string{
+		"out of extra usage",
+		"usage limit",
+		"usage_limit",
+		"insufficient_quota",
+		"exceeded your current quota",
+		"resource_exhausted",
+		"quota exceeded",
+		// prepaid/credit exhaustion — same practical meaning: this account
+		// cannot serve the request, so retrying it is wasted, fail over instead
+		"insufficient balance",
+		"no resource package",
+		"please recharge",
+		"credit balance is too low",
+		"insufficient credits",
+		"balance exhausted", // xAI: "Grok Build usage balance exhausted"
+		"usage balance",
+		"out of credits",
+	} {
+		if strings.Contains(s, m) {
+			return true
+		}
 	}
 	return false
 }

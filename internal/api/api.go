@@ -119,6 +119,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/fusion", a.hFusionSet)
 	inner.HandleFunc("GET /admin/api/autoroute", a.hAutoRouteGet)
 	inner.HandleFunc("PUT /admin/api/autoroute", a.hAutoRouteSet)
+	inner.HandleFunc("GET /admin/api/global-fallback", a.hGlobalFBGet)
+	inner.HandleFunc("PUT /admin/api/global-fallback", a.hGlobalFBSet)
 	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
 	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/stats", a.hStats)
@@ -523,6 +525,13 @@ func (a *API) hRTLogDetail(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) hRTSet(w http.ResponseWriter, r *http.Request)  { settingJSONSet(a, w, r, "roundtable") }
 func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) { settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`) }
+
+func (a *API) hGlobalFBGet(w http.ResponseWriter, r *http.Request) {
+	settingJSON(a, w, "global_fallback", `{"enabled":false,"targets":[]}`)
+}
+func (a *API) hGlobalFBSet(w http.ResponseWriter, r *http.Request) {
+	settingJSONSet(a, w, r, "global_fallback")
+}
 func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "compression") }
 
 func (a *API) hRoutersList(w http.ResponseWriter, r *http.Request) {

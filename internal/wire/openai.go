@@ -14,10 +14,11 @@ import (
 // ---- OpenAI chat-completions dialect ----
 
 type oaiMsg struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content,omitempty"`
-	ToolCalls  []oaiToolCall   `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	ReasoningContent json.RawMessage `json:"reasoning_content,omitempty"`
+	ToolCalls        []oaiToolCall   `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
 }
 
 type oaiToolCall struct {
@@ -99,7 +100,7 @@ func ParseOpenAIRequest(body []byte) (*Request, error) {
 			}
 			r.System += oaiContentText(m.Content)
 		default:
-			msg := Msg{Role: m.Role, Content: oaiContentText(m.Content), ToolCallID: m.ToolCallID}
+			msg := Msg{Role: m.Role, Content: oaiContentText(m.Content), ToolCallID: m.ToolCallID, ReasoningContent: oaiContentText(m.ReasoningContent)}
 			for _, tc := range m.ToolCalls {
 				msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: tc.Function.Arguments})
 			}
@@ -147,6 +148,11 @@ func BuildOpenAIRequest(r *Request) ([]byte, error) {
 			c, _ := json.Marshal(m.Content)
 			om.Content = c
 		}
+		// pass reasoning_content back — deepseek et al. require it on assistant turns
+		if m.ReasoningContent != "" {
+			rc, _ := json.Marshal(m.ReasoningContent)
+			om.ReasoningContent = rc
+		}
 		for _, tc := range m.ToolCalls {
 			otc := oaiToolCall{ID: tc.ID, Type: "function"}
 			otc.Function.Name = tc.Name
@@ -170,8 +176,9 @@ type oaiResp struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Content   json.RawMessage `json:"content"`
-			ToolCalls []oaiToolCall   `json:"tool_calls"`
+			Content          json.RawMessage `json:"content"`
+			ReasoningContent json.RawMessage `json:"reasoning_content"`
+			ToolCalls        []oaiToolCall   `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -199,6 +206,7 @@ func ParseOpenAIResponse(body []byte) (*Response, error) {
 	if len(in.Choices) > 0 {
 		c := in.Choices[0]
 		r.Content = oaiContentText(c.Message.Content)
+		r.ReasoningContent = oaiContentText(c.Message.ReasoningContent)
 		if c.FinishReason != "" {
 			r.FinishReason = c.FinishReason
 		}
@@ -215,6 +223,9 @@ func BuildOpenAIResponse(r *Response) []byte {
 		id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	}
 	msg := map[string]any{"role": "assistant", "content": r.Content}
+	if r.ReasoningContent != "" {
+		msg["reasoning_content"] = r.ReasoningContent
+	}
 	if len(r.ToolCalls) > 0 {
 		var tcs []map[string]any
 		for _, tc := range r.ToolCalls {
@@ -253,8 +264,9 @@ func ReadOpenAIStream(body io.Reader, out chan<- Delta) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string        `json:"content"`
-					ToolCalls []oaiToolCall `json:"tool_calls"`
+					Content          string        `json:"content"`
+					ReasoningContent string        `json:"reasoning_content"`
+					ToolCalls        []oaiToolCall `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -273,6 +285,9 @@ func ReadOpenAIStream(body io.Reader, out chan<- Delta) {
 			pt, ct, cached = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.PromptTokensDetails.CachedTokens
 		}
 		for _, c := range chunk.Choices {
+			if c.Delta.ReasoningContent != "" {
+				out <- Delta{Reasoning: c.Delta.ReasoningContent}
+			}
 			if c.Delta.Content != "" {
 				out <- Delta{Text: c.Delta.Content}
 			}
@@ -319,6 +334,9 @@ func WriteOpenAIStream(w http.ResponseWriter, model string, in <-chan Delta) err
 	for d := range in {
 		if d.Err != nil {
 			return d.Err
+		}
+		if d.Reasoning != "" {
+			send(map[string]any{"index": 0, "delta": map[string]any{"reasoning_content": d.Reasoning}, "finish_reason": nil})
 		}
 		if d.Text != "" {
 			send(map[string]any{"index": 0, "delta": map[string]any{"content": d.Text}, "finish_reason": nil})

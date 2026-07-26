@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
 	"github.com/crogers2287/cfrproxy/internal/wire"
@@ -146,6 +147,7 @@ func TestFailover(t *testing.T) {
 	p := New(s)
 	mux := http.NewServeMux()
 	p.Register(mux)
+	resetFailoverNotices()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"primary/pm","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`))
@@ -157,8 +159,13 @@ func TestFailover(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "saved") {
 		t.Fatalf("response not from backup: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "[cfrproxy] primary unavailable — failed over to backup/backup-model") {
+	if !strings.Contains(rec.Body.String(), "⚠️ failover: backup-model active") {
 		t.Fatalf("failover alert missing from visible content: %s", rec.Body.String())
+	}
+	// the upstream error body must NOT be echoed into the chat — it belongs on
+	// the trace, not in front of the user on every tool-loop call
+	if strings.Contains(rec.Body.String(), "[cfrproxy]") || strings.Contains(rec.Body.String(), "unavailable —") {
+		t.Errorf("verbose failover banner leaked into content: %s", rec.Body.String())
 	}
 	if primaryHits != 2 {
 		t.Errorf("want 2 attempts on primary (1 retry), got %d", primaryHits)
@@ -281,5 +288,135 @@ func TestEndsWithVersion(t *testing.T) {
 		if got := endsWithVersion(in); got != want {
 			t.Errorf("endsWithVersion(%q)=%v want %v", in, got, want)
 		}
+	}
+}
+
+// A /p/ mount must resolve to the provider whatever the spelling, and must
+// never fall through to another provider. Hermes configs carried
+// "/p/Qwen%20/v1" (trailing space) and lowercase "/p/qwen/v1"; both missed the
+// prefix match in ResolveModel and were answered by a different provider whose
+// catalog happened to fuzzy-match the model id.
+func TestScopedMountNameIsCanonicalised(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Write([]byte(`{"data":[{"id":"qwen3.7-max"}]}`))
+			return
+		}
+		w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from-scoped"}}]}`))
+	}))
+	defer backend.Close()
+	decoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Write([]byte(`{"data":[{"id":"qwen3.7-max-local"}]}`))
+			return
+		}
+		w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from-decoy"}}]}`))
+	}))
+	defer decoy.Close()
+
+	s := newDiscoveryStore(t)
+	s.SaveProvider(&store.Provider{Name: "Qwen", Type: "openai", BaseURL: backend.URL, DefaultModel: "qwen3.7-max", Priority: 10, Enabled: true})
+	// A second provider that is the *higher-priority* fallback (lower number),
+	// mirroring production: when the scoped prefix failed to match, ResolveModel
+	// fell all the way through to "highest-priority provider + its default
+	// model" and answered from here instead of from Qwen.
+	s.SaveProvider(&store.Provider{Name: "fred", Type: "openai", BaseURL: decoy.URL, DefaultModel: "qwen3.7-max-local", Priority: 5, Enabled: true})
+	mux := http.NewServeMux()
+	New(s).Register(mux)
+
+	for _, mount := range []string{"Qwen", "qwen", "Qwen%20", "QWEN"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/p/"+mount+"/v1/models", nil))
+		if !strings.Contains(rec.Body.String(), "qwen3.7-max") || strings.Contains(rec.Body.String(), "qwen3.7-max-local") {
+			t.Errorf("/p/%s/v1/models listed the wrong provider: %s", mount, rec.Body.String())
+		}
+
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/p/"+mount+"/v1/chat/completions",
+			strings.NewReader(`{"model":"qwen3.7-max","messages":[{"role":"user","content":"hi"}]}`)))
+		if rec.Code != 200 {
+			t.Errorf("/p/%s chat failed: %d %s", mount, rec.Code, rec.Body.String())
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), "from-scoped") {
+			t.Errorf("/p/%s chat was answered by the wrong provider: %s", mount, rec.Body.String())
+		}
+	}
+
+	// an unknown mount must be a loud 404, not a silent reroute
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/p/nosuchprovider/v1/chat/completions",
+		strings.NewReader(`{"model":"qwen3.7-max","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != 404 {
+		t.Errorf("unknown /p/ mount should 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// resetFailoverNotices clears the package-level banner-suppression cache so
+// tests don't leak state into each other.
+func resetFailoverNotices() {
+	noticeCache.mu.Lock()
+	noticeCache.m = map[string]time.Time{}
+	noticeCache.mu.Unlock()
+}
+
+// A harness tool-loop makes several model calls per user turn. The failover
+// banner must appear on the first and then stay quiet, instead of stacking up
+// four copies of itself in one chat message.
+func TestFailoverBannerAnnouncedOncePerConversation(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(503)
+		w.Write([]byte(`{"error":"upstream timeout"}`))
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"backup-model","choices":[{"message":{"role":"assistant","content":"saved"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer backup.Close()
+
+	s := newDiscoveryStore(t)
+	s.SaveProvider(&store.Provider{Name: "backup", Type: "openai", BaseURL: backup.URL, DefaultModel: "backup-model", Priority: 20, Enabled: true})
+	s.SaveProvider(&store.Provider{Name: "primary", Type: "openai", BaseURL: primary.URL, DefaultModel: "pm", Priority: 10, Enabled: true, Fallback: "backup/backup-model"})
+	mux := http.NewServeMux()
+	New(s).Register(mux)
+	resetFailoverNotices()
+
+	// four calls of one tool-loop turn: same system + same first user message
+	call := func(body string) string {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("want 200 via failover, got %d: %s", rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	const convo = `{"model":"primary/pm","max_tokens":10,"system":"You are a bot.","messages":[{"role":"user","content":"load the products"}`
+	banners := 0
+	for i, body := range []string{
+		convo + `]}`,
+		convo + `,{"role":"assistant","content":"reading"},{"role":"user","content":"tool result 1"}]}`,
+		convo + `,{"role":"assistant","content":"reading"},{"role":"user","content":"tool result 2"}]}`,
+		convo + `,{"role":"assistant","content":"reading"},{"role":"user","content":"tool result 3"}]}`,
+	} {
+		out := call(body)
+		if strings.Contains(out, "failover:") {
+			banners++
+		} else if i == 0 {
+			t.Fatalf("first call must announce the failover: %s", out)
+		}
+	}
+	if banners != 1 {
+		t.Errorf("failover banner should appear once per conversation, got %d copies", banners)
+	}
+
+	// a DIFFERENT conversation still gets told
+	out := call(`{"model":"primary/pm","max_tokens":10,"system":"You are a bot.","messages":[{"role":"user","content":"totally different task"}]}`)
+	if !strings.Contains(out, "⚠️ failover: backup-model active") {
+		t.Errorf("a separate conversation must get its own banner: %s", out)
 	}
 }

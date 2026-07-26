@@ -75,3 +75,68 @@ func TestResolve(t *testing.T) {
 		t.Errorf("after reorder, want b first, got %s", p.Name)
 	}
 }
+
+// A provider named "Qwen" must be findable from the scoped mount however the
+// harness spells it. Hermes configs carried "/p/Qwen /v1" (trailing space from
+// a since-renamed provider) and lowercase "/p/qwen/v1"; both missed the
+// case-sensitive exact lookup and surfaced as a provider with zero models in
+// the Telegram picker.
+func TestProviderByNameIsTrimmedAndCaseInsensitive(t *testing.T) {
+	s := newTestStore(t)
+	p := Provider{Name: "Qwen", Type: "openai", BaseURL: "https://example.invalid/v1", DefaultModel: "qwen3.7-max", Enabled: true}
+	if err := s.SaveProvider(&p); err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{"Qwen", "qwen", "QWEN", "Qwen ", " qwen"} {
+		got, ok := s.ProviderByName(spelling)
+		if !ok || got.ID != p.ID {
+			t.Errorf("ProviderByName(%q) did not resolve to the Qwen provider", spelling)
+		}
+	}
+	if _, ok := s.ProviderByName("nope"); ok {
+		t.Error("unknown provider name resolved")
+	}
+	if _, ok := s.ProviderByName("   "); ok {
+		t.Error("blank provider name resolved")
+	}
+}
+
+// An exact match must still win when two names differ only by case, so the
+// loose fallback can never steal traffic from a precisely-addressed provider.
+func TestProviderByNameExactMatchWins(t *testing.T) {
+	s := newTestStore(t)
+	lower := Provider{Name: "acme", Type: "openai", BaseURL: "https://a.invalid/v1", Enabled: true}
+	upper := Provider{Name: "ACME", Type: "openai", BaseURL: "https://b.invalid/v1", Enabled: true}
+	if err := s.SaveProvider(&lower); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProvider(&upper); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ProviderByName("acme"); got.ID != lower.ID {
+		t.Errorf("exact match lost: got %q (%d), want %q (%d)", got.Name, got.ID, lower.Name, lower.ID)
+	}
+	if got, _ := s.ProviderByName("ACME"); got.ID != upper.ID {
+		t.Errorf("exact match lost: got %q (%d), want %q (%d)", got.Name, got.ID, upper.Name, upper.ID)
+	}
+}
+
+// Names are trimmed on save so a stray space can never reach base_url builders
+// (/p/<name>/v1) or the Hermes sync script.
+func TestSaveProviderTrimsName(t *testing.T) {
+	s := newTestStore(t)
+	p := Provider{Name: "  Spaced  ", Type: "openai", BaseURL: "  https://x.invalid/v1  ", Enabled: true}
+	if err := s.SaveProvider(&p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Name != "Spaced" {
+		t.Errorf("name not trimmed on save: %q", p.Name)
+	}
+	if p.BaseURL != "https://x.invalid/v1" {
+		t.Errorf("base_url not trimmed on save: %q", p.BaseURL)
+	}
+	got, ok := s.ProviderByName("Spaced")
+	if !ok || got.Name != "Spaced" {
+		t.Errorf("stored name not trimmed: %+v", got)
+	}
+}

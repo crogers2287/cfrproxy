@@ -14,14 +14,26 @@ import (
 // ---- Anthropic /v1/messages dialect ----
 
 type antBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"` // tool_result payload
+	Type         string          `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	Content      json.RawMessage `json:"content,omitempty"`       // tool_result payload
+	CacheControl json.RawMessage `json:"cache_control,omitempty"` // prompt-cache breakpoint
 }
+
+// cacheEphemeral is an Anthropic prompt-cache breakpoint. Anthropic caches the
+// prefix up to and including the marked block, and its hierarchy is
+// tools → system → messages, so one breakpoint on the system block covers the
+// tool definitions too — the bulk of a stable agent prompt.
+var cacheEphemeral = json.RawMessage(`{"type":"ephemeral"}`)
+
+// minCacheableChars is a floor before we bother emitting a breakpoint.
+// Anthropic silently ignores caching below ~1024 tokens, so marking a short
+// system prompt just adds noise. ~4 chars/token → 4096 chars ≈ 1024 tokens.
+const minCacheableChars = 4096
 
 type antMsg struct {
 	Role    string          `json:"role"`
@@ -137,8 +149,18 @@ func BuildAnthropicRequest(r *Request) ([]byte, error) {
 		out.MaxTokens = 4096 // required field in the anthropic API
 	}
 	if r.System != "" {
-		b, _ := json.Marshal(r.System)
-		out.System = b
+		// Emit the system prompt as a block array carrying a cache breakpoint
+		// so Anthropic caches tools+system instead of re-billing them every
+		// turn. Agent harnesses resend a large, byte-identical system prompt on
+		// each request, which is exactly what prompt caching is for. Short
+		// prompts stay a plain string (Anthropic won't cache them anyway).
+		if len(r.System) >= minCacheableChars {
+			b, _ := json.Marshal([]antBlock{{Type: "text", Text: r.System, CacheControl: cacheEphemeral}})
+			out.System = b
+		} else {
+			b, _ := json.Marshal(r.System)
+			out.System = b
+		}
 	}
 	for _, m := range r.Messages {
 		switch m.Role {
