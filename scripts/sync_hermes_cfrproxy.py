@@ -64,8 +64,17 @@ def fetch_providers():
 # model's real window before compressing. fred: q27b n_ctx=131072 (bumped
 # 2026-07-23); input + reserved output + MTP/vision overhead (~22k observed)
 # must fit — 98304 leaves a ~32k safety margin.
+# Large-window CLOUD providers are worth capping here too, for a different
+# reason. Hermes triggers compaction at threshold x context_length, sized on the
+# model the agent is configured for — but cfrproxy's fallback chain can serve
+# that same request from a DIFFERENT model with a smaller window. An agent on a
+# 1M-context model at threshold 0.7 only compacts at 700k, so every failover to
+# Codex (hard-capped at 272k) overflows, gets rescued, and pays a slow retry on
+# a huge prompt. Capping at the smallest window a request can realistically land
+# on makes compaction fire before that happens.
 CONTEXT_LENGTHS = {
     "fred": 98304,
+    "Qwen": 272000,
 }
 
 
