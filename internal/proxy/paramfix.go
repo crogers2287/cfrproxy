@@ -104,3 +104,28 @@ func stripBodyParam(body []byte, key string) ([]byte, bool) {
 	}
 	return out, true
 }
+
+// failureLabel compresses a provider's failure into two or three words for the
+// chat banner. The banner used to name only the destination ("failover:
+// gpt-5.6-terra active"), which told the user their model had changed but not
+// which provider dropped out or why — so an exhausted quota looked identical to
+// an outage. The full text stays on the trace.
+func failureLabel(reason string) string {
+	r := strings.ToLower(reason)
+	switch {
+	case strings.Contains(r, "insufficient_quota"), strings.Contains(r, "quota has been exhausted"),
+		strings.Contains(r, "usage cap"), strings.Contains(r, "quota"):
+		return "quota exhausted"
+	case strings.Contains(r, "context overflow"), strings.Contains(r, "context"):
+		return "context overflow"
+	case strings.Contains(r, "http 429"), strings.Contains(r, "rate limit"):
+		return "rate limited"
+	case strings.Contains(r, "http 401"), strings.Contains(r, "http 403"):
+		return "auth failed"
+	case strings.Contains(r, "http 5"), strings.Contains(r, "overloaded"):
+		return "upstream error"
+	case strings.Contains(r, "connection"), strings.Contains(r, "dial "), strings.Contains(r, "timeout"):
+		return "unreachable"
+	}
+	return "unavailable"
+}

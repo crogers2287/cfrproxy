@@ -64,7 +64,7 @@ type Proxy struct {
 }
 
 func New(s *store.Store) *Proxy {
-	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: 10 * time.Minute},
+	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: 10 * time.Minute, Transport: providerTransport()},
 		models: modelCache{entries: map[int64]modelCacheEntry{}}}
 }
 
@@ -321,6 +321,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	lastErr := ""
 	var softErrs []string // transient errors that were retried/failed-over past
 	for _, c := range cands {
+		candStatus := 0 // HTTP status of this candidate's failure, 0 = never responded
 		creq := *req
 		creq.Model = c.model
 		if c.prov.InjectDocs && c.prov.DocMarkdown != "" {
@@ -375,6 +376,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				eb, _ := io.ReadAll(io.LimitReader(r2.Body, 1<<20))
 				r2.Body.Close()
 				lastErr = fmt.Sprintf("%s: HTTP %d %s", c.prov.Name, r2.StatusCode, snip(eb))
+				candStatus = r2.StatusCode
 				softErrs = append(softErrs, lastErr)
 				continue
 			}
@@ -391,6 +393,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				// with error strings for it.
 				if r2.StatusCode == 402 || usageExhausted(eb) {
 					lastErr = fmt.Sprintf("%s: usage cap (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					candStatus = r2.StatusCode
 					softErrs = append(softErrs, lastErr)
 					break // stop retrying this provider; try the next candidate
 				}
@@ -398,6 +401,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				// still serve this, so don't hard-fail the harness either
 				if contextExceeded(eb) {
 					lastErr = fmt.Sprintf("%s: context overflow (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					candStatus = r2.StatusCode
 					softErrs = append(softErrs, lastErr)
 					break
 				}
@@ -426,6 +430,12 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			req = &creq
 			break
 		}
+		// This candidate did not serve the request. Record it under ITS OWN
+		// name: previously a failed attempt produced no row at all and the
+		// reason was only visible inside the *successful* provider's error
+		// text, so a provider failing 100% of the time showed a completely
+		// empty, healthy-looking panel while every request failed over off it.
+		p.recordAttemptFailure(tr, c, lastErr, candStatus)
 	}
 	if resp == nil {
 		tr.Status, tr.Err = 502, lastErr
@@ -443,7 +453,8 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// every call and suppresses nothing. The full reason stays on tr.Err —
 		// visible in the trace and the WebUI errors panel — where it belongs.
 		if noticeCache.announce(prov.Name + "->" + used.prov.Name + "/" + used.model) {
-			alert = fmt.Sprintf("⚠️ failover: %s active\n\n", used.model)
+			alert = fmt.Sprintf("⚠️ failover: %s %s → %s active\n\n",
+				prov.Name, failureLabel(lastErr), used.model)
 		}
 	} else if len(softErrs) > 0 && resp.StatusCode < 400 {
 		// request recovered on the same provider after one or more transient
@@ -951,4 +962,58 @@ func httpErr(w http.ResponseWriter, dialect string, code int, msg string) {
 	default:
 		writeJSON(w, code, map[string]any{"error": map[string]any{"message": msg, "type": "api_error"}})
 	}
+}
+
+// providerTransport is the connection pool for outbound provider calls.
+//
+// A bare &http.Client{} uses http.DefaultTransport, whose MaxIdleConnsPerHost
+// is Go's DefaultMaxIdleConnsPerHost = 2. That default is sized for a program
+// talking to a handful of hosts occasionally, not for a proxy fanning many
+// concurrent requests at a few upstreams — and here it bites hardest because
+// EVERY OAuth-backed provider (claude, codex, gemini, grok, command, opencode)
+// shares one host, so the whole subscription fleet contends for two pooled
+// connections. Past that, connections are opened and thrown away per request:
+// a fresh TCP + TLS handshake each time against remote providers, and socket
+// churn against local ones.
+//
+// This does not change how many requests can be in flight — Go opens as many
+// connections as it needs either way — it changes how many are *reused*.
+func providerTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 512
+	t.MaxIdleConnsPerHost = 64 // was effectively 2
+	t.IdleConnTimeout = 120 * time.Second
+	// MaxConnsPerHost stays 0 (unlimited): a cap here would queue requests
+	// behind each other, which is the exact failure this is meant to avoid.
+	t.MaxConnsPerHost = 0
+	return t
+}
+
+// recordAttemptFailure writes a trace for a candidate that did NOT serve the
+// request, filed under that candidate's own provider and model.
+//
+// Without it a failed attempt left no row anywhere: the reason survived only
+// inside the *successful* provider's error text, so a provider failing every
+// single request showed an empty, healthy-looking panel. Making the failure
+// visible under the provider that actually failed is the whole point.
+//
+// Status 0 means the provider never returned an HTTP response at all
+// (connection refused, DNS, timeout).
+func (p *Proxy) recordAttemptFailure(main *store.Trace, c candidate, reason string, status int) {
+	if reason == "" {
+		return
+	}
+	t := store.Trace{
+		TS:       time.Now().UnixMilli(),
+		Provider: c.prov.Name,
+		Model:    c.model,
+		Inbound:  main.Inbound,
+		Stream:   main.Stream,
+		Status:   status,
+		Err:      reason,
+		Note:     "attempt failed — request continued down the fallback chain",
+		ReqSnip:  main.ReqSnip,
+	}
+	p.Store.AddTrace(&t)
+	p.Hub.Publish(t)
 }
