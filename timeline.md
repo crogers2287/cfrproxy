@@ -164,6 +164,112 @@ Generic by design: the same path recovers any provider that names a rejected par
 
 **REQ-032 status: COMPLETE.**
 
+### REQ-033 — "multiple agents queue behind one call" — NOT a cfrproxy concurrency limit
+
+Source: chat ("issues when I'm trying to use the proxy with more than one agent at a time. It just times out… even I'm using different providers, it still only allows me like one stream at a time")
+
+#### cfrproxy is not serializing — measured
+
+| Test | Result |
+|---|---|
+| 3 providers, sequential vs concurrent | 18.0s → **12.1s**; all three started at +0.0, the two fast ones returned in 1.3s/1.6s while Qwen still ran |
+| **8 concurrent streams** across 4 providers | every TTFB **< 2.2s**, total wall **2.2s** |
+| Structural review | `Hub.Publish` is non-blocking (`default:` drops for slow subscribers); `ModelsCached` releases its lock before the network call; no mutex spans an upstream request |
+
+#### Actual cause: the model map funnels everything onto one local box
+
+```
+model_map: {"claude-sonnet*": "fred/agents-a1", "claude-haiku*": …, "claude-opus*": …}
+auto_router: classifier = fred/q27b, routes.default = routes.code = claude/claude-sonnet-5
+```
+
+Resolution measured live:
+
+| Requested | Actually ran on |
+|---|---|
+| `auto` | `claude/claude-sonnet-5` (map misses — the router's output carries a provider prefix) |
+| `claude/claude-sonnet-5` | `claude/claude-sonnet-5` |
+| **`claude-sonnet-5`** (bare) | **`fred/agents-a1`** ← map fires |
+
+A **bare** `claude-sonnet-*` is exactly what Claude Code and the Hermes agents send by default, so every such agent lands on `fred` — one local llama.cpp box. The auto-router's **classifier is also `fred/q27b`**, so each non-sticky request adds another call into the same queue before the real one starts.
+
+**Proof it is fred, not the proxy** — 4 concurrent requests sent *directly* to `fred:9069` with cfrproxy bypassed entirely: **5.0s → 9.6s → 17.4s → 21.0s**, a clean staircase. fred's slot capacity is the bottleneck; cfrproxy runs 8 concurrent streams against real providers in 2.2s.
+
+So "even though I'm using different providers" is the illusion — the map silently redirects them to the same one.
+
+#### Options (not applied — these change where traffic and spend go)
+1. Drop or repoint the `claude-sonnet*` → `fred/agents-a1` map entry, so bare sonnet requests reach the real Claude provider.
+2. Move the auto-router classifier off `fred` (e.g. `claude/claude-haiku-4-5`) so classification doesn't queue behind local generation.
+3. Raise llama.cpp's `--parallel` slot count on fred if local concurrency is wanted.
+
+#### Follow-up: frontier concurrency specifically (user: "I don't care about local concurrency… I just need the frontier models working correctly")
+
+**cfrproxy and CLIProxyAPI both handle frontier concurrency correctly — measured:**
+
+| Test | Result |
+|---|---|
+| 6 concurrent direct to CLIProxyAPI `:8317` (cfrproxy bypassed) | all **200**, ≤3.5s, total 3.6s — no serialization |
+| **12 concurrent streams, ~12k-token (65KB) contexts**, 4 frontier providers via cfrproxy | **12/12 ok**, slowest 3.3s, **total wall 3.3s** |
+
+**The real mechanism — a shared dependency on the saturated local box.** 6h of traces:
+
+| provider/model | n | avg | max |
+|---|---|---|---|
+| **fred/q27b** | 434 | **15.6s** | **145.4s** (51 calls over 30s) |
+| Qwen/qwen3.8-max-preview | 216 | 23.2s | 209.8s |
+| everything frontier | ≤9 each | 1.4–7.6s | — |
+
+359 of the fred calls are the **Fogger Hermes agent** running its conversations on `fred/q27b`; fred serializes. The auto-router's classifier was **also** `fred/q27b`, so *every non-sticky `auto` request had to get its classification from the same saturated box before its frontier call could start* — a frontier request stalling for up to 145s despite the frontier provider answering in ~2s. Intermittent by nature, which matches "sometimes it times out".
+
+| Item | Status | Evidence |
+|---|---|---|
+| Classifier moved off the local box | 🟡 fixed | `auto_router.classifier`: `fred/q27b` → `claude/claude-haiku-4-5` (1.4s avg). Previous value backed up |
+| Verified under the failure condition | ✅ | fred deliberately saturated with 3 long generations, then 3 `auto` requests → **3.1s / 2.7s / 3.0s**, all routed to `claude/claude-sonnet-5` |
+
+#### Still outstanding (a spend decision, not applied)
+`model_map` still has `"claude-sonnet*": "fred/agents-a1"`, so a **bare** `claude-sonnet-*` — what Claude Code and most harnesses send by default — is redirected to the local box. Removing it sends that volume to the real Claude subscription.
+
+**REQ-033 status: frontier path FIXED; model_map redirect left for a decision.**
+
+### REQ-034 — "failing over off Qwen but Qwen shows no errors" + token audit
+
+Source: chat ("I have Quinn 3.8 Max Preview selected… it's telling me it's failing over to GPT 5.6 Terra, but there's no errors for the Quinn 3.8 model") and ("can you trace and see where we used all the tokens at?")
+
+#### Why it was failing over
+Qwen was returning **HTTP 429 `insufficient_quota`** — *"Your token-plan 5-hour quota has been exhausted. The quota will reset at 07-29 06:14:00 UTC."* A real upstream quota trip, not a misconfiguration. The global chain rescued each request with its first target, `codex/gpt-5.6-terra`.
+
+#### Why no errors were visible — the actual bug
+A failed candidate produced **no trace row at all**. The reason survived only inside the *successful* provider's `err` text, filed under that provider's name. Measured over one hour:
+
+| | count |
+|---|---|
+| trace rows under `Qwen` | **0** |
+| Qwen failures that actually occurred | **213** |
+| error rows under `Qwen` | **0** |
+
+All 213 were filed under `codex`. A provider failing 100% of requests displayed an empty, healthy-looking panel.
+
+Also noted: the **scoped** `/p/Qwen/v1` mount still answered from `gpt-5.6-terra` — the global chain applies to explicitly-scoped mounts too, so selecting a provider is not a guarantee of being served by it.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Failed attempts get their own trace | 🟡 built | `recordAttemptFailure()` writes a row under the *failing* provider/model with its HTTP status, the reason, and note "attempt failed — request continued down the fallback chain". Live: one request now yields `Qwen/429` **and** `codex/200` |
+| Banner names the dropped provider + why | 🟡 built | was `⚠️ failover: gpt-5.6-terra active` → now `⚠️ failover: Qwen quota exhausted → gpt-5.6-terra active`. `failureLabel()` maps a reason to quota exhausted / context overflow / rate limited / auth failed / upstream error / unreachable / unavailable |
+| Tests | ✅ | `TestFailureLabel` (8 cases incl. the verbatim Alibaba 429 body), `TestFailedAttemptGetsItsOwnTrace` (asserts a row under the *failed* provider with status 429 + reason, the success row, and that the banner names both provider and cause) |
+
+#### Token audit — where the quota went
+The user's impression was that this model was barely used. Last 3h on Qwen: **451 requests, 30.6M prompt tokens**.
+
+| caller | reqs | tokens | avg prompt/call |
+|---|---|---|---|
+| **omp** | 324 | **19.3M** | 59,172 |
+| **Ash** (Hermes, unattended) | 113 | **11.5M** | 100,499 |
+| other | 14 | 85k | 5,207 |
+
+Peak hour (01:00 UTC): 392 requests / **26.0M tokens**. Prompt caching was working well (**86.7%** hit, vs codex 90.4%, fred 81.7%) — so this is genuine volume, not a caching failure. The amplifier is agentic tool loops: every iteration resends the whole conversation, so 324 round-trips at ~59k each is 19M without the user "using it" interactively.
+
+**REQ-034 status: COMPLETE.**
+
 #### Diagnosed, NOT fixed (different repo, awaiting go-ahead)
 **Telegram "Message delivery failed after multiple attempts"** is *not* a timeout and not cfrproxy. Gateway logs show `Flood control exceeded. Retry in 31 seconds`, while `~/.hermes/hermes-agent/gateway/platforms/base.py:3429` retries with `max_retries=2, base_delay=2.0` → ~2.3s then ~4.6s (≈7s) and gives up. Telegram's `retry_after` is ignored in favour of blind exponential backoff. `telegram.py` has a flood-aware path (`retrying in 31.0s`) that the outer `base.py` send loop doesn't use. Flood pressure itself comes from streaming `editMessageText` calls. Fix = honour `retry_after` in the outer loop.
 

@@ -160,8 +160,8 @@ func TestFailover(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "saved") {
 		t.Fatalf("response not from backup: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "⚠️ failover: backup-model active") {
-		t.Fatalf("failover alert missing from visible content: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "⚠️ failover: primary") || !strings.Contains(rec.Body.String(), "backup-model active") {
+		t.Fatalf("failover alert missing/incomplete in visible content: %s", rec.Body.String())
 	}
 	// the upstream error body must NOT be echoed into the chat — it belongs on
 	// the trace, not in front of the user on every tool-loop call
@@ -415,7 +415,87 @@ func TestFailoverBannerRateLimited(t *testing.T) {
 	}
 	// the one that fired must be the terse form, not the old verbose one
 	resetFailoverNotices()
-	if out := call(turn(9)); !strings.Contains(out, "⚠️ failover: backup-model active") || strings.Contains(out, "[cfrproxy]") {
+	if out := call(turn(9)); !strings.Contains(out, "backup-model active") || strings.Contains(out, "[cfrproxy]") {
 		t.Errorf("expected terse banner after TTL reset: %s", out)
+	}
+}
+
+func TestFailureLabel(t *testing.T) {
+	cases := map[string]string{
+		`Qwen: HTTP 429 {"code":"insufficient_quota","message":"Your token-plan 5-hour quota has been exhausted."}`: "quota exhausted",
+		"grok: usage cap (HTTP 402) balance exhausted":                                                              "quota exhausted",
+		"codex: context overflow (HTTP 400) too large":                                                              "context overflow",
+		"x: HTTP 429 slow down":                       "rate limited",
+		"x: HTTP 401 bad key":                         "auth failed",
+		"x: HTTP 503 overloaded":                      "upstream error",
+		"x: dial tcp 1.2.3.4:443: connection refused": "unreachable",
+		"x: something nobody has seen before":         "unavailable",
+	}
+	for in, want := range cases {
+		if got := failureLabel(in); got != want {
+			t.Errorf("failureLabel(%.50q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A provider that fails must get a trace row under ITS OWN name. Previously the
+// only record lived inside the successful provider's error text, so a provider
+// failing 100% of requests showed an empty, healthy-looking panel.
+func TestFailedAttemptGetsItsOwnTrace(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"code":"insufficient_quota","message":"quota has been exhausted"}}`))
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"backup-model","choices":[{"message":{"role":"assistant","content":"saved"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer backup.Close()
+
+	s := newDiscoveryStore(t)
+	s.SaveProvider(&store.Provider{Name: "backup", Type: "openai", BaseURL: backup.URL, DefaultModel: "backup-model", Priority: 20, Enabled: true})
+	s.SaveProvider(&store.Provider{Name: "primary", Type: "openai", BaseURL: primary.URL, DefaultModel: "pm", Priority: 10, Enabled: true, Fallback: "backup/backup-model"})
+	mux := http.NewServeMux()
+	New(s).Register(mux)
+	resetFailoverNotices()
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"primary/pm","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != 200 {
+		t.Fatalf("want 200 via failover, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// the banner must name the provider that dropped out AND why
+	body := rec.Body.String()
+	if !strings.Contains(body, "primary") || !strings.Contains(body, "quota exhausted") {
+		t.Errorf("banner should name the failed provider and reason: %s", body)
+	}
+
+	traces, _ := s.Traces(0, 20)
+	var failRow, okRow *store.Trace
+	for i := range traces {
+		switch traces[i].Provider {
+		case "primary":
+			failRow = &traces[i]
+		case "backup":
+			okRow = &traces[i]
+		}
+	}
+	if failRow == nil {
+		t.Fatalf("no trace filed under the FAILED provider 'primary': %+v", traces)
+	}
+	if failRow.Status != 429 {
+		t.Errorf("failed attempt should record its HTTP status, got %d", failRow.Status)
+	}
+	if !strings.Contains(failRow.Err, "quota") {
+		t.Errorf("failed attempt should record the reason, got %q", failRow.Err)
+	}
+	if okRow == nil || okRow.Status != 200 {
+		t.Errorf("successful provider row missing/wrong: %+v", okRow)
 	}
 }
