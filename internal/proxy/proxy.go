@@ -206,6 +206,12 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scope string, ep *store.Endpoint) {
 	start := time.Now()
 	if ep == nil && !p.publicKeyOK(r) { // share endpoints authenticate via their own key
+		// Record it. This rejection used to return before any trace was
+		// written, so a client configured without the key produced HTTP 401s
+		// and a completely empty Live Traces view — the failure existed only on
+		// the client's side of the wire, which makes it look like the proxy is
+		// silently dropping calls.
+		p.recordRejection(r, inbound, 401, "public access requires a valid API key")
 		httpErr(w, inbound, 401, "public access requires a valid API key (Authorization: Bearer <key> or x-api-key)")
 		return
 	}
@@ -1016,4 +1022,42 @@ func (p *Proxy) recordAttemptFailure(main *store.Trace, c candidate, reason stri
 	}
 	p.Store.AddTrace(&t)
 	p.Hub.Publish(t)
+}
+
+// recordRejection writes a trace for a request refused before it reached a
+// provider (auth, unknown mount). Without it these failures are invisible: the
+// client sees an HTTP error, Live Traces shows nothing at all, and the natural
+// conclusion is that the proxy is dropping calls silently.
+//
+// clientHint records where it came from, because the common cause is one
+// machine out of several being misconfigured.
+func (p *Proxy) recordRejection(r *http.Request, inbound string, status int, reason string) {
+	t := store.Trace{
+		TS:      time.Now().UnixMilli(),
+		Model:   r.URL.Path,
+		Inbound: inbound,
+		Status:  status,
+		Err:     reason,
+		Note:    "rejected before routing — from " + clientHint(r),
+	}
+	p.Store.AddTrace(&t)
+	p.Hub.Publish(t)
+}
+
+// clientHint identifies the caller for a rejection trace: the forwarded client
+// address when behind a reverse proxy, else the direct peer.
+func clientHint(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i > 0 {
+			v = v[:i]
+		}
+		return strings.TrimSpace(v) + " (via proxy)"
+	}
+	if v := r.Header.Get("X-Real-IP"); v != "" {
+		return strings.TrimSpace(v) + " (via proxy)"
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
+	}
+	return "unknown"
 }
