@@ -270,6 +270,39 @@ Peak hour (01:00 UTC): 392 requests / **26.0M tokens**. Prompt caching was worki
 
 **REQ-034 status: COMPLETE.**
 
+### REQ-035 — round-table panelists get live research (web + Context7), always on
+
+Source: chat ("can we add the web search tool? that way the round table agents can do their own research?") then ("I want you to change it so that they have web research access always. otherwise, how can they make those accurate informed decisions? Make it so they're using context 7 for updated library inquiries")
+
+#### Design
+Panelists are heterogeneous (Claude, Codex, Gemini, Grok, local). Each vendor's *native* search is a different server-side tool that doesn't survive dialect translation, so research is exposed as **plain function tools cfrproxy executes itself** — every panelist gets identical tools and identical results, which matters when the point is to compare reasoning rather than search backends.
+
+| Tool | Backend | For |
+|---|---|---|
+| `web_search` | **SearXNG** (`$SEARXNG_ENDPOINT`, found running at `127.0.0.1:9090`) — self-hosted, no API key, no per-query cost | releases, prices, benchmarks, incidents — anything that may have changed |
+| `library_docs` | **Context7** HTTP API (`/api/v1/search` → `/api/v1/<id>?type=txt`), verified keyless | API syntax, config, version-specific behaviour |
+
+Two tools rather than one because general search is good at "what happened" and bad at "what is this API now" — it surfaces posts pinned to whatever version was current when written, which is exactly how a panel confidently recommends a removed API.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Tool-calling loop | 🟡 built | `chatWithTools()` in `websearch.go` — the round table was single-shot (`chatViaProxy`) with no tool support at all |
+| Always on | 🟡 built | Started as an opt-in `web_search` config flag; per follow-up, made unconditional and the flag removed. `researchBrief` appended to every panelist prompt |
+| Rounds 1 **and** 2 | 🟡 built | Round 2's prompt previously said *"respond from judgment, not research"* — now panelists can verify a fact another panelist asserts before conceding or attacking |
+| `consult` too | 🟡 built | single-agent path routed through `panelCall` |
+| Moderator deliberately excluded | ✅ | its prompt is "using only what the panelists actually said" — giving it search would let it introduce positions nobody took |
+| Bounded | ✅ | `maxToolRounds = 4`, then tools are withheld so the final call must produce prose; shares `perCallTimeout` so a searching panelist can't stall the panel |
+| Fails soft | ✅ | a tool error is handed back as text ("Search failed… answer from your own knowledge and say so") rather than killing the panelist |
+| Research is visible | 🟡 built | `searchLog` → **Panel research (N lookups)** section in the report, so a reader can tell a grounded claim from a remembered one |
+| Tests | ✅ | 6 in `websearch_test.go`: URL precedence, result parsing + cap, empty results, HTML-instead-of-JSON (hints at the `format=json` settings.yml fix), tool-failure-doesn't-kill-panelist, loop boundedness (asserts the final call carries no tools), searchLog cap + nil-safety |
+| **Live end-to-end** | ✅ | Real round table, Skeptic (`claude-opus-4-8`) + Pragmatist (`gpt-5.5`), on an App-Router-vs-Pages-Router question → both reached for `library_docs` (correct for a library question), report showed **Panel research (2 lookups)**, synthesis grounded in current docs |
+
+#### Files
+- new `websearch.go`, `websearch_test.go`
+- `mcp.go` — `researchBrief` in both rounds + consult, `searchLog` wired into the report, `rtConfig.SearxURL` override
+
+**REQ-035 status: COMPLETE.**
+
 #### Diagnosed, NOT fixed (different repo, awaiting go-ahead)
 **Telegram "Message delivery failed after multiple attempts"** is *not* a timeout and not cfrproxy. Gateway logs show `Flood control exceeded. Retry in 31 seconds`, while `~/.hermes/hermes-agent/gateway/platforms/base.py:3429` retries with `max_retries=2, base_delay=2.0` → ~2.3s then ~4.6s (≈7s) and gives up. Telegram's `retry_after` is ignored in favour of blind exponential backoff. `telegram.py` has a flood-aware path (`retrying in 31.0s`) that the outer `base.py` send loop doesn't use. Flood pressure itself comes from streaming `editMessageText` calls. Fix = honour `retry_after` in the outer loop.
 
