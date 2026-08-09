@@ -37,6 +37,19 @@ type Provider struct {
 	Fallback     string `json:"fallback"`      // provider/model to fail over to on transient errors
 	PinnedModels string `json:"pinned_models"` // comma-separated curated subset shown to pickers
 	ModelsFilter string `json:"models_filter"` // comma globs applied to scans; "!" prefix excludes
+	// ContextLength overrides the context window cfrproxy advertises for this
+	// provider's models. 0 = fall back to what the upstream declares, then the
+	// "default_context_length" setting. Harnesses read this off /v1/models to
+	// size their compaction; guessing from a renamed model id gets it wrong.
+	ContextLength int `json:"context_length"`
+	// Headers is a JSON object of extra outbound headers to set on every
+	// request to this provider (name -> value). A value of "@file:<path>"
+	// is read from the file on every request, so a CLI auth token that the
+	// upstream rotates keeps working without a proxy restart. Injected
+	// headers override the defaults (Authorization/x-api-key) — this is how
+	// a proxy routes harness traffic while sending the exact Authorization
+	// and User-Agent a native CLI sends.
+	Headers string `json:"headers"`
 }
 
 type Transform struct {
@@ -63,8 +76,60 @@ type Trace struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	CachedTokens     int `json:"cached_tokens"`
+	// TTFBMS is time-to-first-byte from the upstream: prompt processing plus
+	// queue/load time, before any token is produced. PostMS is what cfrproxy
+	// itself spent after the upstream finished (dialect translation, transform
+	// rules, relay teardown) — proxy overhead, isolated from model time so a
+	// slow call can be blamed correctly.
+	TTFBMS int64 `json:"ttfb_ms"`
+	// microseconds, not milliseconds: cfrproxy's trailing work is routinely
+	// sub-millisecond, and truncating it to "0ms" told the operator nothing.
+	PostUS int64 `json:"post_us"`
 	ReqSnip   string `json:"req_snippet"`
 	RespSnip  string `json:"resp_snippet"`
+}
+
+// GenMS is the time the model spent actually producing tokens: total latency
+// minus the upstream's think-time before the first byte, minus cfrproxy's own
+// post-processing. Falls back to total latency when TTFB was never recorded.
+func (t Trace) GenMS() int64 {
+	g := t.LatencyMS - t.TTFBMS - t.PostUS/1000
+	if g <= 0 {
+		g = t.LatencyMS
+	}
+	return g
+}
+
+// PromptPerSec is the prefill rate — llama.cpp's "pp": how fast the prompt was
+// ingested, in tokens/sec, measured over the window before the first output
+// token appeared.
+//
+// Only meaningful on a STREAMED response, where time-to-first-token is
+// observable. A non-streamed upstream withholds headers until the whole
+// completion is done, so prefill and generation are indistinguishable from
+// outside and this returns 0 rather than a fabricated split.
+//
+// Cached prompt tokens are excluded: they were never re-processed, so counting
+// them would inflate the rate by exactly the cache hit ratio.
+func (t Trace) PromptPerSec() float64 {
+	if !t.Stream || t.TTFBMS <= 0 {
+		return 0
+	}
+	n := t.PromptTokens - t.CachedTokens
+	if n <= 0 {
+		return 0
+	}
+	return float64(n) / (float64(t.TTFBMS) / 1000)
+}
+
+// TokensPerSec is the output generation rate — llama.cpp's "tg". Zero when it cannot be computed
+// honestly (no completion tokens, or no measurable generation window).
+func (t Trace) TokensPerSec() float64 {
+	g := t.GenMS()
+	if t.CompletionTokens <= 0 || g <= 0 {
+		return 0
+	}
+	return float64(t.CompletionTokens) / (float64(g) / 1000)
 }
 
 type Store struct {
@@ -76,7 +141,7 @@ type Store struct {
 	dataVersion int64      // SQLite data_version at last reload; detects writes from other processes
 }
 
-var ValidTypes = map[string]bool{"openai": true, "anthropic": true, "ollama": true}
+var ValidTypes = map[string]bool{"openai": true, "anthropic": true, "ollama": true, "commandcode": true}
 
 func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
@@ -122,7 +187,9 @@ CREATE TABLE IF NOT EXISTS providers (
   models TEXT NOT NULL DEFAULT '',
   fallback TEXT NOT NULL DEFAULT '',
   pinned_models TEXT NOT NULL DEFAULT '',
-  models_filter TEXT NOT NULL DEFAULT ''
+  models_filter TEXT NOT NULL DEFAULT '',
+  context_length INTEGER NOT NULL DEFAULT 0,
+  headers TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS transforms (
   id INTEGER PRIMARY KEY,
@@ -147,6 +214,8 @@ CREATE TABLE IF NOT EXISTS traces (
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   cached_tokens INTEGER NOT NULL DEFAULT 0,
+  ttfb_ms INTEGER NOT NULL DEFAULT 0,
+  post_us INTEGER NOT NULL DEFAULT 0,
   req_snippet TEXT NOT NULL DEFAULT '',
   resp_snippet TEXT NOT NULL DEFAULT ''
 );
@@ -199,10 +268,14 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN fallback TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN pinned_models TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN models_filter TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN context_length INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN headers TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN ttfb_ms INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN post_us INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -269,7 +342,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -279,7 +352,7 @@ func (s *Store) reload() error {
 		var p Provider
 		var enc []byte
 		var enabled, inject int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &p.ModelsFilter); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
 			return err
 		}
 		p.Enabled, p.InjectDocs = enabled == 1, inject == 1
@@ -418,8 +491,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers)
 		if err != nil {
 			return err
 		}
@@ -427,11 +500,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
 		}
 		if err != nil {
 			return err
@@ -523,8 +596,8 @@ func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
 // ---- traces ----
 
 func (s *Store) AddTrace(t *Trace) {
-	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.ReqSnip, t.RespSnip)
+	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip)
 	if err == nil {
 		t.ID, _ = res.LastInsertId()
 	}
@@ -536,7 +609,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -545,7 +618,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	for rows.Next() {
 		var t Trace
 		var stream int
-		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.ReqSnip, &t.RespSnip); err != nil {
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.ReqSnip, &t.RespSnip); err != nil {
 			return nil, err
 		}
 		t.Stream = stream == 1

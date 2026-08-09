@@ -76,6 +76,9 @@ type rtConfig struct {
 	Rounds          int    `json:"rounds"`
 	MaxTokens       int    `json:"max_tokens"`
 	CompressContext bool   `json:"compress_context"`
+	// SearxURL overrides the SearXNG instance panelists search through.
+	// Empty falls back to $SEARXNG_ENDPOINT, then the local default.
+	SearxURL string `json:"searxng_url"`
 }
 
 // compressionSummarizer reads the summarizer model from the compression
@@ -218,6 +221,7 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 	}
 	start := time.Now()
 	acc := &usageAcc{}
+	searched := &searchLog{}
 
 	// Compress the shared context ONCE before fanning out, so N panelists
 	// don't each receive the full (possibly huge) context. Round-table-only —
@@ -248,8 +252,9 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		wg.Add(1)
 		go func(i int, a store.AgentProfile) {
 			defer wg.Done()
-			sys := a.Persona + "\nYou are speaking on a live panel — a conversation, not a work session. You have your own expertise plus the question and any context below; that is everything you need and everything you get. Open with your verdict in one sentence, then give the 2-4 strongest concrete reasons for it. If a detail is missing, name your assumption in a short clause and reason from it — never pause for more. Take a clear side. Plain prose, under 300 words."
-			ans, err := chatViaProxy(addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens, perCallTimeout, acc)
+			sys := a.Persona + "\nYou are speaking on a live panel — a conversation, not a work session. Open with your verdict in one sentence, then give the 2-4 strongest concrete reasons for it. If a detail is missing, name your assumption in a short clause and reason from it — never pause for more. Take a clear side. Plain prose, under 300 words."
+			sys += researchBrief
+			ans, err := panelCall(cfg, addr, a.Model, sys, q, a.Temperature, cfg.MaxTokens, perCallTimeout, acc, searched)
 			if err != nil {
 				ans = "(unavailable: " + err.Error() + ")"
 			}
@@ -271,8 +276,8 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 						fmt.Fprintf(&others, "%s said:\n%s\n\n", b.Name, answers[j])
 					}
 				}
-				sys := a.Persona + "\nThe other panelists have spoken; their positions are below. This is still a live exchange — respond from judgment, not research. Say plainly where someone shifted your view, where someone is wrong and exactly why, and land on your final verdict in one clear sentence. Concede real points; hold your ground on the rest. Plain prose, under 250 words."
-				ans, err := chatViaProxy(addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens, perCallTimeout, acc)
+				sys := a.Persona + "\nThe other panelists have spoken; their positions are below. Say plainly where someone shifted your view, where someone is wrong and exactly why, and land on your final verdict in one clear sentence. Concede real points; hold your ground on the rest. If another panelist asserts a fact you doubt — an API, a version, a number — check it before conceding or attacking. Plain prose, under 250 words." + researchBrief
+				ans, err := panelCall(cfg, addr, a.Model, sys, q+"\n\nOther panelists:\n"+others.String(), a.Temperature, cfg.MaxTokens, perCallTimeout, acc, searched)
 				if err != nil {
 					ans = answers[i] // keep round-1 answer on failure
 				}
@@ -298,8 +303,26 @@ func runRoundtable(s *store.Store, addr, question, context string, names []strin
 		synthesis = "(moderator unavailable: " + err.Error() + ")"
 	}
 
+	// Show what the panel actually looked up, so a reader can tell a grounded
+	// claim from a remembered one instead of having to trust the prose.
+	researchNote := ""
+	if qs := searched.list(); len(qs) > 0 {
+		seen := map[string]bool{}
+		var uniq []string
+		for _, q := range qs {
+			if !seen[q] {
+				seen[q] = true
+				uniq = append(uniq, q)
+			}
+		}
+		researchNote = "\n\n---\n\n**Panel research (" + fmt.Sprint(len(uniq)) + " lookups):**\n"
+		for _, q := range uniq {
+			researchNote += "- " + q + "\n"
+		}
+	}
+
 	var out strings.Builder
-	out.WriteString("# Round Table\n\n" + compressNote + synthesis + "\n\n---\n\n# Panel positions\n\n" + transcript.String())
+	out.WriteString("# Round Table\n\n" + compressNote + synthesis + researchNote + "\n\n---\n\n# Panel positions\n\n" + transcript.String())
 
 	// record the deliberation so the WebUI can show round-table history
 	names2 := make([]string, len(panel))
@@ -398,7 +421,8 @@ func cmdMCP(args []string) {
 					if p.Args.Context != "" {
 						q = "Context:\n" + p.Args.Context + "\n\nQuestion:\n" + q
 					}
-					return chatViaProxy(addr, a.Model, a.Persona, q, a.Temperature, loadRTConfig(s).MaxTokens, consultTimeout, nil)
+					ccfg := loadRTConfig(s)
+					return panelCall(ccfg, addr, a.Model, a.Persona+researchBrief, q, a.Temperature, ccfg.MaxTokens, consultTimeout, &usageAcc{}, &searchLog{})
 				case "list_profiles":
 					profiles, err := s.AgentProfiles()
 					if err != nil {

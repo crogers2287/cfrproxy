@@ -3,3 +3,24 @@ cfrproxy
 *.db-shm
 *.db-wal
 secret.key
+
+# Build/rollback artifacts and editor scratch — never source.
+*.bak
+*.bak-*
+cfrproxy.bak-*
+__pycache__/
+.plugin-config/
+.project-structure.md
+
+# Stray files created by mistyped shell redirects (single words, "NOT", "a",
+# "exec", …). Listed explicitly so a real file of the same name is a conscious
+# `git add -f` rather than a silent commit.
+/NOT
+/a
+/does
+/exec
+/inside
+/not
+/pipeline
+/replace
+/the

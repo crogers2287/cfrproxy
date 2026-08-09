@@ -125,7 +125,7 @@ func TestClaudePresetFilterExcludesAliasForks(t *testing.T) {
 		t.Fatal("no claude preset")
 	}
 	real := []string{"claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5", "claude-3-5-haiku-20241022"}
-	forks := []string{"claude-command-fable-5", "claude-opencode-sonnet-5", "claude-gpt-5.6-luna", "claude-gemini-3-flash", "claude-myhost-agents-a1", "claude-novita-thing", "claude-somethingnew-x"}
+	forks := []string{"claude-command-fable-5", "claude-opencode-sonnet-5", "claude-gpt-5.6-luna", "claude-gemini-3-flash", "claude-fred-agents-a1", "claude-novita-thing", "claude-somethingnew-x"}
 
 	got := proxy.ApplyModelsFilter(append(append([]string{}, real...), forks...), filter)
 	set := map[string]bool{}

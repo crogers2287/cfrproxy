@@ -19,10 +19,10 @@ three:
   `http://HOST/p/<name>/v1` — so it lists only that provider's models and
   routes only to it.
 - **Model tier:** the scoped mount's `/v1/models` is probed live, so each
-  provider shows its real current catalog (a-provider 20, ollama 14, a-provider 17,
+  provider shows its real current catalog (fred 20, ollama 14, Nexum 17,
   oauth 130 at install).
 
-So in Telegram: `/model` → **cfrproxy** → pick **a-provider / ollama / a-provider / oauth**
+So in Telegram: `/model` → **cfrproxy** → pick **fred / ollama / Nexum / oauth**
 → pick a model.
 
 ## Sync (run after adding/removing a cfrproxy provider)
@@ -71,8 +71,8 @@ Re-inject after a Hermes reinstall with
 
 - `/model` → picker; pick **cfrproxy** → drill into any model → confirm.
   Switch is per-session (`_session_model_overrides`); `--global` persists to config.
-- `/model cfrproxy/openrouter/anthropic/claude-sonnet-4` → direct switch (note the double slash:
-  Hermes provider `cfrproxy`, cfrproxy model `openrouter/anthropic/claude-sonnet-4`).
+- `/model cfrproxy/fred/agents-a1` → direct switch (note the double slash:
+  Hermes provider `cfrproxy`, cfrproxy model `fred/agents-a1`).
 - `/model --refresh` → bust the 15-min picker cache for an immediate re-scan.
 
 ## Freshness

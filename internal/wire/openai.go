@@ -32,16 +32,16 @@ type oaiToolCall struct {
 }
 
 type oaiReq struct {
-	Model       string          `json:"model"`
-	Messages    []oaiMsg        `json:"messages"`
-	Tools       []oaiTool       `json:"tools,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	StreamOpts  map[string]any  `json:"stream_options,omitempty"`
-	ReasoningEffort string      `json:"reasoning_effort,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []oaiMsg        `json:"messages"`
+	Tools           []oaiTool       `json:"tools,omitempty"`
+	MaxTokens       int             `json:"max_tokens,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	TopP            *float64        `json:"top_p,omitempty"`
+	Stop            json.RawMessage `json:"stop,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
+	StreamOpts      map[string]any  `json:"stream_options,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 }
 
 type oaiTool struct {
@@ -55,6 +55,48 @@ type oaiTool struct {
 
 // oaiContentText flattens OpenAI content (string or content-part array) to text.
 func oaiContentText(raw json.RawMessage) string {
+	text, _ := oaiContentParts(raw)
+	return text
+}
+
+// oaiContentParts splits OpenAI content into its text and its image
+// references. Images arrive either as {"type":"image_url","image_url":{"url":…}}
+// or, on the Responses-flavoured shape, {"type":"input_image","image_url":"…"} —
+// where image_url is a bare string rather than an object. Both are accepted.
+func oaiContentParts(raw json.RawMessage) (string, []string) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, nil
+	}
+	var parts []struct {
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		ImageURL json.RawMessage `json:"image_url"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return "", nil
+	}
+	var b strings.Builder
+	var imgs []string
+	for _, p := range parts {
+		switch p.Type {
+		case "text", "input_text":
+			b.WriteString(p.Text)
+		case "image_url", "input_image":
+			if u := oaiImageURL(p.ImageURL); u != "" {
+				imgs = append(imgs, u)
+			}
+		}
+	}
+	return b.String(), imgs
+}
+
+// oaiImageURL reads an image_url field that may be either a bare string or an
+// object carrying {"url": …}.
+func oaiImageURL(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -62,18 +104,11 @@ func oaiContentText(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &s) == nil {
 		return s
 	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	var o struct {
+		URL string `json:"url"`
 	}
-	if json.Unmarshal(raw, &parts) == nil {
-		var b strings.Builder
-		for _, p := range parts {
-			if p.Type == "text" {
-				b.WriteString(p.Text)
-			}
-		}
-		return b.String()
+	if json.Unmarshal(raw, &o) == nil {
+		return o.URL
 	}
 	return ""
 }
@@ -100,7 +135,8 @@ func ParseOpenAIRequest(body []byte) (*Request, error) {
 			}
 			r.System += oaiContentText(m.Content)
 		default:
-			msg := Msg{Role: m.Role, Content: oaiContentText(m.Content), ToolCallID: m.ToolCallID, ReasoningContent: oaiContentText(m.ReasoningContent)}
+			text, imgs := oaiContentParts(m.Content)
+			msg := Msg{Role: m.Role, Content: text, Images: imgs, ToolCallID: m.ToolCallID, ReasoningContent: oaiContentText(m.ReasoningContent)}
 			for _, tc := range m.ToolCalls {
 				msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: tc.Function.Arguments})
 			}
@@ -144,7 +180,25 @@ func BuildOpenAIRequest(r *Request) ([]byte, error) {
 	}
 	for _, m := range r.Messages {
 		om := oaiMsg{Role: m.Role, ToolCallID: m.ToolCallID}
-		if m.Content != "" || len(m.ToolCalls) == 0 {
+		switch {
+		case len(m.Images) > 0:
+			// Re-emit as a content-part array so the picture survives; a bare
+			// string here is what used to strip it.
+			type imgURL struct {
+				URL string `json:"url"`
+			}
+			type part struct {
+				Type     string  `json:"type"`
+				Text     string  `json:"text,omitempty"`
+				ImageURL *imgURL `json:"image_url,omitempty"`
+			}
+			parts := []part{{Type: "text", Text: m.Content}}
+			for _, u := range m.Images {
+				parts = append(parts, part{Type: "image_url", ImageURL: &imgURL{URL: u}})
+			}
+			c, _ := json.Marshal(parts)
+			om.Content = c
+		case m.Content != "" || len(m.ToolCalls) == 0:
 			c, _ := json.Marshal(m.Content)
 			om.Content = c
 		}

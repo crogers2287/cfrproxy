@@ -1,4 +1,3 @@
-import os
 import sys, shutil, time, os
 
 BLOCK = """- name: cfrproxy
@@ -10,7 +9,7 @@ BLOCK = """- name: cfrproxy
 
 profiles = ["ash","canna","fogger","grant","haxor","max","winston"]
 for p in profiles:
-    f = os.path.expanduser(f"~/.hermes/profiles/{p}/config.yaml")
+    f = f"/home/crogers2287/.hermes/profiles/{p}/config.yaml"
     src = open(f).read()
     if "name: cfrproxy" in src:
         print(f"{p}: already has cfrproxy, skip")

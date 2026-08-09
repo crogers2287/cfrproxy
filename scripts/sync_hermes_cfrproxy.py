@@ -2,7 +2,7 @@
 """Sync Hermes's Telegram /model picker to cfrproxy's live provider set.
 
 Gives every Hermes agent a router->provider->model drill-down:
-  /model -> "cfrproxy" group -> pick a provider (e.g. openrouter/ollama/anthropic)
+  /model -> "cfrproxy" group -> pick a provider (fred/ollama/Nexum/oauth)
          -> pick a model (that provider's live catalog)
 
 Two coordinated pieces (see cfrproxy/HERMES_INTEGRATION.md):
@@ -61,12 +61,20 @@ def fetch_providers():
 # Real usable context for providers whose models can't be discovered from
 # /v1/models (local llama-swap servers report no context_length). Without this
 # Hermes assumes a huge default (256k) and lets the conversation overflow the
-# model's real window before compressing. Example: a local 27B server started
-# with n_ctx=131072 — input + reserved output + MTP/vision overhead (~22k
-# observed) must fit, so 98304 leaves a ~32k safety margin.
-# Key = cfrproxy provider name; add an entry per local provider you run.
+# model's real window before compressing. fred: q27b n_ctx=131072 (bumped
+# 2026-07-23); input + reserved output + MTP/vision overhead (~22k observed)
+# must fit — 98304 leaves a ~32k safety margin.
+# Large-window CLOUD providers are worth capping here too, for a different
+# reason. Hermes triggers compaction at threshold x context_length, sized on the
+# model the agent is configured for — but cfrproxy's fallback chain can serve
+# that same request from a DIFFERENT model with a smaller window. An agent on a
+# 1M-context model at threshold 0.7 only compacts at 700k, so every failover to
+# Codex (hard-capped at 272k) overflows, gets rescued, and pays a slow retry on
+# a huge prompt. Capping at the smallest window a request can realistically land
+# on makes compaction fire before that happens.
 CONTEXT_LENGTHS = {
-    "myhost": 98304,
+    "fred": 98304,
+    "Qwen": 272000,
 }
 
 
