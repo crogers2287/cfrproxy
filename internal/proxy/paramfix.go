@@ -113,9 +113,20 @@ func stripBodyParam(body []byte, key string) ([]byte, bool) {
 func failureLabel(reason string) string {
 	r := strings.ToLower(reason)
 	switch {
+	// plan/entitlement gating reads as "quota exhausted" otherwise, which sends
+	// the operator to a billing meter instead of a plan upgrade
+	case strings.Contains(r, "upgrade_required"), strings.Contains(r, "upgrade to"),
+		strings.Contains(r, "doesn't include api"), strings.Contains(r, "not included in your plan"),
+		strings.Contains(r, "plan_required"), strings.Contains(r, "subscription required"):
+		return "plan has no API access"
+	case strings.Contains(r, "unsupported_model"), strings.Contains(r, "not supported on this endpoint"):
+		return "model unavailable there"
 	case strings.Contains(r, "insufficient_quota"), strings.Contains(r, "quota has been exhausted"),
 		strings.Contains(r, "usage cap"), strings.Contains(r, "quota"):
 		return "quota exhausted"
+	case strings.Contains(r, "no image support"), strings.Contains(r, "vision failure"),
+		strings.Contains(r, "image rejected"):
+		return "cannot see images"
 	case strings.Contains(r, "context overflow"), strings.Contains(r, "context"):
 		return "context overflow"
 	case strings.Contains(r, "http 429"), strings.Contains(r, "rate limit"):

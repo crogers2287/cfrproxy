@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -497,5 +498,367 @@ func TestFailedAttemptGetsItsOwnTrace(t *testing.T) {
 	}
 	if okRow == nil || okRow.Status != 200 {
 		t.Errorf("successful provider row missing/wrong: %+v", okRow)
+	}
+}
+
+// An image request rejected with wording visionFailure has never seen must
+// STILL reach the vision chain. Enumerating provider phrasings is a losing
+// game — this pins the structural rule, not the pattern list.
+func TestVisionFallbackOnUnrecognizedImageRejection(t *testing.T) {
+	var visionGotImage bool
+	var visionBody string
+	blind := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(400)
+		// deliberately says nothing about images, vision, or any known pattern
+		w.Write([]byte(`{"error":{"message":"schema violation at messages[0]: variant not in enum"}}`))
+	}))
+	defer blind.Close()
+	seer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		visionBody = string(b)
+		visionGotImage = bodyHasImage(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"seer-model","choices":[{"message":{"role":"assistant","content":"a red circle"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer seer.Close()
+
+	s := newDiscoveryStore(t)
+	if err := s.SaveProvider(&store.Provider{Name: "seer", Type: "openai", BaseURL: seer.URL, DefaultModel: "seer-model", Priority: 20, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProvider(&store.Provider{Name: "blind", Type: "openai", BaseURL: blind.URL, DefaultModel: "blind-model", Priority: 10, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("vision_fallback", `{"enabled":true,"targets":["seer/seer-model"]}`); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+	resetFailoverNotices()
+
+	imgReq := `{"model":"blind/blind-model","max_tokens":50,"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"what is this"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}}]}]}`
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(imgReq)))
+
+	if rec.Code != 200 {
+		t.Fatalf("want 200 via vision fallback, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "a red circle") {
+		t.Fatalf("answer did not come from the vision target: %s", rec.Body.String())
+	}
+	// the whole point: a vision model that never received the picture would
+	// answer confidently and wrongly, which is worse than the original 400
+	if !visionGotImage {
+		t.Fatalf("vision target received no image part — body was: %s", visionBody)
+	}
+	if !strings.Contains(visionBody, "iVBORw0KGgoAAAANSUhEUg==") {
+		t.Fatalf("image payload did not survive the hop: %s", visionBody)
+	}
+}
+
+// The image rule must not turn every 4xx into a failover: a text request that
+// a provider rejects still fails fast.
+func TestTextRequestStillHardFailsOn400(t *testing.T) {
+	blind := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":{"message":"schema violation at messages[0]: variant not in enum"}}`))
+	}))
+	defer blind.Close()
+	seer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			t.Error("vision target must not be tried for a text-only request")
+		}
+		w.WriteHeader(404)
+	}))
+	defer seer.Close()
+
+	s := newDiscoveryStore(t)
+	if err := s.SaveProvider(&store.Provider{Name: "seer", Type: "openai", BaseURL: seer.URL, DefaultModel: "seer-model", Priority: 20, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProvider(&store.Provider{Name: "blind", Type: "openai", BaseURL: blind.URL, DefaultModel: "blind-model", Priority: 10, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("vision_fallback", `{"enabled":true,"targets":["seer/seer-model"]}`); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+	resetFailoverNotices()
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"blind/blind-model","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code == 200 {
+		t.Fatalf("text 400 must not fail over to the vision chain: %s", rec.Body.String())
+	}
+}
+
+// The failure mode no error-driven rule can catch: a text-only model handed a
+// picture does not fail, it invents an answer and returns 200. The proactive
+// gate must route the image away BEFORE that happens.
+func TestBlindModelNeverSeesImageRequest(t *testing.T) {
+	blindHits := 0
+	blind := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		blindHits++
+		// the hallucination: confident, wrong, and a perfectly healthy 200
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"deepseek-v4-flash","choices":[{"message":{"role":"assistant","content":"a pink square and a yellow circle"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer blind.Close()
+	var seerGotImage bool
+	seer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		seerGotImage = bodyHasImage(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"gemini-3-flash","choices":[{"message":{"role":"assistant","content":"a red circle and a blue rectangle"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer seer.Close()
+
+	s := newDiscoveryStore(t)
+	if err := s.SaveProvider(&store.Provider{Name: "gemini", Type: "openai", BaseURL: seer.URL, DefaultModel: "gemini-3-flash", Priority: 20, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProvider(&store.Provider{Name: "fred", Type: "openai", BaseURL: blind.URL, DefaultModel: "deepseek-v4-flash", Priority: 10, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("vision_fallback", `{"enabled":true,"targets":["gemini/gemini-3-flash"]}`); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+	resetFailoverNotices()
+
+	imgReq := `{"model":"fred/deepseek-v4-flash","max_tokens":50,"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"what shapes are these"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}}]}]}`
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(imgReq)))
+
+	if rec.Code != 200 {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if blindHits != 0 {
+		t.Errorf("the blind model was sent an image it cannot see (%d hits)", blindHits)
+	}
+	if strings.Contains(rec.Body.String(), "pink square") {
+		t.Fatalf("hallucinated answer reached the client: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "red circle") {
+		t.Fatalf("vision target did not serve the request: %s", rec.Body.String())
+	}
+	if !seerGotImage {
+		t.Error("vision target received no image part")
+	}
+	// An image response is forwarded verbatim to preserve the picture, so the
+	// visible-content banner cannot be injected — the reason has to be on the
+	// trace, or the reroute is invisible to the operator.
+	traces, _ := s.Traces(0, 5)
+	if len(traces) == 0 || traces[0].Provider != "gemini" {
+		t.Fatalf("trace should record the vision target serving: %+v", traces)
+	}
+	if !strings.Contains(traces[0].Err, "no image support") {
+		t.Errorf("trace should say why it rerouted, got %q", traces[0].Err)
+	}
+}
+
+// A text-only model must still serve TEXT requests directly — the gate keys on
+// the request carrying an image, not on the model.
+func TestBlindModelStillServesTextDirectly(t *testing.T) {
+	blindHits := 0
+	blind := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		blindHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"deepseek-v4-flash","choices":[{"message":{"role":"assistant","content":"hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer blind.Close()
+	seer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			t.Error("vision target must not be used for a text-only request")
+		}
+		w.WriteHeader(404)
+	}))
+	defer seer.Close()
+
+	s := newDiscoveryStore(t)
+	if err := s.SaveProvider(&store.Provider{Name: "gemini", Type: "openai", BaseURL: seer.URL, DefaultModel: "gemini-3-flash", Priority: 20, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProvider(&store.Provider{Name: "fred", Type: "openai", BaseURL: blind.URL, DefaultModel: "deepseek-v4-flash", Priority: 10, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("vision_fallback", `{"enabled":true,"targets":["gemini/gemini-3-flash"]}`); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+	resetFailoverNotices()
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"fred/deepseek-v4-flash","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi there") {
+		t.Fatalf("text request should go straight to the model: %d %s", rec.Code, rec.Body.String())
+	}
+	if blindHits != 1 {
+		t.Errorf("want exactly 1 hit on the primary, got %d", blindHits)
+	}
+}
+
+// A vision-capable primary must be used directly — the gate must not reroute
+// every image away from a model that can perfectly well see it.
+func TestVisionCapablePrimaryIsNotRerouted(t *testing.T) {
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		primaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"gemini-3-flash","choices":[{"message":{"role":"assistant","content":"served by primary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer primary.Close()
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			t.Error("vision chain must not be used when the primary already sees")
+		}
+		w.WriteHeader(404)
+	}))
+	defer other.Close()
+
+	s := newDiscoveryStore(t)
+	if err := s.SaveProvider(&store.Provider{Name: "claude", Type: "openai", BaseURL: other.URL, DefaultModel: "claude-opus-5", Priority: 20, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveProvider(&store.Provider{Name: "gemini", Type: "openai", BaseURL: primary.URL, DefaultModel: "gemini-3-flash", Priority: 10, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("vision_fallback", `{"enabled":true,"targets":["claude/claude-opus-5"]}`); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+	resetFailoverNotices()
+
+	imgReq := `{"model":"gemini/gemini-3-flash","max_tokens":50,"messages":[{"role":"user","content":[` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}}]}]}`
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(imgReq)))
+
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "served by primary") {
+		t.Fatalf("vision-capable primary should serve directly: %d %s", rec.Code, rec.Body.String())
+	}
+	if primaryHits != 1 {
+		t.Errorf("want 1 hit on primary, got %d", primaryHits)
+	}
+}
+
+// The global fallback chain is ordered for text availability and contains
+// text-only models. Once a vision chain is in play, an image must never reach
+// one of them — otherwise an exhausted vision target silently degrades into a
+// confident invention from a model that never saw the picture.
+func TestImageNeverReachesBlindGlobalFallback(t *testing.T) {
+	blindGlobalHits := 0
+	blindGlobal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		blindGlobalHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","model":"qwen3.8-max-preview","choices":[{"message":{"role":"assistant","content":"a serene mountain lake"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer blindGlobal.Close()
+	// the only sighted target, and it is down
+	seer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"Individual quota reached"}}`))
+	}))
+	defer seer.Close()
+	blindPrimary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			t.Error("blind primary must not receive an image")
+		}
+		w.WriteHeader(404)
+	}))
+	defer blindPrimary.Close()
+
+	s := newDiscoveryStore(t)
+	for _, p := range []store.Provider{
+		{Name: "gemini", Type: "openai", BaseURL: seer.URL, DefaultModel: "gemini-3-flash", Priority: 20, Enabled: true},
+		{Name: "Qwen", Type: "openai", BaseURL: blindGlobal.URL, DefaultModel: "qwen3.8-max-preview", Priority: 30, Enabled: true},
+		{Name: "fred", Type: "openai", BaseURL: blindPrimary.URL, DefaultModel: "deepseek-v4-flash", Priority: 10, Enabled: true},
+	} {
+		pp := p
+		if err := s.SaveProvider(&pp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetSetting("vision_fallback", `{"enabled":true,"targets":["gemini/gemini-3-flash"]}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("global_fallback", `{"enabled":true,"targets":["Qwen/qwen3.8-max-preview"]}`); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+	mux := http.NewServeMux()
+	p.Register(mux)
+	resetFailoverNotices()
+
+	imgReq := `{"model":"fred/deepseek-v4-flash","max_tokens":50,"messages":[{"role":"user","content":[` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}}]}]}`
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(imgReq)))
+
+	if blindGlobalHits != 0 {
+		t.Errorf("image reached a blind global-fallback model (%d hits)", blindGlobalHits)
+	}
+	if strings.Contains(rec.Body.String(), "mountain lake") {
+		t.Fatalf("invented answer reached the client: %s", rec.Body.String())
+	}
+	if rec.Code == 200 {
+		t.Fatalf("no sighted model could serve; want an error, got 200: %s", rec.Body.String())
+	}
+	// the error must name the real problem, not a generic upstream failure
+	if !strings.Contains(rec.Body.String(), "no vision-capable model could serve this image") {
+		t.Errorf("error should name the cause: %s", rec.Body.String())
 	}
 }

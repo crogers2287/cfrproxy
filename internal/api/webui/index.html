@@ -11,7 +11,7 @@
   --dim:#8b949e;--accent:#d16ba5;--ok:#3fb950;--err:#f85149;--warn:#d29922;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;min-height:100vh}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;min-height:100dvh;-webkit-text-size-adjust:100%}
 header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--panel)}
 header h1{font-size:17px;letter-spacing:.5px}
 header h1 span{color:var(--accent)}
@@ -25,7 +25,9 @@ h2{font-size:15px;margin-bottom:14px;color:var(--dim);font-weight:600;text-trans
 /* provider cards */
 #cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;cursor:grab;position:relative;transition:border-color .15s}
-.card:hover{border-color:var(--accent)}
+/* hover only where a pointer can actually hover — on touch these stick after a tap */
+@media (hover:hover){.card:hover{border-color:var(--accent)}}
+.card .reorder{display:none;gap:6px;position:absolute;top:8px;right:8px}
 .card.dragging{opacity:.4}
 .card.dragover{border-color:var(--accent);border-style:dashed}
 .card.off{opacity:.45}
@@ -36,20 +38,30 @@ h2{font-size:15px;margin-bottom:14px;color:var(--dim);font-weight:600;text-trans
 .card .meta{margin-top:8px;font-size:12px;color:var(--dim)}
 .card .meta b{color:var(--text);font-weight:500}
 .card .row{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
-button.b{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px}
-button.b:hover{border-color:var(--accent)}
+button.b{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;touch-action:manipulation}
 button.b.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
-button.b.danger:hover{border-color:var(--err);color:var(--err)}
+@media (hover:hover){
+  button.b:hover{border-color:var(--accent)}
+  button.b.danger:hover{border-color:var(--err);color:var(--err)}
+}
+button.b:active{border-color:var(--accent)}
+button.b.danger:active{border-color:var(--err);color:var(--err)}
 .badge-ok{color:var(--ok)} .badge-err{color:var(--err)}
 /* forms */
-dialog{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:24px;width:560px;max-width:92vw}
+/* --dlg-pad is reused by the sticky action bar so it can sit flush to the edge */
+dialog{--dlg-pad:24px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:12px;
+  padding:var(--dlg-pad);width:560px;max-width:92vw;max-height:88dvh;overflow:auto;overscroll-behavior:contain;
+  margin:auto} /* the * reset zeroes the UA's margin:auto, which is what centres a modal dialog */
 dialog::backdrop{background:rgba(0,0,0,.6)}
-dialog h3{margin-bottom:16px}
+dialog h3{margin-bottom:16px;position:sticky;top:calc(-1 * var(--dlg-pad));background:var(--panel);
+  padding:var(--dlg-pad) 0 10px;margin-top:calc(-1 * var(--dlg-pad));border-bottom:1px solid var(--border);z-index:1}
 label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px}
 input[type=text],input[type=password],select,textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit}
 textarea{font-family:ui-monospace,monospace;min-height:110px}
 .check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--dim)}
-.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+/* Save/Cancel stay reachable on a long form in a short viewport */
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;position:sticky;
+  bottom:calc(-1 * var(--dlg-pad));background:var(--panel);border-top:1px solid var(--border);padding:12px 0 var(--dlg-pad)}
 /* tables */
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{color:var(--dim);text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
@@ -87,8 +99,29 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   #cards,#agentcards{grid-template-columns:1fr!important}
   .toolbar{gap:6px}
   .toolbar h2{font-size:14px}
-  dialog{padding:18px;width:96vw}
+  dialog{--dlg-pad:16px;width:96vw;max-height:92dvh}
   #toast{left:12px;right:12px;bottom:12px;text-align:center}
+
+  /* 16px is the threshold below which iOS Safari zooms the page on focus */
+  input[type=text],input[type=password],select,textarea{font-size:16px;padding:11px 12px}
+  label{font-size:13px}
+  /* honest tap targets — 44px is the Apple/Android floor */
+  button.b{font-size:14px;padding:10px 14px;min-height:44px}
+  .card .row{gap:8px}
+  .card .row>button.b{flex:1 1 calc(50% - 4px)}
+  .dlg-actions>button.b{flex:1}
+  .check{margin-top:14px;font-size:14px}
+  .check input[type=checkbox]{width:20px;height:20px;flex:0 0 20px}
+  /* drag-to-reorder never fires on touch — give the cards real buttons */
+  .card{cursor:default}
+  .card .reorder{display:flex}
+  .card .reorder button.b{min-height:40px;padding:4px 13px;font-size:16px;line-height:1}
+  /* #N moves inline so the reorder buttons can own the top-right corner */
+  .card .prio{position:static;display:block;margin-bottom:2px;padding-right:100px}
+  /* small utility buttons that live inline with a label stay compact */
+  label>button.b{min-height:32px;padding:4px 10px;font-size:12px}
+  /* the scan result gets its own line instead of wrapping around the button */
+  #scan-count{display:block;margin-top:6px}
 }
 </style>
 </head>
@@ -128,7 +161,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <div class="spacer"></div>
     <button class="b primary" onclick="openProviderDialog()">+ Add provider</button>
   </div>
-  <p class="hint">Drag cards to set routing priority — the first enabled card handles bare model names. Address a provider directly with <code>provider-name/model</code>.</p>
+  <p class="hint">Drag cards — or tap ↑/↓ on touch — to set routing priority. The first enabled card handles bare model names. Address a provider directly with <code>provider-name/model</code>.</p>
   <div id="cards"></div>
 
   <div class="toolbar" style="margin-top:32px">
@@ -242,7 +275,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </table>
   <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Tokens are in/out (cached read). Rows in red are real failures.</p>
   <table id="trtable">
-    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Status</th><th>Latency</th><th>Stream</th></tr></thead>
+    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Status</th><th>pp tok/s</th><th>tg tok/s</th><th>TTFB</th><th>Post</th><th>Latency</th><th>Stream</th></tr></thead>
     <tbody></tbody>
   </table>
   <div id="tracedetail" class="hidden"></div>
@@ -461,7 +494,12 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <input type="password" id="p-key" autocomplete="off">
     <label>Default model <button type="button" class="b" style="margin-left:8px;font-size:11px;padding:2px 8px" onclick="scanModels()">Scan models</button> <span id="scan-count" style="color:var(--dim);font-size:11px"></span></label>
     <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
+    <select id="p-model-pick" class="hidden" style="margin-top:6px" onchange="pickScannedModel(this.value)"></select>
     <datalist id="modellist"></datalist>
+    <label>Context window override (tokens — what harnesses are told this provider's models hold; blank/0 = auto-detect)</label>
+    <input type="text" id="p-ctxlen" placeholder="262144">
+    <label>Model filter (comma globs — narrows a shared upstream to this provider's models; <code>!</code> excludes)</label>
+    <input type="text" id="p-filter" placeholder="claude-*, !claude-*-thinking">
     <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
     <label>Fallback (provider/model — chains follow transitively, e.g. Nexum→fred→ollama)</label><select id="p-fallback"></select>
     <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
@@ -563,6 +601,10 @@ async function loadProviders(){
     card.className='card'+(p.enabled?'':' off');
     card.draggable=true;card.dataset.id=p.id;
     card.innerHTML=`
+      <div class="reorder">
+        <button class="b" title="move up" onclick="moveProvider(${p.id},-1)"${i===0?' disabled':''}>↑</button>
+        <button class="b" title="move down" onclick="moveProvider(${p.id},1)"${i===providers.length-1?' disabled':''}>↓</button>
+      </div>
       <div class="prio">#${i+1}</div>
       <h3>${esc(p.name)}</h3>
       <span class="type">${p.type}</span>
@@ -609,25 +651,36 @@ function addDnD(card){
   });
 }
 
+// touch devices never fire HTML5 drag events, so the cards also carry ↑/↓
+async function moveProvider(id,dir){
+  const ids=providers.map(p=>p.id), i=ids.indexOf(id), j=i+dir;
+  if(i<0||j<0||j>=ids.length)return;
+  [ids[i],ids[j]]=[ids[j],ids[i]];
+  try{await api('providers/reorder',{method:'POST',body:JSON.stringify({ids})});toast('routing order saved');loadProviders()}
+  catch(err){toast(err.message,true)}
+}
+
 const pdlg=$('#pdlg');
 function openProviderDialog(id){
   const p=providers.find(x=>x.id===id)||{};
   $('#pdlg-title').textContent=id?'Edit '+p.name:'Add provider';
   $('#p-id').value=id||'';$('#p-name').value=p.name||'';$('#p-type').value=p.type||'openai';
   $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
-  $('#p-models').value=p.models||'';
+  $('#p-models').value=p.models||'';$('#p-filter').value=p.models_filter||'';
+  $('#p-ctxlen').value=p.context_length?String(p.context_length):'';
   $('#p-fallback').innerHTML='<option value="">— none —</option>'+allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
   if(p.fallback&&!allModels.includes(p.fallback))$('#p-fallback').insertAdjacentHTML('beforeend',`<option value="${esc(p.fallback)}">${esc(p.fallback)}</option>`);
   $('#p-fallback').value=p.fallback||'';
   $('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
   $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
+  resetModelScan();
   pdlg.showModal();
 }
 async function saveProvider(e){
   e.preventDefault();
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
-    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,
+    api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,models_filter:$('#p-filter').value,context_length:parseInt($('#p-ctxlen').value,10)||0,
     doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
@@ -635,17 +688,53 @@ async function saveProvider(e){
   }catch(err){toast(err.message,true)}
   return false;
 }
+// the datalist + picker are shared by every provider dialog, so clear them on
+// open — otherwise the last provider you scanned keeps offering ITS models.
+function resetModelScan(){
+  $('#modellist').innerHTML='';
+  const pick=$('#p-model-pick');
+  pick.innerHTML='';pick.classList.add('hidden');
+  $('#scan-count').textContent='';
+}
+function pickScannedModel(v){
+  if(!v)return;
+  $('#p-model').value=v;
+  toast('default model set to '+v);
+}
 async function scanModels(){
   const id=$('#p-id').value;
-  if(!id){toast('save the provider first, then scan',true);return}
+  const url=$('#p-url').value.trim();
+  if(!url){toast('enter a base URL first, then scan',true);$('#p-url').focus();return}
   $('#scan-count').textContent='scanning…';
   try{
-    const r=await api('providers/'+id+'/models');
-    if(r.error){$('#scan-count').textContent='';toast('scan failed: '+r.error,true);return}
-    $('#modellist').innerHTML=r.models.map(m=>`<option value="${esc(m)}">`).join('');
-    $('#scan-count').textContent=r.count+' models found — type to filter';
-    if(!$('#p-model').value)$('#p-model').focus();
-  }catch(err){$('#scan-count').textContent='';toast(err.message,true)}
+    // POST the live form values so scanning works while ADDING a provider,
+    // before it has an id. A saved id fills in the stored API key.
+    const r=await api('providers/scan-models',{method:'POST',body:JSON.stringify({
+      id:id?+id:0,type:$('#p-type').value,base_url:url,api_key:$('#p-key').value,
+      models_filter:$('#p-filter').value})});
+    if(r.error){resetModelScan();toast('scan failed: '+r.error,true);return}
+    const models=r.models||[];
+    // the upstream may be shared (CLIProxyAPI, OpenRouter): say how much the
+    // filter removed so an empty or surprising list is self-explanatory
+    const filtered=typeof r.scanned==='number'&&r.scanned!==models.length;
+    if(!models.length){
+      resetModelScan();
+      $('#scan-count').textContent=filtered
+        ? `0 of ${r.scanned} models match the filter above`
+        : '0 models found';
+      return;
+    }
+    if(r.base_url&&r.base_url!==url){$('#p-url').value=r.base_url;toast('base URL corrected to '+r.base_url)}
+    $('#modellist').innerHTML=models.map(m=>`<option value="${esc(m)}">`).join('');
+    const cur=$('#p-model').value;
+    const pick=$('#p-model-pick');
+    pick.innerHTML='<option value="">— pick from '+models.length+' scanned models —</option>'
+      +models.map(m=>`<option value="${esc(m)}"${m===cur?' selected':''}>${esc(m)}</option>`).join('');
+    pick.classList.remove('hidden');
+    $('#scan-count').textContent=filtered
+      ? `${models.length} of ${r.scanned} models (filtered) — pick below or type to filter`
+      : `${models.length} models found — pick below or type to filter`;
+  }catch(err){resetModelScan();toast(err.message,true)}
 }
 async function toggleProvider(id){
   const p=providers.find(x=>x.id===id);
@@ -764,7 +853,11 @@ const scopedModelCache={};
 async function scopedModels(provName){
   if(scopedModelCache[provName])return scopedModelCache[provName];
   try{
-    const r=await fetch('/p/'+encodeURIComponent(provName)+'/v1/models').then(r=>r.json());
+    // ?all=1 — the bare mount returns ONLY pinned models, which exists to keep
+    // harness pickers short. In this admin UI the operator is configuring the
+    // proxy itself and must be able to reach the whole catalogue; without it a
+    // provider with 3 pins offers 3 of its 15 models and looks broken.
+    const r=await fetch('/p/'+encodeURIComponent(provName)+'/v1/models?all=1').then(r=>r.json());
     return scopedModelCache[provName]=r.data.map(m=>m.id);
   }catch{return scopedModelCache[provName]=[]}
 }
@@ -775,7 +868,7 @@ async function fillModelSel(prefix,wanted){
   const models=await scopedModels(pv);
   models.forEach(m=>ms.insertAdjacentHTML('beforeend',`<option value="${esc(m)}">${esc(m)}</option>`));
   if(wanted){
-    if(!models.includes(wanted))ms.insertAdjacentHTML('beforeend',`<option value="${esc(wanted)}">${esc(wanted)} (unpinned)</option>`);
+    if(!models.includes(wanted))ms.insertAdjacentHTML('beforeend',`<option value="${esc(wanted)}">${esc(wanted)} (not in catalog)</option>`);
     ms.value=wanted;
   }
 }
@@ -928,10 +1021,22 @@ function traceRow(t){
     d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
   tr.title=(t.note?t.note+'  ':'')+(t.err||'');
   const cached=t.cached_tokens?`<span class="badge-ok">${t.cached_tokens}</span>`:'·';
+  // generation window = total − upstream think-time − our own post-processing
+  const gen=Math.max(0,(t.latency_ms||0)-(t.ttfb_ms||0)-((t.post_us||0)/1000))||(t.latency_ms||0);
+  const tps=(t.completion_tokens>0&&gen>0)?(t.completion_tokens/(gen/1000)):0;
+  // pp = prefill rate; cached tokens are excluded because they were never
+  // re-processed, and only streams expose a usable time-to-first-token
+  const ppTok=(t.prompt_tokens||0)-(t.cached_tokens||0);
+  const pp=(t.stream&&t.ttfb_ms>0&&ppTok>0)?(ppTok/(t.ttfb_ms/1000)):0;
   tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
     <td class="mono">${esc(t.model)}</td>
     <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td>${cached}</td>
-    <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td><td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
+    <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td>
+    <td class="mono">${pp?pp.toFixed(0):'·'}</td>
+    <td class="mono">${tps?tps.toFixed(1):'·'}</td>
+    <td class="mono">${t.ttfb_ms?t.ttfb_ms+'ms':'·'}</td>
+    <td class="mono">${t.status===200?((t.post_us||0)/1000).toFixed(2)+'ms':'·'}</td>
+    <td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
   return tr;
 }
 async function loadStats(){
@@ -1346,6 +1451,17 @@ async function delEndpoint(id,name){
   try{await api('endpoints/'+id,{method:'DELETE'});toast('deleted');loadEndpoints()}catch(err){toast(err.message,true)}
 }
 
+// Mobile keyboards autocapitalize and autocorrect by default, which quietly
+// mangles provider names, model ids, base URLs and API keys as you type them.
+function tuneTextInputs(){
+  $$('input[type=text],input[type=password],textarea').forEach(el=>{
+    el.setAttribute('autocapitalize','none');
+    el.setAttribute('autocorrect','off');
+    el.setAttribute('spellcheck','false');
+    if(/url/i.test(el.id))el.setAttribute('inputmode','url');
+  });
+}
+
 // ---- boot ----
 async function boot(){
   try{
@@ -1354,6 +1470,7 @@ async function boot(){
     $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
   }catch(err){toast(err.message,true)}
 }
+tuneTextInputs();
 boot();
 // initial tab render — must be after all const/let declarations above
 showTab(location.hash.slice(1)||'providers');

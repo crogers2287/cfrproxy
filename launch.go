@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -91,11 +92,31 @@ func cmdLaunch(harness string, args []string) {
 		setenv("ANTHROPIC_SMALL_FAST_MODEL", model, true)
 		setenv("CFRPROXY_MODEL", model, true)
 	}
-	// harness-specific model flags where env alone doesn't set the default
+	// Harness-specific model flags, for harnesses that ignore the env vars above.
+	//
+	// opencode namespaces every model as <its-provider>/<model>, and its
+	// provider ids are its own, not cfrproxy's. Passing a bare
+	// "fred/deepseek-v4-flash" makes it look for an opencode provider called
+	// "fred", find nothing, and silently fall back to its configured default —
+	// which is exactly the "launched with the wrong model" symptom. Prefix with
+	// whichever opencode provider actually points at this proxy.
 	switch harness {
 	case "codex":
 		if model != "" {
 			fwd = append([]string{"-m", model}, fwd...)
+		}
+	case "opencode":
+		if model != "" {
+			prov := opencodeProviderFor(addr)
+			if prov == "" {
+				fmt.Fprintf(os.Stderr,
+					"warning: no opencode provider points at %s — cannot set --model %q.\n"+
+						"         add one to ~/.config/opencode/opencode.json, or opencode will use its own default.\n",
+					addr, model)
+			} else {
+				fwd = append([]string{"--model", prov + "/" + model}, fwd...)
+				model = prov + "/" + model // so the banner shows what was actually passed
+			}
 		}
 	}
 
@@ -291,12 +312,20 @@ func cmdModels(args []string) {
 		if name != "" && !strings.EqualFold(prov.Name, name) {
 			continue
 		}
-		models, err := p.ListModels(ctx, prov)
+		// filtered, not raw: a shared upstream answers with its whole catalog
+		// and routing rejects whatever models_filter excludes, so printing the
+		// raw list would offer provider/model pairs that cannot be reached
+		models, scanned, err := p.ListModelsFiltered(ctx, prov)
 		if err != nil {
 			fmt.Printf("%s (%s): scan failed: %v\n", prov.Name, prov.Type, err)
 			continue
 		}
-		fmt.Printf("%s (%s): %d models\n", prov.Name, prov.Type, len(models))
+		if len(models) != scanned {
+			fmt.Printf("%s (%s): %d of %d models (filter: %s)\n",
+				prov.Name, prov.Type, len(models), scanned, prov.ModelsFilter)
+		} else {
+			fmt.Printf("%s (%s): %d models\n", prov.Name, prov.Type, len(models))
+		}
 		for _, m := range models {
 			fmt.Printf("  %s/%s\n", prov.Name, m)
 		}
@@ -328,4 +357,263 @@ func findCLIProxyBin() string {
 		}
 	}
 	return "cli-proxy-api" // last resort; the caller reports a clear not-found
+}
+
+// cmdVision reports how the proactive vision gate classifies models, so an
+// operator can see WHY an image rerouted without reading proxy source. With no
+// arguments it classifies every enabled provider's default model plus every
+// configured vision target; with arguments it classifies exactly those ids.
+func cmdVision(args []string) {
+	var data string
+	var models []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--data" && i+1 < len(args) {
+			data = args[i+1]
+			i++
+			continue
+		}
+		if !strings.HasPrefix(args[i], "--") {
+			models = append(models, args[i])
+		}
+	}
+	if data == "" {
+		data = defaultDataDir()
+	}
+	s := openStore(data)
+	defer s.Close()
+	p := proxy.New(s)
+
+	cfg := p.VisionFallbackConfig()
+	pats, custom, disabled := p.VisionModelPatterns()
+	state := "off"
+	if cfg.Enabled && len(cfg.Targets) > 0 {
+		state = "on"
+	}
+	fmt.Printf("vision fallback chain : %s", state)
+	if len(cfg.Targets) > 0 {
+		fmt.Printf("  →  %s", strings.Join(cfg.Targets, ", "))
+	}
+	fmt.Println()
+	switch {
+	case disabled:
+		fmt.Println("proactive gate       : DISABLED (vision_models=\"-\") — on-error failover only")
+	case custom:
+		fmt.Printf("proactive gate       : on, %d custom globs (vision_models)\n", len(pats))
+	default:
+		fmt.Printf("proactive gate       : on, %d built-in globs\n", len(pats))
+	}
+	if state == "off" {
+		fmt.Println("\nNo targets configured, so image requests are never rerouted. Set one with:")
+		fmt.Println(`  cfrproxy config set vision_fallback '{"enabled":true,"targets":["gemini/gemini-3-flash"]}'`)
+	}
+
+	if len(models) == 0 {
+		seen := map[string]bool{}
+		for _, prov := range s.Providers() {
+			if prov.Enabled && prov.DefaultModel != "" {
+				m := prov.Name + "/" + prov.DefaultModel
+				if !seen[m] {
+					seen[m] = true
+					models = append(models, m)
+				}
+			}
+		}
+		for _, t := range cfg.Targets {
+			if t = strings.TrimSpace(t); t != "" && !seen[t] {
+				seen[t] = true
+				models = append(models, t)
+			}
+		}
+	}
+	if len(models) == 0 {
+		return
+	}
+	fmt.Println()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, m := range models {
+		sees, how := p.VisionCapable(m), "name"
+		// a scoped id lets us ask the provider itself, which is authoritative
+		if i := strings.IndexByte(m, '/'); i > 0 && !sees {
+			if prov, ok := s.ProviderByName(m[:i]); ok {
+				if p.VisionCapableFor(ctx, prov, m[i+1:]) {
+					sees, how = true, "provider says so"
+				}
+			}
+		}
+		if sees {
+			fmt.Printf("  %-52s sees images (%s)\n", m, how)
+		} else {
+			fmt.Printf("  %-52s BLIND → image requests route to the vision chain\n", m)
+		}
+	}
+}
+
+// opencodeProviderFor finds the opencode provider id whose baseURL points at
+// this cfrproxy instance, so `cfrproxy opencode --model fred/x` can hand
+// opencode the "<provider>/fred/x" spelling it actually understands. Returns ""
+// when opencode has no such provider configured, so the caller can say so
+// instead of launching the wrong model silently.
+func opencodeProviderFor(addr string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	// host:port is the stable part; scheme and trailing path vary between the
+	// launcher's addr and however the user wrote baseURL
+	hostport := strings.TrimPrefix(strings.TrimPrefix(addr, "https://"), "http://")
+	hostport = strings.TrimSuffix(hostport, "/")
+	if i := strings.IndexByte(hostport, '/'); i > 0 {
+		hostport = hostport[:i]
+	}
+	for _, name := range []string{"opencode.json", "config.json"} {
+		b, err := os.ReadFile(filepath.Join(home, ".config", "opencode", name))
+		if err != nil {
+			continue
+		}
+		var cfg struct {
+			Provider map[string]struct {
+				Options struct {
+					BaseURL string `json:"baseURL"`
+				} `json:"options"`
+			} `json:"provider"`
+		}
+		if json.Unmarshal(b, &cfg) != nil {
+			continue
+		}
+		for id, pv := range cfg.Provider {
+			if hostport != "" && strings.Contains(pv.Options.BaseURL, hostport) {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// cmdSyncOpencode writes cfrproxy's live catalogue into opencode's provider
+// `models` map.
+//
+// opencode's custom `@ai-sdk/openai-compatible` providers only expose models
+// DECLARED in that map — dynamic discovery exists only for a few built-in
+// providers. Its TUI validates `--model` against the map and, when the model
+// is absent, silently falls back to the config default, which looks exactly
+// like "the flag is being ignored". Declaring the catalogue fixes both the
+// missing picker entries and the ignored flag.
+func cmdSyncOpencode(args []string) {
+	addr, dry := defaultAddr(), false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--addr":
+			if i+1 < len(args) {
+				addr = args[i+1]
+				i++
+			}
+		case "--dry-run":
+			dry = true
+		}
+	}
+	addr = strings.TrimRight(addr, "/")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal("home dir: %v", err)
+	}
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fatal("read %s: %v", path, err)
+	}
+	// Round-trip through a generic map so every unrelated key the user has
+	// (agents, mcp, permissions, other providers) survives untouched.
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		fatal("parse %s: %v", path, err)
+	}
+	provs, _ := cfg["provider"].(map[string]any)
+	if provs == nil {
+		fatal("no \"provider\" section in %s", path)
+	}
+	target := ""
+	hostport := strings.TrimPrefix(strings.TrimPrefix(addr, "https://"), "http://")
+	for id, v := range provs {
+		pv, _ := v.(map[string]any)
+		opts, _ := pv["options"].(map[string]any)
+		if b, _ := opts["baseURL"].(string); strings.Contains(b, hostport) {
+			target = id
+			break
+		}
+	}
+	if target == "" {
+		fatal("no opencode provider points at %s — add one to %s first", addr, path)
+	}
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(addr + "/v1/models")
+	if err != nil {
+		fatal("fetch models: %v", err)
+	}
+	defer resp.Body.Close()
+	var list struct {
+		Data []struct {
+			ID            string `json:"id"`
+			ContextLength int    `json:"context_length"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		fatal("decode models: %v", err)
+	}
+	if len(list.Data) == 0 {
+		fatal("cfrproxy returned no models")
+	}
+
+	models := map[string]any{}
+	withCtx := 0
+	for _, m := range list.Data {
+		entry := map[string]any{"name": m.ID}
+		if m.ContextLength > 0 {
+			// Carry the advertised window through so opencode sizes its own
+			// compaction correctly instead of guessing from the id. Its schema
+			// requires `output` whenever `limit` is present, and cfrproxy has
+			// no per-model output cap to report, so derive a conventional
+			// quarter-of-context clamped to a sane band.
+			out := m.ContextLength / 4
+			if out < 4096 {
+				out = 4096
+			}
+			if out > 32768 {
+				out = 32768
+			}
+			if out > m.ContextLength {
+				out = m.ContextLength
+			}
+			entry["limit"] = map[string]any{"context": m.ContextLength, "output": out}
+			withCtx++
+		}
+		models[m.ID] = entry
+	}
+	pv, _ := provs[target].(map[string]any)
+	prev := 0
+	if old, ok := pv["models"].(map[string]any); ok {
+		prev = len(old)
+	}
+	fmt.Printf("opencode provider %q → %d models (was %d), %d with a context limit\n",
+		target, len(models), prev, withCtx)
+	if dry {
+		fmt.Println("dry run: nothing written")
+		return
+	}
+	pv["models"] = models
+	provs[target] = pv
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		fatal("encode: %v", err)
+	}
+	bak := path + ".bak-cfrsync-" + time.Now().Format("20060102-150405")
+	if err := os.WriteFile(bak, raw, 0o644); err != nil {
+		fatal("backup: %v", err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		fatal("write: %v", err)
+	}
+	fmt.Printf("wrote %s (backup: %s)\n", path, filepath.Base(bak))
 }

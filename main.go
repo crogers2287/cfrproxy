@@ -31,6 +31,10 @@ var presets = map[string]struct{ Type, BaseURL, Doc string }{
 	"ollama":     {"ollama", "http://127.0.0.1:11434", "https://github.com/ollama/ollama/blob/main/docs/api.md"},
 	"supergrok":  {"openai", "https://api.x.ai", "https://docs.x.ai"},
 	"grok":       {"openai", "https://api.x.ai", "https://docs.x.ai"},
+	// commandcode speaks /alpha/generate — the only endpoint the $1 Go plan
+	// permits (the Pro-only /provider/v1/* paths 403 on Go).
+	"commandcode": {"commandcode", "https://api.commandcode.ai", "https://commandcode.ai"},
+	"cmd":         {"commandcode", "https://api.commandcode.ai", "https://commandcode.ai"},
 }
 
 func defaultDataDir() string {
@@ -76,6 +80,10 @@ func main() {
 		cmdPasswd(rest)
 	case "models":
 		cmdModels(rest)
+	case "vision":
+		cmdVision(rest)
+	case "sync-opencode":
+		cmdSyncOpencode(rest)
 	case "map":
 		cmdMap(rest)
 	case "login":
@@ -111,10 +119,15 @@ func usage() {
 Usage:
   cfrproxy serve   [--addr :8420] [--data DIR]        run the proxy + WebUI
   cfrproxy tui     [--data DIR]                       full-screen management TUI
-  cfrproxy provider add --name N (--preset P | --type T --base-url U)
+   cfrproxy provider add --name N (--preset P | --type T --base-url U)
                    [--key K] [--model M] [--models a,b] [--fallback P/M] [--pinned m1,m2] [--doc-url U]
-                   [--doc-file F.md] [--inject-docs]
+                   [--doc-file F.md] [--inject-docs] [--models-filter 'claude-*,!claude-*-thinking']
+                   [--context-length 262144]   advertised context window; 0 = auto-detect
+                   [--headers '{"User-Agent":"...","Authorization":"@file:/path"}']
+                   extra outbound headers; @file: reads the value live each request
   cfrproxy provider list | rm --name N | edit --name N [flags]
+                   on edit, passing an optional flag empty clears it:
+                   --pinned '' restores the full catalog to model pickers
   cfrproxy route   [set N1,N2,...]                    show / set routing priority
   cfrproxy test    --name N [--prompt "..."]          send a test prompt
   cfrproxy logs    [-f] [-n 20]                       show / follow request traces
@@ -123,6 +136,9 @@ Usage:
   cfrproxy transform enable|disable|rm --name N
   cfrproxy passwd  --pass NEWPASS                     reset WebUI basic-auth password
   cfrproxy models  [--name N]                         scan providers' live model lists
+  cfrproxy sync-opencode [--dry-run]                  declare cfrproxy's catalog in
+                   ~/.config/opencode/opencode.json — opencode only offers models
+                   listed there, so without this its picker and --model both ignore them
   cfrproxy mcp                                        round-table consensus MCP server (stdio)
                    register: claude mcp add roundtable -- cfrproxy mcp
   cfrproxy config  set KEY VALUE | get KEY            server settings (e.g. cliproxy_mgmt_key)
@@ -203,7 +219,7 @@ func cmdTUI(args []string) {
 
 func providerFlags(fs *flag.FlagSet) map[string]*string {
 	m := map[string]*string{}
-	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned"} {
+	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned", "models-filter", "context-length", "headers"} {
 		m[f] = fs.String(f, "", "")
 	}
 	return m
@@ -220,6 +236,16 @@ func cmdProvider(args []string) {
 	inject := fs.Bool("inject-docs", false, "inject docs as system context")
 	disabled := fs.Bool("disabled", false, "add in disabled state")
 	fs.Parse(rest)
+	// Which flags the user actually typed. Optional fields are applied when the
+	// flag was passed at all, so `--pinned ""` clears a curated list instead of
+	// being silently ignored — without this there is no way to unset one.
+	passed := map[string]bool{}
+	fs.Visit(func(fl *flag.Flag) { passed[fl.Name] = true })
+	applyOptional := func(name string, dst *string) {
+		if *f[name] != "" || passed[name] {
+			*dst = *f[name]
+		}
+	}
 	s := openStore(*data)
 	defer s.Close()
 
@@ -252,7 +278,7 @@ func cmdProvider(args []string) {
 		if *f["preset"] != "" {
 			pr, ok := presets[strings.ToLower(*f["preset"])]
 			if !ok {
-				fatal("unknown preset %q (known: openai anthropic openrouter ollama supergrok)", *f["preset"])
+				fatal("unknown preset %q (known: openai codex anthropic claude openrouter ollama supergrok grok commandcode cmd)", *f["preset"])
 			}
 			p.Type, p.BaseURL = pr.Type, pr.BaseURL
 			if p.DocURL == "" {
@@ -268,20 +294,20 @@ func cmdProvider(args []string) {
 		if *f["key"] != "" {
 			p.APIKey = *f["key"]
 		}
-		if *f["model"] != "" {
-			p.DefaultModel = *f["model"]
-		}
-		if *f["models"] != "" {
-			p.Models = *f["models"]
-		}
-		if *f["doc-url"] != "" {
-			p.DocURL = *f["doc-url"]
-		}
-		if *f["fallback"] != "" {
-			p.Fallback = *f["fallback"]
-		}
-		if *f["pinned"] != "" {
-			p.PinnedModels = *f["pinned"]
+		// optional fields: an explicitly-empty flag clears them
+		applyOptional("model", &p.DefaultModel)
+		applyOptional("models", &p.Models)
+		applyOptional("doc-url", &p.DocURL)
+		applyOptional("fallback", &p.Fallback)
+		applyOptional("pinned", &p.PinnedModels)
+		applyOptional("models-filter", &p.ModelsFilter)
+		applyOptional("headers", &p.Headers)
+		if *f["context-length"] != "" || passed["context-length"] {
+			n, err := strconv.Atoi(strings.TrimSpace(*f["context-length"]))
+			if err != nil || n < 0 {
+				fatal("--context-length must be a non-negative integer (0 = auto)")
+			}
+			p.ContextLength = n
 		}
 		if *f["doc-file"] != "" {
 			b, err := os.ReadFile(*f["doc-file"])
@@ -396,8 +422,28 @@ func cmdLogs(args []string) {
 			if t.Stream {
 				stream = " stream"
 			}
-			line := fmt.Sprintf("%s  %-12s %-24s %s %3d %5dms%s", time.UnixMilli(t.TS).Format("15:04:05"),
-				t.Provider, t.Model, t.Inbound, t.Status, t.LatencyMS, stream)
+			// tok/s is what you actually want when comparing models; the
+			// ttfb/post split says whether a slow call was the model thinking,
+			// the model typing, or cfrproxy getting in the way.
+			// pp/tg follow llama.cpp's naming: prompt processing (prefill) and
+			// token generation, both in tokens/sec.
+			perf := ""
+			if pp := t.PromptPerSec(); pp > 0 {
+				perf += fmt.Sprintf(" pp=%.0ftok/s", pp)
+			}
+			if tg := t.TokensPerSec(); tg > 0 {
+				perf += fmt.Sprintf(" tg=%.1ftok/s %dout", tg, t.CompletionTokens)
+			}
+			if t.TTFBMS > 0 {
+				perf += fmt.Sprintf(" ttfb=%dms", t.TTFBMS)
+			}
+			// always shown: an absent field reads as "not measured", which is
+			// exactly the confusion that hid a broken measurement point
+			if t.Status == 200 {
+				perf += fmt.Sprintf(" post=%.2fms", float64(t.PostUS)/1000)
+			}
+			line := fmt.Sprintf("%s  %-12s %-24s %s %3d %5dms%s%s", time.UnixMilli(t.TS).Format("15:04:05"),
+				t.Provider, t.Model, t.Inbound, t.Status, t.LatencyMS, perf, stream)
 			if t.Err != "" {
 				line += "  ERR: " + t.Err
 			}

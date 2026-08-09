@@ -34,6 +34,11 @@ func (p *Proxy) ListModels(ctx context.Context, prov store.Provider) ([]string, 
 		} else {
 			url = base + "/api/tags"
 		}
+	case "commandcode":
+		// The catalog is served under the Pro-only /provider/v1 path (it is
+		// open to any plan), while generation lives at /alpha/generate.
+		base = strings.TrimSuffix(base, "/provider/v1")
+		url = base + "/provider/v1/models"
 	default: // openai + anthropic both serve GET .../v1/models
 		if endsWithVersion(base) {
 			url = base + "/models"
@@ -56,6 +61,7 @@ func (p *Proxy) ListModels(ctx context.Context, prov store.Provider) ([]string, 
 			req.Header.Set("Authorization", "Bearer "+prov.APIKey)
 		}
 	}
+	p.injectProviderHeaders(req, prov)
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		return nil, err
@@ -82,14 +88,38 @@ func (p *Proxy) ListModels(ctx context.Context, prov store.Provider) ([]string, 
 	}
 	var out struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID   string `json:"id"`
+			Meta struct {
+				// llama-swap publishes real per-model capability alongside the
+				// id. When a provider tells us whether a model reads images,
+				// that beats guessing from its name — see recordVisionMeta.
+				LlamaSwap struct {
+					IsVision any `json:"isVision"`
+					Context  any `json:"context"`
+				} `json:"llamaswap"`
+			} `json:"meta"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, err
 	}
-	var ids []string
 	for _, m := range out.Data {
+		if v, ok := truthy(m.Meta.LlamaSwap.IsVision); ok {
+			p.recordVisionMeta(prov.Name, m.ID, v)
+		}
+		if n, ok := asInt(m.Meta.LlamaSwap.Context); ok && n > 0 {
+			p.recordContextMeta(prov.Name, m.ID, n)
+		}
+	}
+	// dedupe: llama-swap lists an alias and its target under the same id, so a
+	// raw pass makes pickers show the same model twice
+	var ids []string
+	seen := map[string]bool{}
+	for _, m := range out.Data {
+		if m.ID == "" || seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
 		ids = append(ids, m.ID)
 	}
 	return ids, nil
@@ -130,6 +160,23 @@ func (p *Proxy) ModelsCached(ctx context.Context, prov store.Provider) []string 
 	p.models.entries[prov.ID] = modelCacheEntry{models: ids, at: time.Now()}
 	p.models.mu.Unlock()
 	return ids
+}
+
+// ListModelsFiltered scans a provider and narrows the catalog to what that
+// provider will actually serve, applying models_filter the same way the data
+// plane's ModelsCached does. Returns the raw scan size alongside so callers can
+// report "12 of 139" instead of silently hiding models.
+//
+// Prefer this over ListModels for anything user-facing: a shared upstream
+// (CLIProxyAPI, OpenRouter) answers /v1/models with its whole catalog, and
+// routing then rejects everything the provider's filter excludes — so an
+// unfiltered list offers models that cannot actually be reached.
+func (p *Proxy) ListModelsFiltered(ctx context.Context, prov store.Provider) (ids []string, scanned int, err error) {
+	raw, err := p.ListModels(ctx, prov)
+	if err != nil {
+		return nil, 0, err
+	}
+	return applyModelsFilter(raw, prov.ModelsFilter), len(raw), nil
 }
 
 // ApplyModelsFilter is applyModelsFilter for callers outside the package —
@@ -268,6 +315,29 @@ func providerAllowsModel(prov store.Provider, model string) bool {
 //  4. unique fuzzy match across all enabled providers' scans
 //  5. fallback: highest-priority enabled provider and ITS default model —
 //     unknown harness names route somewhere useful instead of erroring
+//
+// stripProviderPrefix removes a leading "provider/" from a model id, but ONLY
+// when that prefix actually names a provider.
+//
+// A scoped mount (/p/{provider}) needs to correct a caller who addressed a
+// different provider — "grok/grok-4.5" sent to /p/fred should become
+// fred's. But plenty of model ids are themselves vendor-qualified
+// ("thinkingmachines/inkling", "deepseek/deepseek-v4-pro"), and blindly
+// stripping to the last segment mangles them: bare "inkling" is ambiguous
+// against "inkling-small", so the fuzzy match declines and the request 503s
+// with `model "inkling" is not served`. Ids whose stripped form happened to be
+// unique kept working, which is why this only shows up on some models.
+func (p *Proxy) stripProviderPrefix(model string) string {
+	i := strings.IndexByte(model, '/')
+	if i <= 0 {
+		return model
+	}
+	if _, ok := p.Store.ProviderByName(model[:i]); ok {
+		return model[i+1:]
+	}
+	return model
+}
+
 func (p *Proxy) ResolveModel(ctx context.Context, model string) (store.Provider, string, error) {
 	if mapped := p.Store.ModelMapLookup(model, MatchMapPattern); mapped != "" {
 		model = mapped

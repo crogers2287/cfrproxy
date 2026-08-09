@@ -31,6 +31,16 @@ type Msg struct {
 	// on assistant messages. Some reasoning APIs REQUIRE it to be passed back
 	// on the next turn, so it must survive dialect translation, not be dropped.
 	ReasoningContent string
+	// Images carries image parts as data URIs ("data:image/png;base64,...")
+	// or https URLs, in the order they appeared.
+	//
+	// Content was a bare string, so translating a request rebuilt it from text
+	// alone and silently discarded every picture. That made the whole vision
+	// chain unusable across dialects: routing an image to a sighted model on a
+	// different dialect would have asked a blind question and gotten a
+	// confident wrong answer, so the proxy had to skip those targets entirely.
+	// Carrying the images here is what lets a translated request stay honest.
+	Images []string
 }
 
 type ToolCall struct {

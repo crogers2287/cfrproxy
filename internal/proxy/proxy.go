@@ -7,10 +7,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -60,18 +62,24 @@ type Proxy struct {
 	Hub       *Hub
 	Client    *http.Client
 	models    modelCache
+	vision    visionMetaCache
+	ctxmeta   contextMetaCache
 	summaries summaryCache
 }
 
 func New(s *store.Store) *Proxy {
 	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: 10 * time.Minute, Transport: providerTransport()},
-		models: modelCache{entries: map[int64]modelCacheEntry{}}}
+		models:  modelCache{entries: map[int64]modelCacheEntry{}},
+		vision:  visionMetaCache{entries: map[string]bool{}},
+		ctxmeta: contextMetaCache{entries: map[string]int{}}}
 }
 
 func (p *Proxy) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "openai", "") })
+	mux.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "responses", "") })
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "anthropic", "") })
 	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "ollama", "") })
+	mux.HandleFunc("POST /v1/images/generations", func(w http.ResponseWriter, r *http.Request) { p.handleImages(w, r, "", nil) })
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleModels(w, r, "") })
 	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleTags(w, r, "") })
 
@@ -80,8 +88,10 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	// each cfrproxy provider as its own OpenAI endpoint — the basis for the
 	// router→provider→model drill-down in pickers.
 	mux.HandleFunc("POST /p/{provider}/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "openai", r.PathValue("provider")) })
+	mux.HandleFunc("POST /p/{provider}/v1/responses", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "responses", r.PathValue("provider")) })
 	mux.HandleFunc("POST /p/{provider}/v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "anthropic", r.PathValue("provider")) })
 	mux.HandleFunc("POST /p/{provider}/api/chat", func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, "ollama", r.PathValue("provider")) })
+	mux.HandleFunc("POST /p/{provider}/v1/images/generations", func(w http.ResponseWriter, r *http.Request) { p.handleImagesScoped(w, r, r.PathValue("provider")) })
 	mux.HandleFunc("GET /p/{provider}/v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleModels(w, r, r.PathValue("provider")) })
 	mux.HandleFunc("GET /p/{provider}/api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleTags(w, r, r.PathValue("provider")) })
 
@@ -89,8 +99,10 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	// a curated model set (or forcing every request to one model / the auto
 	// router). Share the URL + the endpoint's own API key with someone else.
 	mux.HandleFunc("POST /e/{endpoint}/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "openai") })
+	mux.HandleFunc("POST /e/{endpoint}/v1/responses", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "responses") })
 	mux.HandleFunc("POST /e/{endpoint}/v1/messages", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "anthropic") })
 	mux.HandleFunc("POST /e/{endpoint}/api/chat", func(w http.ResponseWriter, r *http.Request) { p.handleEndpoint(w, r, "ollama") })
+	mux.HandleFunc("POST /e/{endpoint}/v1/images/generations", func(w http.ResponseWriter, r *http.Request) { p.handleEndpointImages(w, r) })
 	mux.HandleFunc("GET /e/{endpoint}/v1/models", func(w http.ResponseWriter, r *http.Request) { p.handleEndpointModels(w, r) })
 	mux.HandleFunc("GET /e/{endpoint}/api/tags", func(w http.ResponseWriter, r *http.Request) { p.handleEndpointModels(w, r) })
 
@@ -140,7 +152,16 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope strin
 	}
 	data := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		data = append(data, map[string]any{"id": id, "object": "model", "owned_by": "cfrproxy"})
+		m := map[string]any{"id": id, "object": "model", "owned_by": "cfrproxy"}
+		// Advertise the context window so harnesses stop guessing it from the
+		// model id. Both spellings, because clients disagree on which to read;
+		// omitted entirely when unknown, since a wrong number is worse than
+		// none — the harness then falls back to its own resolution.
+		if n := p.advertisedContext(scope, id); n > 0 {
+			m["context_length"] = n
+			m["context_window"] = n
+		}
+		data = append(data, m)
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
@@ -229,11 +250,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// a "provider/model" that names a different provider is corrected.
 	reqModel := req.Model
 	if scope != "" {
-		m := reqModel
-		if i := strings.IndexByte(m, '/'); i > 0 {
-			m = m[i+1:]
-		}
-		reqModel = scope + "/" + m
+		reqModel = scope + "/" + p.stripProviderPrefix(reqModel)
 	}
 	// share-endpoint model policy: force overrides; otherwise the requested
 	// model must be on the allow-list.
@@ -295,8 +312,12 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 
 	tr := &store.Trace{TS: start.UnixMilli(), Provider: prov.Name, Model: model, Inbound: inbound,
 		Stream: req.Stream, ReqSnip: snip(body), Note: autoNote}
+	lastUpstreamByte := func() time.Time { return time.Time{} }
 	defer func() {
 		tr.LatencyMS = time.Since(start).Milliseconds()
+		if t := lastUpstreamByte(); !t.IsZero() {
+			tr.PostUS = time.Since(t).Microseconds()
+		}
 		p.Store.AddTrace(tr)
 		p.Hub.Publish(*tr)
 	}()
@@ -318,16 +339,67 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	}
 	// then the global auto-fallback chain, so every model has a safety net even
 	// when its provider has no `fallback` of its own
+	// Does this request carry an image? Decided once from the raw body, and
+	// used for both chain ordering and the passthrough rule below.
+	reqHasImage := bodyHasImage(body)
+	// For an image request the vision chain goes FIRST: the generic global
+	// chain is ordered for text availability and will happily hand a picture to
+	// a text-only model, which answers "I can't see the image" with a 200 and
+	// ends the request successfully-but-wrongly.
+	blindPrimary := false
+	if reqHasImage {
+		withVis := p.appendVisionFallback(r.Context(), cands, ep, reqHasImage)
+		if !p.visionCapableFor(r.Context(), prov, model) && len(withVis) > len(cands) {
+			// The primary cannot see. Put the vision chain IN FRONT of it
+			// rather than behind: a text-only model handed a picture usually
+			// does not error at all, it answers with a fluent hallucination
+			// and HTTP 200, and no error-driven failover rule can catch that.
+			// The blind primary stays on as the last resort, so a vision chain
+			// that is misconfigured or entirely unreachable degrades to the old
+			// behaviour instead of failing the request outright.
+			blindPrimary = true
+			cands = append(append([]candidate{}, withVis[len(cands):]...), cands...)
+		} else {
+			cands = withVis
+		}
+	}
 	cands = p.appendGlobalFallback(r.Context(), cands, ep)
+	// Once a vision chain is in play, ONLY models that can see may serve the
+	// image. The global chain is ordered for text availability and happily
+	// contains text-only models. Gated on the chain existing, so a deployment
+	// with no vision targets keeps its old behaviour rather than losing images.
+	visionChainActive := false
+	for _, c := range cands {
+		if c.vision {
+			visionChainActive = true
+			break
+		}
+	}
 
 	var resp *http.Response
 	var used candidate
 	var respRules []transform.Rule
 	var passth bool
 	lastErr := ""
+	if blindPrimary {
+		// Seed the reason so the trace and the failover banner say what
+		// actually happened. Without it the primary is never attempted, lastErr
+		// stays empty, and the banner renders a bare "unavailable".
+		lastErr = fmt.Sprintf("%s/%s has no image support — routed to the vision chain", prov.Name, model)
+	}
 	var softErrs []string // transient errors that were retried/failed-over past
 	for _, c := range cands {
 		candStatus := 0 // HTTP status of this candidate's failure, 0 = never responded
+		// Never hand a picture to a model that cannot read one. Candidates from
+		// the vision chain are exempt: listing a model in vision_fallback is an
+		// explicit operator declaration that it sees, and that outranks both the
+		// name heuristic and a silent provider.
+		if visionChainActive && !c.vision && !p.visionCapableFor(r.Context(), c.prov, c.model) {
+			lastErr = fmt.Sprintf("%s/%s: skipped, cannot accept images", c.prov.Name, c.model)
+			softErrs = append(softErrs, lastErr)
+			p.recordAttemptFailure(tr, c, lastErr, 0)
+			continue
+		}
 		creq := *req
 		creq.Model = c.model
 		if c.prov.InjectDocs && c.prov.DocMarkdown != "" {
@@ -348,12 +420,32 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// failover and auto-routed requests take the translated path: failover
 		// injects the alert, auto/auto-plan rewrites model and system context —
 		// raw passthrough would silently drop those.
-		passthrough := !c.failover && autoNote == "" && inbound == c.prov.Type && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
+		// rawOK: the client's body can be forwarded verbatim (only the model key
+		// swapped), which is the only path that preserves image content parts.
+		otype := p.otype(c.prov, c.model)
+		rawOK := autoNote == "" && inbound == otype && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs
+		// Ordinary failover takes the translated path so the alert banner can be
+		// injected into visible content. An image request can too, but only
+		// where the outbound dialect carries pictures through wire.Request —
+		// see dialectCarriesImages. Dialects that don't must still be skipped:
+		// sending a flattened body would ask a blind question and get a
+		// confidently wrong answer back.
+		passthrough := rawOK && (!c.failover || reqHasImage)
+		if c.failover && reqHasImage && !passthrough && !dialectCarriesImages(otype) {
+			// The image cannot be preserved through this target (dialect
+			// mismatch, or transform rules rewrite the body). Skipping is the
+			// honest outcome — sending the translated body would ask a blind
+			// question and get a confidently wrong answer back.
+			lastErr = fmt.Sprintf("%s: image failover skipped (cannot preserve image through %s translation)", c.prov.Name, c.prov.Type)
+			softErrs = append(softErrs, lastErr)
+			p.recordAttemptFailure(tr, c, lastErr, 0)
+			continue
+		}
 		var outBody []byte
 		if passthrough {
 			outBody = rawWithModel(body, c.model)
 		} else {
-			outBody, err = buildOutbound(c.prov.Type, &creq)
+			outBody, err = buildOutbound(otype, &creq)
 			if err != nil {
 				tr.Status, tr.Err = 500, err.Error()
 				httpErr(w, inbound, 500, err.Error())
@@ -370,7 +462,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				time.Sleep(1200 * time.Millisecond)
 			}
 			paramRetry = false
-			r2, err := p.send(r.Context(), c.prov, providerPath(c.prov.Type), outBody)
+			r2, err := p.send(r.Context(), c.prov, providerPath(otype), outBody)
 			if err != nil {
 				lastErr = c.prov.Name + ": " + err.Error()
 				if r.Context().Err() != nil {
@@ -411,6 +503,16 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 					softErrs = append(softErrs, lastErr)
 					break
 				}
+				// image-specific rejection: a vision-capable model further down
+				// the chain can still serve this. These arrive as 400s, which a
+				// harness classifies as non-retryable and aborts the whole turn
+				// on — exactly the case the vision chain exists to rescue.
+				if visionFailure(eb) {
+					lastErr = fmt.Sprintf("%s: vision failure (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					candStatus = r2.StatusCode
+					softErrs = append(softErrs, lastErr)
+					break
+				}
 				// A parameter the harness always sends but this model refuses
 				// (omp's enable_thinking:false vs Alibaba's thinking models).
 				// Passthrough forwards the client's body verbatim, so this is
@@ -425,6 +527,23 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 							continue
 						}
 					}
+				}
+				// Any other 4xx on a request that carries an image: treat it as
+				// "this provider can't take the picture" and move down the
+				// chain. The wording varies far more than it can be enumerated
+				// — Alibaba says "Download multimodal file timed out",
+				// OpenCode's Rust console says "unknown variant `image_url`,
+				// expected `text`" — and visionFailure above only catches the
+				// phrasings seen so far. This is the same reasoning the 402
+				// rule states outright: don't play whack-a-mole with error
+				// strings. Bounded by maxVisionHops, and if the body really is
+				// malformed then every hop rejects it and the client still
+				// gets an error, just a few seconds later.
+				if reqHasImage {
+					lastErr = fmt.Sprintf("%s: image rejected (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					candStatus = r2.StatusCode
+					softErrs = append(softErrs, lastErr)
+					break
 				}
 				// genuine 4xx (bad request/auth) — restore the body for the error path
 				r2.Body = io.NopCloser(bytes.NewReader(eb))
@@ -444,11 +563,26 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		p.recordAttemptFailure(tr, c, lastErr, candStatus)
 	}
 	if resp == nil {
+		if reqHasImage && visionChainActive {
+			// Name the actual problem: "502 upstream error" sends the operator
+			// hunting the wrong thing when every vision target is down.
+			lastErr = "no vision-capable model could serve this image: " + strings.Join(softErrs, " | ")
+		}
 		tr.Status, tr.Err = 502, lastErr
 		httpErr(w, inbound, 502, lastErr)
 		return
 	}
+	upstreamBody := newLastByteReader(resp.Body)
+	resp.Body = upstreamBody
+	lastUpstreamByte = upstreamBody.lastByte
 	defer resp.Body.Close()
+	// Headers are in hand. For a STREAMED response that is genuine
+	// time-to-first-token. For a non-streamed one the upstream withholds
+	// headers until the whole completion is ready, so recording it would
+	// collapse the derived generation window to ~0ms and yield absurd rates.
+	if req.Stream {
+		tr.TTFBMS = time.Since(start).Milliseconds()
+	}
 	tr.Provider, tr.Model = used.prov.Name, used.model
 	alert := ""
 	if used.failover {
@@ -478,14 +612,15 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		return
 	}
 
+	uotype := p.otype(used.prov, used.model)
 	if passth {
-		p.copyRaw(w, resp, req.Stream, used.prov.Type, tr)
+		p.copyRaw(w, resp, req.Stream, uotype, tr)
 		return
 	}
 
 	if req.Stream {
 		deltas := make(chan wire.Delta, 16)
-		go readStream(used.prov.Type, resp.Body, deltas)
+		go readStream(uotype, resp.Body, deltas)
 		// capture usage from the final delta as it flows through
 		var upt, uct, ucached int
 		cap := make(chan wire.Delta, 16)
@@ -517,7 +652,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		httpErr(w, inbound, 502, err.Error())
 		return
 	}
-	norm, err := parseOutboundResponse(used.prov.Type, rb)
+	norm, err := parseOutboundResponse(uotype, rb)
 	if err != nil {
 		tr.Status, tr.Err = 502, err.Error()
 		httpErr(w, inbound, 502, err.Error())
@@ -538,6 +673,12 @@ type candidate struct {
 	prov     store.Provider
 	model    string
 	failover bool
+	// vision marks a candidate appended by the image-specific chain. Such a
+	// candidate MUST be sent as raw passthrough: the translated path rebuilds
+	// the body from wire.Request, whose content has already been flattened to
+	// text with image parts dropped, so a translated "vision fallback" would
+	// quietly ask a blind question and get a confident wrong answer.
+	vision bool
 }
 
 // transientStatus: worth retrying / failing over. 4xx auth/validation errors
@@ -572,6 +713,28 @@ func usageExhausted(body []byte) bool {
 		"balance exhausted", // xAI: "Grok Build usage balance exhausted"
 		"usage balance",
 		"out of credits",
+		// Plan/entitlement gating: the account exists and the key is valid, but
+		// this tier is not allowed to call the endpoint. Retrying is pointless
+		// and hard-failing turns into a harness retry storm, so treat it like
+		// exhaustion and move down the chain. Matched on wording rather than a
+		// bare 403, because 403 also covers permission errors the next provider
+		// cannot fix — and 401 must keep hard-failing (TestNoFailoverOn401).
+		"upgrade_required",
+		"upgrade required",
+		"plan_required",
+		"plan does not include",
+		"not included in your plan",
+		"requires a paid plan",
+		"subscription required",
+		// The account cannot use THIS model right now — typically a plan change
+		// still propagating, or a model dropped from the tier's catalogue. It
+		// arrives as a 400, which otherwise hard-fails and shows up downstream
+		// as a dead agent ("Non-retryable client error"). Another provider in
+		// the chain can serve the request, so move on instead.
+		"unsupported_model",
+		"is not supported on this endpoint",
+		"model not available",
+		"model is not available",
 	} {
 		if strings.Contains(s, m) {
 			return true
@@ -670,6 +833,12 @@ func usageFromBody(ptype string, body []byte) (pt, ct, cached int, ok bool) {
 		if json.Unmarshal(body, &v) == nil && (v.Usage.InputTokens > 0 || v.Usage.OutputTokens > 0) {
 			return v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.CacheReadInputTokens, true
 		}
+	case "responses":
+		// The Responses API names these differently from chat completions; the
+		// default branch below would find none of them and log 0/0/0. Reached
+		// on the raw-passthrough path, i.e. an inbound /v1/responses request
+		// against a Responses-capable openai provider.
+		return wire.UsageFromResponsesBody(body)
 	case "ollama":
 		var v struct {
 			PromptEvalCount int `json:"prompt_eval_count"`
@@ -709,6 +878,39 @@ func usageFromStreamLine(ptype string, line []byte) (pt, ct, cached int, ok bool
 	return usageFromBody(ptype, data)
 }
 
+// injectProviderHeaders sets the provider's configured extra outbound headers
+// (Provider.Headers, a JSON object of name -> value) onto an outbound request.
+// A value of "@file:<path>" is read from the file on every request, so a CLI
+// auth token the upstream rotates never goes stale. Injected headers override
+// the defaults set by the caller (Authorization/x-api-key), which is how a
+// proxy routes harness traffic while sending the exact Authorization and
+// User-Agent a native CLI sends. Malformed header config or an unreadable
+// @file value is skipped rather than failing the request — the default auth
+// still applies, and the operator's trace shows the resulting status.
+func (p *Proxy) injectProviderHeaders(req *http.Request, prov store.Provider) {
+	if strings.TrimSpace(prov.Headers) == "" {
+		return
+	}
+	var hdr map[string]string
+	if err := json.Unmarshal([]byte(prov.Headers), &hdr); err != nil {
+		return
+	}
+	for name, v := range hdr {
+		if strings.EqualFold(name, "content-type") {
+			continue // never let injected headers break the JSON body framing
+		}
+		val := v
+		if strings.HasPrefix(v, "@file:") {
+			b, err := os.ReadFile(strings.TrimPrefix(v, "@file:"))
+			if err != nil {
+				continue
+			}
+			val = strings.TrimRight(string(b), "\r\n")
+		}
+		req.Header.Set(name, val)
+	}
+}
+
 func (p *Proxy) send(ctx context.Context, prov store.Provider, path string, body []byte) (*http.Response, error) {
 	base := strings.TrimRight(prov.BaseURL, "/")
 	// tolerate bases pasted in SDK convention that already end in the version
@@ -718,6 +920,12 @@ func (p *Proxy) send(ctx context.Context, prov store.Provider, path string, body
 		if strings.HasSuffix(base, "/api") {
 			path = strings.TrimPrefix(path, "/api")
 		}
+	case "commandcode":
+		// base is the API root; tolerate a base pasted with the Pro-only
+		// /provider/v1 segment (the models listing lives there, generation does
+		// not). /alpha/generate is always the generation path.
+		base = strings.TrimSuffix(base, "/provider/v1")
+		path = "/alpha/generate"
 	default:
 		if endsWithVersion(base) {
 			path = strings.TrimPrefix(path, "/v1")
@@ -735,12 +943,36 @@ func (p *Proxy) send(ctx context.Context, prov store.Provider, path string, body
 			req.Header.Set("x-api-key", prov.APIKey)
 		}
 		req.Header.Set("anthropic-version", "2023-06-01")
+	case "commandcode":
+		// The gateway decides CLI vs API access from this identity: the CLI
+		// fingerprint headers make it treat cfrproxy like the `cmd` CLI, which
+		// is the only shape the Go plan permits. A fresh session id per
+		// request; the operator can pin a version or session via Headers.
+		if prov.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+prov.APIKey)
+		}
+		req.Header.Set("x-cli-environment", "production")
+		req.Header.Set("x-command-code-version", wire.CommandCodeVersion)
+		req.Header.Set("x-session-id", newUUID())
 	default:
 		if prov.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+prov.APIKey)
 		}
 	}
+	p.injectProviderHeaders(req, prov)
 	return p.Client.Do(req)
+}
+
+// newUUID returns a random UUIDv4 for the per-request x-session-id header.
+func newUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// practically unreachable; a zero-ish id still satisfies the header
+		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().UnixNano()>>32)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // rules returns enabled request- and response-phase rules that match this
@@ -872,6 +1104,8 @@ func parseInbound(dialect string, body []byte) (*wire.Request, error) {
 		return wire.ParseAnthropicRequest(body)
 	case "ollama":
 		return wire.ParseOllamaRequest(body)
+	case "responses":
+		return wire.ParseResponsesRequest(body)
 	default:
 		return wire.ParseOpenAIRequest(body)
 	}
@@ -883,6 +1117,10 @@ func buildOutbound(ptype string, req *wire.Request) ([]byte, error) {
 		return wire.BuildAnthropicRequest(req)
 	case "ollama":
 		return wire.BuildOllamaRequest(req)
+	case "responses":
+		return wire.BuildResponsesRequest(req)
+	case "commandcode":
+		return wire.BuildCommandCodeRequest(req)
 	default:
 		return wire.BuildOpenAIRequest(req)
 	}
@@ -894,6 +1132,10 @@ func parseOutboundResponse(ptype string, body []byte) (*wire.Response, error) {
 		return wire.ParseAnthropicResponse(body)
 	case "ollama":
 		return wire.ParseOllamaResponse(body)
+	case "responses":
+		return wire.ParseResponsesResponse(body)
+	case "commandcode":
+		return wire.ParseCommandCodeResponse(body)
 	default:
 		return wire.ParseOpenAIResponse(body)
 	}
@@ -905,6 +1147,8 @@ func buildInboundResponse(dialect string, r *wire.Response) []byte {
 		return wire.BuildAnthropicResponse(r)
 	case "ollama":
 		return wire.BuildOllamaResponse(r)
+	case "responses":
+		return wire.BuildResponsesResponse(r)
 	default:
 		return wire.BuildOpenAIResponse(r)
 	}
@@ -916,6 +1160,10 @@ func readStream(ptype string, body io.Reader, out chan<- wire.Delta) {
 		wire.ReadAnthropicStream(body, out)
 	case "ollama":
 		wire.ReadOllamaStream(body, out)
+	case "responses":
+		wire.ReadResponsesStream(body, out)
+	case "commandcode":
+		wire.ReadCommandCodeStream(body, out)
 	default:
 		wire.ReadOpenAIStream(body, out)
 	}
@@ -927,6 +1175,8 @@ func writeStream(dialect string, w http.ResponseWriter, model string, in <-chan 
 		return wire.WriteAnthropicStream(w, model, in)
 	case "ollama":
 		return wire.WriteOllamaStream(w, model, in)
+	case "responses":
+		return wire.WriteResponsesStream(w, model, in)
 	default:
 		return wire.WriteOpenAIStream(w, model, in)
 	}
@@ -938,9 +1188,54 @@ func providerPath(ptype string) string {
 		return "/v1/messages"
 	case "ollama":
 		return "/api/chat"
+	case "responses":
+		return "/v1/responses"
+	case "commandcode":
+		return "/alpha/generate"
 	default:
 		return "/v1/chat/completions"
 	}
+}
+
+// DefaultResponsesModels are the model-id globs served via the OpenAI Responses
+// API (/v1/responses) instead of chat completions when the upstream is an
+// `openai`-type provider. Override with the "responses_models" setting (comma
+// globs); set it to "-" to disable Responses routing entirely.
+var DefaultResponsesModels = []string{"gpt-5*", "o1", "o1-*", "o3", "o3-*", "o4", "o4-*", "codex*"}
+
+// responsesCapable reports whether a model id should be routed to the Responses
+// API. Matches the bare upstream id (provider scope stripped) against the
+// configured/default glob list.
+func (p *Proxy) responsesCapable(model string) bool {
+	raw := strings.TrimSpace(p.Store.Setting("responses_models"))
+	if raw == "-" {
+		return false // explicit kill-switch
+	}
+	pats := DefaultResponsesModels
+	if raw != "" {
+		pats = splitList(raw)
+	}
+	m := model
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	lm := strings.ToLower(m)
+	for _, pat := range pats {
+		if matchGlob(strings.ToLower(strings.TrimSpace(pat)), lm) {
+			return true
+		}
+	}
+	return false
+}
+
+// otype is the effective OUTBOUND wire dialect for a provider+model: an
+// `openai` provider serving a Responses-capable model talks to the upstream via
+// /v1/responses; everything else uses the provider's own declared type.
+func (p *Proxy) otype(prov store.Provider, model string) string {
+	if prov.Type == "openai" && p.responsesCapable(model) {
+		return "responses"
+	}
+	return prov.Type
 }
 
 // ---- helpers ----

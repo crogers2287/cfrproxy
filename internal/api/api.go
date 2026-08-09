@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -87,6 +88,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/providers/{id}", a.hProviderUpdate)
 	inner.HandleFunc("DELETE /admin/api/providers/{id}", a.hProviderDelete)
 	inner.HandleFunc("POST /admin/api/providers/reorder", a.hReorder)
+	inner.HandleFunc("POST /admin/api/providers/scan-models", a.hProviderScanModels)
 	inner.HandleFunc("POST /admin/api/providers/{id}/test", a.hTest)
 	inner.HandleFunc("GET /admin/api/providers/{id}/models", a.hProviderModels)
 	inner.HandleFunc("POST /admin/api/providers/{id}/docs/fetch", a.hDocsFetch)
@@ -262,7 +264,7 @@ func (a *API) hProviderModels(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "provider not found")
 		return
 	}
-	models, err := a.Proxy.ListModels(r.Context(), prov)
+	models, scanned, err := a.Proxy.ListModelsFiltered(r.Context(), prov)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"models": []string{}, "error": err.Error()})
 		return
@@ -270,7 +272,74 @@ func (a *API) hProviderModels(w http.ResponseWriter, r *http.Request) {
 	if models == nil {
 		models = []string{}
 	}
-	writeJSON(w, 200, map[string]any{"models": models, "count": len(models)})
+	writeJSON(w, 200, map[string]any{"models": models, "count": len(models),
+		"scanned": scanned, "filter": prov.ModelsFilter})
+}
+
+// hProviderScanModels scans a provider's catalog from whatever the admin form
+// currently holds, so "Scan models" works while ADDING a provider — before it
+// has an id. An existing id fills in anything the form left blank (notably the
+// stored API key, which the form never round-trips). When the pasted base URL
+// doesn't answer, it retries through the same discovery the save path uses so a
+// domain-root paste ("https://host.com") scans instead of erroring.
+func (a *API) hProviderScanModels(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID      int64  `json:"id"`
+		Type    string `json:"type"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		// pointer so an omitted field keeps the stored filter while an
+		// explicitly-empty one clears it — the form must be able to do both
+		ModelsFilter *string `json:"models_filter"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	var prov store.Provider
+	if body.ID > 0 {
+		if existing, ok := a.Store.ProviderByID(body.ID); ok {
+			prov = existing
+		}
+	}
+	if body.Type != "" {
+		prov.Type = body.Type
+	}
+	if body.BaseURL != "" {
+		prov.BaseURL = body.BaseURL
+	}
+	if body.APIKey != "" {
+		prov.APIKey = body.APIKey
+	}
+	if body.ModelsFilter != nil {
+		prov.ModelsFilter = *body.ModelsFilter
+	}
+	if prov.Type == "" {
+		prov.Type = "openai"
+	}
+	if strings.TrimSpace(prov.BaseURL) == "" {
+		writeJSON(w, 200, map[string]any{"models": []string{}, "error": "enter a base URL first"})
+		return
+	}
+	models, scanned, err := a.Proxy.ListModelsFiltered(r.Context(), prov)
+	if err != nil {
+		probe := prov
+		if discovered, _ := a.Proxy.DiscoverBase(r.Context(), probe); discovered != "" && discovered != prov.BaseURL {
+			probe.BaseURL = discovered
+			if m2, n2, err2 := a.Proxy.ListModelsFiltered(r.Context(), probe); err2 == nil {
+				writeJSON(w, 200, map[string]any{"models": m2, "count": len(m2), "scanned": n2,
+					"filter": prov.ModelsFilter, "base_url": discovered})
+				return
+			}
+		}
+		writeJSON(w, 200, map[string]any{"models": []string{}, "error": err.Error()})
+		return
+	}
+	if models == nil {
+		models = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"models": models, "count": len(models),
+		"scanned": scanned, "filter": prov.ModelsFilter})
 }
 
 func (a *API) hDocsGet(w http.ResponseWriter, r *http.Request) {
