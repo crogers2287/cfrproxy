@@ -1,56 +1,119 @@
 # cfrproxy
 
-Universal LLM proxy in a single Go binary: any harness dialect in, any provider out, with declarative transforms in between. The generic version of what `ollama launch claude --model glm-5.2:cloud` does — point Claude Code, Codex, OpenCode, or anything else at any provider (cloud or local Ollama) and cfrproxy translates the wire format both ways, including streaming.
+**One endpoint for every LLM you use.** Point Claude Code, Codex, OpenCode, omp, or any OpenAI/Anthropic/Ollama-speaking tool at cfrproxy, and route it to *any* provider behind the scenes — cloud APIs, OAuth subscriptions, or local models — with automatic failover, task-based auto-routing, and a live dashboard.
 
-## Quick start
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) ![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go) ![single binary](https://img.shields.io/badge/deploy-single%20binary-blue)
+
+---
+
+Ever wanted to use your Claude subscription in Codex? Or route your coding agent to a local model for cheap tasks and a frontier model for hard ones — without touching the agent's config every time? Or just *see* which model is burning your tokens?
+
+cfrproxy is the generic version of what `ollama launch claude --model glm-5.2:cloud` does for one tool: it sits between your harnesses and your providers, speaks every dialect, and translates on the fly. It's a **single Go binary** — no Python, no compose stack, no dependencies.
+
+```
+   Claude Code ┐                          ┌ OpenAI / OpenRouter / xAI …
+   Codex       ┤                          ┤ Anthropic
+   OpenCode    ┼──▶  cfrproxy  ──▶ route  ┼ Ollama (local)
+   omp         ┤     :8420                 ┤ OAuth subs (Claude/Codex/Grok…)
+   your app    ┘   translate + fail over   └ any OpenAI-compatible endpoint
+```
+
+## What it does
+
+- **Speaks every dialect both ways.** Inbound OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`), or Ollama (`/api/chat`) — translated to whatever the target provider wants, including streaming and tool calls. Your Anthropic-only tool can talk to an OpenAI model and vice-versa.
+- **🔀 Auto-router.** Send the model `auto` and a small classifier buckets each request (code / reasoning / quick / long / vision) and delegates to the model *you* mapped for that task. `auto-plan` adds a planning stage that briefs the executor first.
+- **♻️ Failover chains.** Give a provider a fallback; on a timeout or 5xx cfrproxy retries once, then transparently reroutes down the chain — with a visible ⚠️ notice injected into the response so you know the model changed.
+- **📊 Live dashboard.** A built-in WebUI (and TUI) shows every request in real time: which model, token burn, **cache-hit %**, latency, and auto-route decisions — per model.
+- **🔑 OAuth subscriptions as providers.** Bring your Claude, Codex, Grok/SuperGrok, Gemini, and Kimi *subscriptions* in as models (via [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) — interactive login right in the WebUI.
+- **🗜️ Context compression** (opt-in): summarize old conversation turns to cut token bills on long chats, cached per prefix, fail-open.
+- **⚗️ Fusion.** Send `fusion` and several models draft in parallel, then a judge synthesizes one best answer (à la OpenRouter Fusion) — returned as a single model would.
+- **🧠 Round-table consensus MCP.** Define agent *profiles* (a persona pinned to a model) and let a panel of different models deliberate a question, cross-critique, and synthesize — exposed as an MCP tool any agent can call.
+- **Declarative transforms, model pinning, docs injection**, and more — all editable in the UI, no code.
+
+Everything is managed from the WebUI or CLI; the only state is one SQLite file. API keys are **AES-256-GCM encrypted at rest** and never logged.
+
+## Quickstart
 
 ```bash
 go build -o cfrproxy .
-./cfrproxy provider add --name fred --type openai --base-url http://fred:9069 --model agents-a1
-./cfrproxy provider add --name ollama --preset ollama --model qwen2.5:7b
-./cfrproxy serve                  # :8420; prints WebUI password on first run
+
+# add a provider (any OpenAI-compatible endpoint works)
+./cfrproxy provider add --name openrouter --preset openrouter --key sk-or-... --model anthropic/claude-sonnet-4
+./cfrproxy provider add --name local --preset ollama --model qwen2.5:7b
+
+# run it — prints a generated WebUI password on first launch
+./cfrproxy serve
+#   data plane : /v1/chat/completions  /v1/messages  /api/chat
+#   webui      : http://localhost:8420/admin/
 ```
 
-Point harnesses at it:
+Point a harness at it:
 
-| Harness | Setting |
+| Harness | How |
 |---|---|
-| Claude Code | `ANTHROPIC_BASE_URL=http://localhost:8420` (`/v1/messages`) |
-| Codex / OpenCode / OpenAI-compat | base URL `http://localhost:8420/v1` |
-| Ollama-native consumers | `OLLAMA_HOST=http://localhost:8420` (`/api/chat`) |
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://localhost:8420` — or just `cfrproxy claude` |
+| **Codex / OpenCode / OpenAI-compatible** | base URL `http://localhost:8420/v1` |
+| **Ollama-native tools** | `OLLAMA_HOST=http://localhost:8420` |
 
-Model names route requests:
-- **model map first**: `cfrproxy map 'claude-sonnet*' fred/agents-a1` rewrites fixed harness names — Claude Code's built-in /model presets (Opus/Sonnet/Haiku) become switchable slots (its picker is hardcoded and never lists API models; the map is how `ollama launch` handles this too)
-- `fred/agents-a1` — provider `fred`, model `agents-a1`; both parts fuzzy (case-insensitive, punctuation-blind: `nexum/Qwen3.8` finds `qwen-3.8-max-preview-thinking`)
-- bare name — provider alias list, then unique fuzzy match across all providers' live scans
-- anything else — highest-priority enabled provider **and its default model** (unknown harness names never error)
-
-## Surfaces
-
-- **Data plane** — `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` (Anthropic), `POST /api/chat` (Ollama NDJSON), plus `GET /v1/models`, `/api/tags`, `/health`. Streaming is re-framed between dialects (SSE chunks ↔ Anthropic events ↔ NDJSON), tool calls included. When inbound dialect == provider type and no transforms/doc-injection apply, bytes pass through untouched (raw flow).
-- **CLI** — `provider add|list|rm|edit`, `route [set a,b,...]`, `test --name N`, `logs [-f]`, `transform list|add|rm|enable|disable`, `passwd`.
-- **TUI** — `cfrproxy tui`: providers (add/edit/delete/reorder with J/K, toggle, test), transforms, live log tail, test prompt.
-- **WebUI** — `http://localhost:8420/admin/` behind basic auth: provider card grid with drag-to-reorder priority, transform rule editor, live SSE request traces, docs panel (URL fetch or `.md` upload, inject toggle).
-
-## Transforms
-
-Declarative JSON rules stored in the DB, editable in the WebUI/TUI/CLI. `request` phase rewrites the outbound provider body; `response` phase rewrites the body returned to the consumer. Ops: `set`, `default`, `rename`, `delete`; paths are dot-separated (`options.num_ctx`). Scope by provider and/or inbound dialect.
+Or launch any harness through cfrproxy directly (`ollama launch`-style), and it inherits every model:
 
 ```bash
-./cfrproxy transform add --name pin-temp --phase request --provider fred \
-  --rules '[{"op":"set","path":"temperature","value":0.1}]'
+cfrproxy claude --model openrouter/anthropic/claude-sonnet-4
+cfrproxy codex  --model local/qwen2.5:7b
+cfrproxy opencode          # any binary on PATH
 ```
 
-## Docs per provider
+## Model routing, in plain terms
 
-Attach a docs URL or upload Markdown per provider (WebUI Docs tab or `--doc-url/--doc-file`). With inject enabled, the Markdown is prepended as system context on every request routed to that provider.
+A model name tells cfrproxy where to send the request:
 
-## Storage & security
+- `openrouter/gpt-4o` — provider `openrouter`, model `gpt-4o`. Both halves are fuzzy-matched, so `openrouter/GPT4o` or a partial name usually resolves.
+- `auto` / `auto-plan` — let the auto-router pick (see [docs/auto-router.md](docs/auto-router.md)).
+- A bare name — matched against provider aliases, then every provider's live model list.
+- Anything unrecognized — the highest-priority enabled provider's default model, so nothing hard-errors.
 
-Everything lives in `~/.cfrproxy/` (override with `--data`): WAL-mode SQLite (`cfrproxy.db`) with an in-memory registry cache on the hot path (cross-process invalidation via `PRAGMA data_version`), and `secret.key` (0600). API keys are AES-256-GCM encrypted at rest, never returned by the API, and never logged — trace snippets record bodies only, auth headers are never persisted. WebUI/management API require basic auth (user `admin`; password generated on first run, reset with `cfrproxy passwd --pass NEW`).
+You can also **map** fixed harness names (`cfrproxy map 'claude-sonnet*' openrouter/anthropic/claude-sonnet-4`) so Claude Code's built-in Opus/Sonnet/Haiku picker becomes switchable slots — the same trick `ollama launch` uses.
 
-## Tests
+## Docs
 
-```bash
-go test ./...   # crypto-at-rest, routing, transform ops, cross-dialect + stream re-framing
+| Guide | What's inside |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | How a request flows through the proxy; the wire-translation layer |
+| [docs/providers.md](docs/providers.md) | Provider types, model pinning, fallback chains, transforms |
+| [docs/auto-router.md](docs/auto-router.md) | Task classification, planning stage, per-bucket model mapping |
+| [docs/fusion.md](docs/fusion.md) | Multi-model synthesis: parallel drafts → judge → one best answer |
+| [docs/oauth.md](docs/oauth.md) | Bringing Claude/Codex/Grok/Gemini/Kimi subscriptions in via OAuth |
+| [docs/roundtable.md](docs/roundtable.md) | Agent profiles + the consensus MCP server |
+| [docs/compression.md](docs/compression.md) | Context compression: how it works and when to use it |
+| [docs/deployment.md](docs/deployment.md) | systemd, exposing it publicly (safely), the API-key gate |
+| [docs/share-endpoints.md](docs/share-endpoints.md) | Scoped URL + key to give someone access to only certain models |
+| [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md) | Optional: wiring cfrproxy into the Hermes agent platform |
+
+## CLI reference
+
 ```
+cfrproxy serve      run the proxy + WebUI
+cfrproxy tui        full-screen management console
+cfrproxy provider   add | list | rm | edit
+cfrproxy route      show / set routing priority
+cfrproxy map        map harness model names to providers
+cfrproxy models     scan providers' live model lists
+cfrproxy test       send a test prompt to a provider
+cfrproxy logs       tail request traces
+cfrproxy transform  add/edit declarative request/response rewrites
+cfrproxy login      OAuth login (codex | claude | supergrok | antigravity | kimi)
+cfrproxy mcp        round-table consensus MCP server (stdio)
+cfrproxy <harness>  launch a harness through the proxy (claude, codex, opencode, …)
+```
+
+## Security notes
+
+- API keys are encrypted at rest (AES-256-GCM; key in a `0600` file beside the DB) and never logged.
+- The WebUI and management API are behind HTTP basic auth.
+- The data plane is **keyless on your LAN** (so local tools just work) but **requires an API key when reached through a reverse proxy** — see [docs/deployment.md](docs/deployment.md) before exposing it to the internet.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+> Built as a personal homelab tool and shared in case it's useful. Contributions and issues welcome.
