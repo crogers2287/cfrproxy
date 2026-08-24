@@ -87,60 +87,24 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 	}
 	r := &Request{Model: in.Model, System: antText(in.System), MaxTokens: in.MaxTokens,
 		Temperature: in.Temperature, TopP: in.TopP, Stop: in.Stop, Stream: in.Stream, Thinking: in.Thinking}
-	// Claude Code's Agent SDK injects system-role messages mid-conversation
-	// (session hooks, reminders). They cannot be emitted as system messages in
-	// the middle of the list: strict chat templates that require system-first
-	// (local models especially) reject that. But folding them into the
-	// top-level system — which is what this parser used to do unconditionally —
-	// is a prefix-cache catastrophe. The system block renders BEFORE every
-	// conversation turn, so appending one new reminder to it changes the token
-	// stream ahead of the entire history and forces a full reprefill. Measured
-	// on fred: a 25-token volatile field ahead of a 16k prefix took the hit rate
-	// from 99.6% to 0.0% and cost 19.8s of redundant prefill.
-	//
-	// So split by position. A system message that arrives BEFORE any real turn
-	// is part of the static preamble: hoisting it is both correct and
-	// cache-safe. One that arrives mid-conversation is carried forward and
-	// merged into the next user turn, which keeps every byte before it
-	// identical and lands the volatile text in a turn that was new anyway.
-	seenTurn := false
-	var pending []string // mid-conversation system text awaiting the next user turn
-	flushInto := func(dst string) string {
-		if len(pending) == 0 {
-			return dst
-		}
-		joined := strings.Join(pending, "\n\n")
-		pending = nil
-		if dst == "" {
-			return joined
-		}
-		return joined + "\n\n" + dst
-	}
 	for _, m := range in.Messages {
+		// Claude Code's Agent SDK injects system-role messages mid-conversation
+		// (session hooks, reminders). Fold them into the top-level system —
+		// same as the openai parser — so strict chat templates that require
+		// system-first (e.g. local models) don't reject the request.
 		if m.Role == "system" {
-			txt := antText(m.Content)
-			if txt == "" {
-				continue
-			}
-			if !seenTurn {
+			if txt := antText(m.Content); txt != "" {
 				if r.System != "" {
 					r.System += "\n\n"
 				}
 				r.System += txt
-			} else {
-				pending = append(pending, txt)
 			}
 			continue
 		}
-		seenTurn = true
 		var blocks []antBlock
 		if err := json.Unmarshal(m.Content, &blocks); err != nil {
 			// plain string content
-			content := antText(m.Content)
-			if m.Role == "user" {
-				content = flushInto(content)
-			}
-			r.Messages = append(r.Messages, Msg{Role: m.Role, Content: content})
+			r.Messages = append(r.Messages, Msg{Role: m.Role, Content: antText(m.Content)})
 			continue
 		}
 		msg := Msg{Role: m.Role}
@@ -158,29 +122,8 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 		// tool_result blocks arrive inside a user message; normal form wants
 		// them as standalone tool-role messages before any user text.
 		r.Messages = append(r.Messages, toolResults...)
-		if msg.Role == "user" {
-			msg.Content = flushInto(msg.Content)
-		}
 		if msg.Content != "" || len(msg.ToolCalls) > 0 {
 			r.Messages = append(r.Messages, msg)
-		}
-	}
-	// A trailing system message with no user turn after it has nowhere better
-	// to go than the end of the conversation — still after the cached prefix,
-	// which is the whole point. Only a request with no turns at all falls back
-	// to the system block.
-	if len(pending) > 0 {
-		trailing := strings.Join(pending, "\n\n")
-		pending = nil
-		if n := len(r.Messages); n > 0 {
-			if c := r.Messages[n-1].Content; c != "" {
-				trailing = c + "\n\n" + trailing
-			}
-			r.Messages[n-1].Content = trailing
-		} else if r.System != "" {
-			r.System += "\n\n" + trailing
-		} else {
-			r.System = trailing
 		}
 	}
 	for _, t := range in.Tools {
@@ -424,9 +367,9 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 		"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{},
 		"stop_reason": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}}})
 
-	blockIdx := -1    // current anthropic content block index
-	textOpen := false // is a text block open
-	curTC := -1       // normalized tool-call index currently open as a block
+	blockIdx := -1        // current anthropic content block index
+	textOpen := false     // is a text block open
+	curTC := -1           // normalized tool-call index currently open as a block
 	closeBlock := func() {
 		if blockIdx >= 0 && (textOpen || curTC >= 0) {
 			send("content_block_stop", map[string]any{"type": "content_block_stop", "index": blockIdx})

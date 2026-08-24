@@ -100,8 +100,22 @@ func TestAnthropicMidConversationSystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.System != "top\n\nhook output" {
-		t.Errorf("system not folded: %q", req.System)
+	// A mid-conversation system message must NOT be folded into the top-level
+	// system prompt. That block renders ahead of the whole history, so growing
+	// it on a turn that adds a reminder reprefills everything behind it
+	// (measured on fred: 99.6% hit -> 0.0%, 19.8s wasted). It rides on the next
+	// user turn instead, which was new bytes anyway.
+	if req.System != "top" {
+		t.Errorf("mid-conversation system leaked into the cached prefix: %q", req.System)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if req.Messages[0].Content != "hi" {
+		t.Errorf("earlier turn was rewritten: %q", req.Messages[0].Content)
+	}
+	if req.Messages[1].Content != "hook output\n\nagain" {
+		t.Errorf("hook not merged into the following user turn: %q", req.Messages[1].Content)
 	}
 	for _, m := range req.Messages {
 		if m.Role == "system" {

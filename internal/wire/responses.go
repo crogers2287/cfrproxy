@@ -57,8 +57,16 @@ type respInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
-	// function_call_output
-	Output string `json:"output,omitempty"`
+	// function_call_output.
+	//
+	// A pointer, not a string: the Responses API REQUIRES "output" on every
+	// function_call_output item, including when the tool returned nothing. With
+	// `omitempty` on a plain string an empty result dropped the key entirely and
+	// the whole request 400d with `Missing required parameter: input[N].output` —
+	// one silent tool result poisoning a conversation that was otherwise fine.
+	// Pointer + omitempty keeps the key off the item types that must not carry
+	// it, while letting an empty output serialize as "".
+	Output *string `json:"output,omitempty"`
 }
 
 type respContentPart struct {
@@ -132,7 +140,11 @@ func ParseResponsesRequest(body []byte) (*Request, error) {
 						r.Messages = append(r.Messages, Msg{Role: "assistant",
 							ToolCalls: []ToolCall{{ID: it.CallID, Name: it.Name, Args: it.Arguments}}})
 					case "function_call_output":
-						r.Messages = append(r.Messages, Msg{Role: "tool", ToolCallID: it.CallID, Content: it.Output})
+						var out string
+						if it.Output != nil {
+							out = *it.Output
+						}
+						r.Messages = append(r.Messages, Msg{Role: "tool", ToolCallID: it.CallID, Content: out})
 					default: // "message" or bare {role,content}
 						role := it.Role
 						if role == "" {
@@ -190,7 +202,10 @@ func BuildResponsesRequest(r *Request) ([]byte, error) {
 	for _, m := range r.Messages {
 		switch m.Role {
 		case "tool":
-			items = append(items, respInputItem{Type: "function_call_output", CallID: m.ToolCallID, Output: m.Content})
+			// Bound per iteration and never nil: a tool that returned nothing
+			// must still serialize "output":"" or the API rejects the request.
+			toolOut := m.Content
+			items = append(items, respInputItem{Type: "function_call_output", CallID: m.ToolCallID, Output: &toolOut})
 		case "assistant":
 			if m.Content != "" {
 				parts, _ := json.Marshal([]respContentPart{{Type: "output_text", Text: m.Content}})

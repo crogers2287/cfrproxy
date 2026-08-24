@@ -42,9 +42,6 @@ type Provider struct {
 	// "default_context_length" setting. Harnesses read this off /v1/models to
 	// size their compaction; guessing from a renamed model id gets it wrong.
 	ContextLength int `json:"context_length"`
-	// Caveman enables payload compression of bulky tool results sent to this
-	// provider. Off by default; see internal/proxy/caveman.go.
-	Caveman bool `json:"caveman"`
 	// Headers is a JSON object of extra outbound headers to set on every
 	// request to this provider (name -> value). A value of "@file:<path>"
 	// is read from the file on every request, so a CLI auth token that the
@@ -66,19 +63,19 @@ type Transform struct {
 }
 
 type Trace struct {
-	ID               int64  `json:"id"`
-	TS               int64  `json:"ts"`
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	Inbound          string `json:"inbound"`
-	Stream           bool   `json:"stream"`
-	Status           int    `json:"status"`
-	LatencyMS        int64  `json:"latency_ms"`
-	Err              string `json:"err"`
-	Note             string `json:"note"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-	CachedTokens     int    `json:"cached_tokens"`
+	ID        int64  `json:"id"`
+	TS        int64  `json:"ts"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Inbound   string `json:"inbound"`
+	Stream    bool   `json:"stream"`
+	Status    int    `json:"status"`
+	LatencyMS int64  `json:"latency_ms"`
+	Err       string `json:"err"`
+	Note      string `json:"note"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
 	// TTFBMS is time-to-first-byte from the upstream: prompt processing plus
 	// queue/load time, before any token is produced. PostMS is what cfrproxy
 	// itself spent after the upstream finished (dialect translation, transform
@@ -87,28 +84,9 @@ type Trace struct {
 	TTFBMS int64 `json:"ttfb_ms"`
 	// microseconds, not milliseconds: cfrproxy's trailing work is routinely
 	// sub-millisecond, and truncating it to "0ms" told the operator nothing.
-	PostUS   int64  `json:"post_us"`
-	// Caveman compression accounting for this request (0 when disabled).
-	CMMsgs   int   `json:"cm_msgs"`
-	CMBefore int   `json:"cm_before"`
-	CMAfter  int   `json:"cm_after"`
-	ReqSnip  string `json:"req_snippet"`
-	RespSnip string `json:"resp_snippet"`
-
-	// Prefix-cache telemetry from llama.cpp-family upstreams (the `timings`
-	// object). Deliberately NOT persisted to SQLite — AddTrace names its
-	// columns explicitly, so these ride along in memory only, which is enough
-	// for the SSE hub, the admin API, and the JSONL cache log. Keeping them out
-	// of the schema avoids migrating a live 22 MB DB for observability data
-	// that is already durably recorded in cache-observability.jsonl.
-	Client           string  `json:"client,omitempty"`
-	CacheLCP         int     `json:"cache_lcp_n,omitempty"`
-	CacheReprocessed int     `json:"cache_reprocessed_n,omitempty"`
-	CacheSource      string  `json:"cache_source,omitempty"`
-	CacheReason      string  `json:"cache_reason,omitempty"`
-	PromptMS         float64 `json:"prompt_ms,omitempty"`
-	PromptTPS        float64 `json:"prompt_per_second,omitempty"`
-	DecodeTPS        float64 `json:"predicted_per_second,omitempty"`
+	PostUS int64 `json:"post_us"`
+	ReqSnip   string `json:"req_snippet"`
+	RespSnip  string `json:"resp_snippet"`
 }
 
 // GenMS is the time the model spent actually producing tokens: total latency
@@ -304,62 +282,6 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`)
-	// Caveman payload compression: opt-in per provider and per share endpoint
-	// (default 0 = off), plus per-trace byte accounting so the WebUI can show
-	// what it actually saved on live traffic rather than a claimed ratio.
-	s.db.Exec(`ALTER TABLE providers ADD COLUMN caveman INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN caveman INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_msgs INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_before INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_after INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE usage_daily ADD COLUMN absorbed INTEGER NOT NULL DEFAULT 0`)
-	// usage_daily: durable per-day/provider/model accounting. `traces` is a
-	// rolling 5000-row buffer (~22 h at current volume), which is useless for
-	// answering "what burned my plan this week" — that gap is exactly why a
-	// blown ccbudget weekly limit could only be reconstructed from an agent's
-	// own SQLite afterwards. This table is append/upsert-only and never pruned.
-	// fails_* / status_* let a provider that 429s and silently falls through the
-	// fallback chain be spotted from usage alone.
-	s.db.Exec(`CREATE TABLE IF NOT EXISTS usage_daily (
-	  day TEXT NOT NULL,
-	  provider TEXT NOT NULL DEFAULT '',
-	  model TEXT NOT NULL DEFAULT '',
-	  requests INTEGER NOT NULL DEFAULT 0,
-	  ok INTEGER NOT NULL DEFAULT 0,
-	  failed INTEGER NOT NULL DEFAULT 0,
-	  fellback INTEGER NOT NULL DEFAULT 0,
-	  status_429 INTEGER NOT NULL DEFAULT 0,
-	  status_4xx INTEGER NOT NULL DEFAULT 0,
-	  status_5xx INTEGER NOT NULL DEFAULT 0,
-	  prompt_tokens INTEGER NOT NULL DEFAULT 0,
-	  completion_tokens INTEGER NOT NULL DEFAULT 0,
-	  cached_tokens INTEGER NOT NULL DEFAULT 0,
-	  no_usage INTEGER NOT NULL DEFAULT 0,
-	  absorbed INTEGER NOT NULL DEFAULT 0,
-	  last_err TEXT NOT NULL DEFAULT '',
-	  updated_at INTEGER NOT NULL DEFAULT 0,
-	  PRIMARY KEY(day,provider,model)
-	)`)
-	// One-time backfill from whatever is still in the rolling traces buffer, so
-	// the rollup is useful the moment it ships instead of a week later.
-	var seeded int
-	s.db.QueryRow(`SELECT COUNT(*) FROM usage_daily`).Scan(&seeded)
-	if seeded == 0 {
-		s.db.Exec(`INSERT INTO usage_daily(day,provider,model,requests,ok,failed,fellback,status_429,status_4xx,status_5xx,prompt_tokens,completion_tokens,cached_tokens,no_usage,absorbed,last_err,updated_at)
-		 SELECT strftime('%Y-%m-%d', CASE WHEN ts > 1000000000000 THEN ts/1000 ELSE ts END, 'unixepoch'),
-		        provider, model, COUNT(*),
-		        SUM(CASE WHEN status>0 AND status<400 AND (err='' OR err LIKE '%failover from%') THEN 1 ELSE 0 END),
-		        SUM(CASE WHEN status>=400 OR (err!='' AND err NOT LIKE '%failover from%') THEN 1 ELSE 0 END),
-		        SUM(CASE WHEN note LIKE '%fallback%' THEN 1 ELSE 0 END),
-		        SUM(CASE WHEN status=429 THEN 1 ELSE 0 END),
-		        SUM(CASE WHEN status>=400 AND status<500 AND status!=429 THEN 1 ELSE 0 END),
-		        SUM(CASE WHEN status>=500 THEN 1 ELSE 0 END),
-		        SUM(COALESCE(prompt_tokens,0)), SUM(COALESCE(completion_tokens,0)), SUM(COALESCE(cached_tokens,0)),
-		        SUM(CASE WHEN COALESCE(prompt_tokens,0)=0 AND COALESCE(completion_tokens,0)=0 THEN 1 ELSE 0 END),
-		        SUM(CASE WHEN status>0 AND status<400 AND err LIKE '%failover from%' THEN 1 ELSE 0 END),
-		        '', strftime('%s','now')
-		 FROM traces GROUP BY 1,2,3`)
-	}
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN ttfb_ms INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN post_us INTEGER NOT NULL DEFAULT 0`)
 	// Skill index: roots to scan, the indexed SKILL.md cache, and per-endpoint
@@ -462,7 +384,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,models_filter,context_length,headers FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -471,11 +393,11 @@ func (s *Store) reload() error {
 	for rows.Next() {
 		var p Provider
 		var enc []byte
-		var enabled, inject, cave int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &cave, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
+		var enabled, inject int
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
 			return err
 		}
-		p.Enabled, p.InjectDocs, p.Caveman = enabled == 1, inject == 1, cave == 1
+		p.Enabled, p.InjectDocs = enabled == 1, inject == 1
 		if p.APIKey, err = s.decrypt(enc); err != nil {
 			return fmt.Errorf("provider %s: %w", p.Name, err)
 		}
@@ -611,8 +533,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), p.ModelsFilter, p.ContextLength, p.Headers)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers)
 		if err != nil {
 			return err
 		}
@@ -620,11 +542,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
 		}
 		if err != nil {
 			return err
@@ -716,120 +638,20 @@ func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
 // ---- traces ----
 
 func (s *Store) AddTrace(t *Trace) {
-	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet,cm_msgs,cm_before,cm_after) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip, t.CMMsgs, t.CMBefore, t.CMAfter)
+	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip)
 	if err == nil {
 		t.ID, _ = res.LastInsertId()
 	}
-	s.rollupUsage(t)
 	// retention: keep newest 5000
 	s.db.Exec(`DELETE FROM traces WHERE id <= (SELECT MAX(id) FROM traces) - 5000`)
-}
-
-// rollupUsage folds a trace into the durable usage_daily table. Best-effort:
-// never blocks or fails a request. `no_usage` counts responses that carried no
-// token accounting at all — the signal that a provider/route is invisible to
-// billing oversight (grok and ccbudget were both at 100% no_usage when this
-// was written).
-func (s *Store) rollupUsage(t *Trace) {
-	if t == nil {
-		return
-	}
-	ts := t.TS
-	if ts > 1e12 { // stored in ms
-		ts /= 1000
-	}
-	day := time.Unix(ts, 0).UTC().Format("2006-01-02")
-	ok, failed, fellback := 0, 0, 0
-	absorbed := 0
-	s429, s4, s5 := 0, 0, 0
-	switch {
-	case t.Status == 429:
-		s429, failed = 1, 1
-	case t.Status >= 500:
-		s5, failed = 1, 1
-	case t.Status >= 400:
-		s4, failed = 1, 1
-	case t.Status > 0:
-		ok = 1
-	}
-	// A 2xx trace can still carry an Err string describing why an EARLIER
-	// provider failed ("failover from grok (…)") — that is a successful
-	// absorption of someone else's failure, not a failure here. Counting it as
-	// failed made codex look 96% broken while it was in fact soaking up all the
-	// traffic from three exhausted providers.
-	if t.Err != "" && ok == 1 && !strings.Contains(t.Err, "failover from") {
-		ok, failed = 0, 1
-	}
-	if ok == 1 && strings.Contains(t.Err, "failover from") {
-		absorbed = 1
-	}
-	if strings.Contains(t.Note, "fallback") {
-		fellback = 1
-	}
-	noUsage := 0
-	if t.PromptTokens == 0 && t.CompletionTokens == 0 {
-		noUsage = 1
-	}
-	errSnip := t.Err
-	if len(errSnip) > 300 {
-		errSnip = errSnip[:300]
-	}
-	s.db.Exec(`INSERT INTO usage_daily(day,provider,model,requests,ok,failed,fellback,status_429,status_4xx,status_5xx,prompt_tokens,completion_tokens,cached_tokens,no_usage,absorbed,last_err,updated_at)
-	 VALUES(?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?)
-	 ON CONFLICT(day,provider,model) DO UPDATE SET
-	   requests=requests+1, ok=ok+excluded.ok, failed=failed+excluded.failed,
-	   fellback=fellback+excluded.fellback, status_429=status_429+excluded.status_429,
-	   status_4xx=status_4xx+excluded.status_4xx, status_5xx=status_5xx+excluded.status_5xx,
-	   prompt_tokens=prompt_tokens+excluded.prompt_tokens,
-	   completion_tokens=completion_tokens+excluded.completion_tokens,
-	   cached_tokens=cached_tokens+excluded.cached_tokens,
-	   no_usage=no_usage+excluded.no_usage, absorbed=absorbed+excluded.absorbed,
-	   last_err=CASE WHEN excluded.last_err!='' THEN excluded.last_err ELSE last_err END,
-	   updated_at=excluded.updated_at`,
-		day, t.Provider, t.Model, ok, failed, fellback, s429, s4, s5,
-		t.PromptTokens, t.CompletionTokens, t.CachedTokens, noUsage, absorbed, errSnip, time.Now().Unix())
-}
-
-// UsageDaily returns durable usage rows, newest day first.
-func (s *Store) UsageDaily(sinceDay string, limit int) ([]map[string]any, error) {
-	if limit <= 0 || limit > 2000 {
-		limit = 500
-	}
-	rows, err := s.db.Query(`SELECT day,provider,model,requests,ok,failed,fellback,status_429,status_4xx,status_5xx,
-	  prompt_tokens,completion_tokens,cached_tokens,no_usage,absorbed,last_err
-	  FROM usage_daily WHERE day >= ? ORDER BY day DESC, prompt_tokens DESC LIMIT ?`, sinceDay, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []map[string]any
-	for rows.Next() {
-		var day, prov, model, lastErr string
-		var req, ok, failed, fb, s429, s4, s5, pt, ct, cached, nu, ab int64
-		if err := rows.Scan(&day, &prov, &model, &req, &ok, &failed, &fb, &s429, &s4, &s5, &pt, &ct, &cached, &nu, &ab, &lastErr); err != nil {
-			continue
-		}
-		hit := 0.0
-		if pt > 0 {
-			hit = float64(cached) / float64(pt)
-		}
-		out = append(out, map[string]any{
-			"day": day, "provider": prov, "model": model,
-			"requests": req, "ok": ok, "failed": failed, "fellback": fb,
-			"status_429": s429, "status_4xx": s4, "status_5xx": s5,
-			"prompt_tokens": pt, "completion_tokens": ct, "cached_tokens": cached,
-			"cache_hit_rate": hit, "no_usage": nu, "absorbed": ab, "last_err": lastErr,
-		})
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,cm_msgs,cm_before,cm_after,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -838,7 +660,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	for rows.Next() {
 		var t Trace
 		var stream int
-		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.CMMsgs, &t.CMBefore, &t.CMAfter, &t.ReqSnip, &t.RespSnip); err != nil {
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.ReqSnip, &t.RespSnip); err != nil {
 			return nil, err
 		}
 		t.Stream = stream == 1
@@ -896,14 +718,14 @@ func (s *Store) ModelMapLookup(model string, match func(pattern, model string) b
 // ---- per-model stats ----
 
 type ModelStat struct {
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	Requests         int    `json:"requests"`
-	Errors           int    `json:"errors"`
-	PromptTokens     int64  `json:"prompt_tokens"`
-	CompletionTokens int64  `json:"completion_tokens"`
-	CachedTokens     int64  `json:"cached_tokens"`
-	AvgLatencyMS     int64  `json:"avg_latency_ms"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Requests     int    `json:"requests"`
+	Errors       int    `json:"errors"`
+	PromptTokens int64  `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	CachedTokens int64  `json:"cached_tokens"`
+	AvgLatencyMS int64  `json:"avg_latency_ms"`
 }
 
 // Stats aggregates the trace table per provider/model (most-used first).
@@ -1120,16 +942,15 @@ func (s *Store) DeleteRouter(id int64) error {
 type Endpoint struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
-	APIKey     string `json:"api_key"`     // decrypted; the shareable key
-	Models     string `json:"models"`      // comma-sep allowed model ids/globs; "" = all
-	ForceModel string `json:"force_model"` // if set, every request routes here (e.g. "auto")
+	APIKey     string `json:"api_key"`      // decrypted; the shareable key
+	Models     string `json:"models"`       // comma-sep allowed model ids/globs; "" = all
+	ForceModel string `json:"force_model"`  // if set, every request routes here (e.g. "auto")
 	Enabled    bool   `json:"enabled"`
 	Note       string `json:"note"`
-	Caveman    bool   `json:"caveman"`
 }
 
 func (s *Store) Endpoints() ([]Endpoint, error) {
-	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman FROM endpoints ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1138,11 +959,11 @@ func (s *Store) Endpoints() ([]Endpoint, error) {
 	for rows.Next() {
 		var e Endpoint
 		var enc []byte
-		var en, cave int
-		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave); err != nil {
+		var en int
+		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note); err != nil {
 			return nil, err
 		}
-		e.Enabled, e.Caveman = en == 1, cave == 1
+		e.Enabled = en == 1
 		e.APIKey, _ = s.decrypt(enc)
 		out = append(out, e)
 	}
@@ -1172,8 +993,8 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return err
 	}
 	if e.ID == 0 {
-		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman) VALUES(?,?,?,?,?,?,?)`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman))
+		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note) VALUES(?,?,?,?,?,?)`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note)
 		if err != nil {
 			return err
 		}
@@ -1181,11 +1002,11 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return nil
 	}
 	if e.APIKey == "" { // keep existing key on blank
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=? WHERE id=?`,
-			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=? WHERE id=?`,
+			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.ID)
 	} else {
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=? WHERE id=?`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=? WHERE id=?`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.ID)
 	}
 	return err
 }

@@ -67,12 +67,13 @@ func cmdLaunch(harness string, args []string) {
 		resp.Body.Close()
 	}
 
+	ctxLen := 0
 	if model != "" {
-		resolved, note := resolveLaunchModel(data, model)
+		resolved, note, n := resolveLaunchModel(data, model)
 		if note != "" {
 			fmt.Fprintln(os.Stderr, note)
 		}
-		model = resolved
+		model, ctxLen = resolved, n
 	}
 
 	env := os.Environ()
@@ -91,6 +92,18 @@ func cmdLaunch(harness string, args []string) {
 		setenv("ANTHROPIC_MODEL", model, true)
 		setenv("ANTHROPIC_SMALL_FAST_MODEL", model, true)
 		setenv("CFRPROXY_MODEL", model, true)
+	}
+	// Claude Code never queries /v1/models for the context window — for an
+	// unrecognized model id it assumes 200k and auto-compacts at 80% of that,
+	// silently wasting most of a long-context model. The documented override is
+	// CLAUDE_CODE_MAX_CONTEXT_TOKENS (code.claude.com/docs/en/model-config.md
+	// "Correct the window for a gateway or custom model id"), which applies
+	// directly to non-claude-* ids. Set it from the catalog's advertised
+	// context; a value the user already exported wins (always=false). Other
+	// harnesses ignore the variable, and opencode gets the same fact via
+	// `cfrproxy sync-opencode` writing limit.context into its config.
+	if ctxLen > 0 {
+		setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", fmt.Sprintf("%d", ctxLen), false)
 	}
 	// Harness-specific model flags, for harnesses that ignore the env vars above.
 	//
@@ -124,6 +137,9 @@ func cmdLaunch(harness string, args []string) {
 	if model != "" {
 		fmt.Fprintf(os.Stderr, "  model=%s", model)
 	}
+	if ctxLen > 0 {
+		fmt.Fprintf(os.Stderr, "  ctx=%d", ctxLen)
+	}
 	fmt.Fprintln(os.Stderr)
 	if err := syscall.Exec(bin, append([]string{harness}, fwd...), env); err != nil {
 		fatal("exec %s: %v", bin, err)
@@ -131,12 +147,14 @@ func cmdLaunch(harness string, args []string) {
 }
 
 // resolveLaunchModel fuzzy-matches a model spec against the registry and the
-// providers' live model lists. Returns the canonical provider/model string
-// and an informational note.
-func resolveLaunchModel(dataDir, spec string) (string, string) {
+// providers' live model lists. Returns the canonical provider/model string, an
+// informational note, and the model's advertised context length (0 = unknown) —
+// the same number /v1/models serves, so the launcher and the catalog cannot
+// disagree.
+func resolveLaunchModel(dataDir, spec string) (string, string, int) {
 	s, err := store.Open(dataDir)
 	if err != nil {
-		return spec, ""
+		return spec, "", 0
 	}
 	defer s.Close()
 	p := proxy.New(s)
@@ -154,17 +172,17 @@ func resolveLaunchModel(dataDir, spec string) (string, string) {
 				rest = prov.DefaultModel
 			}
 			if m, ok := proxy.FuzzyModel(p.ModelsCached(ctx, prov), rest); ok {
-				return prov.Name + "/" + m, noteIfChanged(spec, prov.Name+"/"+m)
+				return prov.Name + "/" + m, noteIfChanged(spec, prov.Name+"/"+m), p.ContextLengthFor(prov, m)
 			}
-			return prov.Name + "/" + rest, fmt.Sprintf("note: %q not in %s's live model list; passing through as typed", rest, prov.Name)
+			return prov.Name + "/" + rest, fmt.Sprintf("note: %q not in %s's live model list; passing through as typed", rest, prov.Name), p.ContextLengthFor(prov, rest)
 		}
-		return spec, fmt.Sprintf("warning: no provider named %q; passing model through as typed", name)
+		return spec, fmt.Sprintf("warning: no provider named %q; passing model through as typed", name), 0
 	}
 	// bare model: alias match wins, else search every enabled provider's scan
 	for _, prov := range provs {
 		for _, alias := range strings.Split(prov.Models, ",") {
 			if strings.EqualFold(strings.TrimSpace(alias), spec) {
-				return spec, ""
+				return spec, "", p.ContextLengthFor(prov, spec)
 			}
 		}
 	}
@@ -174,10 +192,10 @@ func resolveLaunchModel(dataDir, spec string) (string, string) {
 		}
 		if m, ok := proxy.FuzzyModel(p.ModelsCached(ctx, prov), spec); ok {
 			full := prov.Name + "/" + m
-			return full, noteIfChanged(spec, full)
+			return full, noteIfChanged(spec, full), p.ContextLengthFor(prov, m)
 		}
 	}
-	return spec, fmt.Sprintf("note: %q not found at any provider; passing through as typed", spec)
+	return spec, fmt.Sprintf("note: %q not found at any provider; passing through as typed", spec), 0
 }
 
 func noteIfChanged(typed, resolved string) string {

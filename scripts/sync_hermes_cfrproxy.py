@@ -59,11 +59,23 @@ def fetch_providers():
 
 
 # Real usable context for providers whose models can't be discovered from
-# /v1/models (local llama-swap servers report no context_length). Without this
-# Hermes assumes a huge default (256k) and lets the conversation overflow the
-# model's real window before compressing. fred: q27b n_ctx=131072 (bumped
-# 2026-07-23); input + reserved output + MTP/vision overhead (~22k observed)
-# must fit — 98304 leaves a ~32k safety margin.
+# /v1/models. A value here is a PROVIDER-WIDE override that beats per-model
+# discovery (get_model_context_length returns the discovered value only when
+# config_context_length is None), so only set it when the mount really does
+# serve one window.
+#
+# "fred" was capped at 98304 from 2026-07-23, when llama-swap reported no
+# context_length at all and the mount served q27b at n_ctx=131072 (98304 left a
+# ~32k margin for reserved output plus MTP/vision overhead). Both premises are
+# gone: llama-swap now carries per-model `metadata.context`, cfrproxy fills the
+# gaps from the published model cards, and every fred model reports its own
+# window — 256000 for the qwen aliases, but also 65536, 131072 and 262144 for
+# others. One provider-wide number is wrong for most of them, and it was
+# clamping the 256k models to 96k. Per-model discovery is now the better
+# source, so fred is deliberately absent. Margin still exists: Hermes compacts
+# at threshold x context_length, so a 0.8 threshold leaves ~51k on a 256k
+# window, well past the ~22k overhead the old fixed margin covered.
+#
 # Large-window CLOUD providers are worth capping here too, for a different
 # reason. Hermes triggers compaction at threshold x context_length, sized on the
 # model the agent is configured for — but cfrproxy's fallback chain can serve
@@ -73,7 +85,6 @@ def fetch_providers():
 # a huge prompt. Capping at the smallest window a request can realistically land
 # on makes compaction fire before that happens.
 CONTEXT_LENGTHS = {
-    "fred": 98304,
     "Qwen": 272000,
 }
 

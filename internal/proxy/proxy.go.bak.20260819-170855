@@ -4,15 +4,12 @@
 package proxy
 
 import (
-	"crypto/subtle"
-
 	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/crypto/bcrypt"
 	"io"
 	"net/http"
 	"os"
@@ -158,14 +155,6 @@ func (p *Proxy) scopedModelIDs(ctx context.Context, provider string, all bool) [
 }
 
 func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope string) {
-	// Gate the inventory endpoints too. These cost nothing to serve, but they
-	// enumerate every provider and model this proxy fronts — access logs showed
-	// unauthenticated scanners harvesting /v1/models and walking /p/<provider>/
-	// mounts. handle() was already gated; these were not.
-	if !p.publicKeyOK(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	var ids []string
 	if scope != "" {
 		ids = p.scopedModelIDs(r.Context(), scope, r.URL.Query().Get("all") != "")
@@ -189,14 +178,6 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope strin
 }
 
 func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request, scope string) {
-	// Gate the inventory endpoints too. These cost nothing to serve, but they
-	// enumerate every provider and model this proxy fronts — access logs showed
-	// unauthenticated scanners harvesting /v1/models and walking /p/<provider>/
-	// mounts. handle() was already gated; these were not.
-	if !p.publicKeyOK(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	var ids []string
 	if scope != "" {
 		ids = p.scopedModelIDs(r.Context(), scope, r.URL.Query().Get("all") != "")
@@ -222,19 +203,6 @@ func (p *Proxy) publicKeyOK(r *http.Request) bool {
 	keys := splitList(p.Store.Setting("public_api_keys"))
 	if len(keys) == 0 {
 		return true // gate not configured
-	}
-	// An authenticated admin is always allowed through. The WebUI's model
-	// scanner calls /p/<provider>/v1/models?all=1 from the browser, which is
-	// NOT under /admin/ and so is subject to this gate; without this bypass,
-	// turning the gate on breaks "Scan models" for anyone using the admin UI
-	// remotely. Same credentials as /admin/ (see api.basicAuth).
-	if u, pw, ok := r.BasicAuth(); ok {
-		wantUser := p.Store.Setting("admin_user")
-		hash := p.Store.Setting("admin_pass_hash")
-		if hash != "" && subtle.ConstantTimeCompare([]byte(u), []byte(wantUser)) == 1 &&
-			bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil {
-			return true
-		}
 	}
 	got := r.Header.Get("x-api-key")
 	if got == "" {
@@ -284,21 +252,6 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		httpErr(w, inbound, 400, "read body: "+err.Error())
 		return
 	}
-	// Per-request caveman override (header or body). The body form is stripped
-	// here so it never reaches an upstream that would reject an unknown param.
-	cmMode, cmSet := ParseCavemanMode(r.Header.Get("X-Caveman"))
-	if !cmSet {
-		if raw, ok := peekBodyParam(body, "caveman"); ok {
-			cmMode, cmSet = ParseCavemanMode(raw)
-		}
-	}
-	if stripped, ok := stripBodyParam(body, "caveman"); ok {
-		body = stripped
-	}
-	// Resolved per candidate (a failover may land on a provider with a
-	// different standing setting); kept here so the response path can see
-	// which mode actually served the request.
-	var cmEff CavemanMode
 	req, err := parseInbound(inbound, body)
 	if err != nil {
 		httpErr(w, inbound, 400, err.Error())
@@ -392,21 +345,15 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	req.Model = model
 
 	tr := &store.Trace{TS: start.UnixMilli(), Provider: prov.Name, Model: model, Inbound: inbound,
-		Stream: req.Stream, ReqSnip: snip(body), Note: autoNote, Client: clientLabel(r)}
+		Stream: req.Stream, ReqSnip: snip(body), Note: autoNote}
 	lastUpstreamByte := func() time.Time { return time.Time{} }
-	var sniff *timingsSniffer      // set for streamed responses; see timingsSniffer
-	var prefixSnap *prefixSnapshot // static head of the request actually sent
 	defer func() {
 		tr.LatencyMS = time.Since(start).Milliseconds()
 		if t := lastUpstreamByte(); !t.IsZero() {
 			tr.PostUS = time.Since(t).Microseconds()
 		}
-		sniff.apply(tr)
 		p.Store.AddTrace(tr)
 		p.Hub.Publish(*tr)
-		// after AddTrace so a slow/failed log write can never delay the trace
-		writeCacheRecord(tr)
-		recordPrefix(prefixSnap, tr)
 	}()
 
 	// candidate chain: primary, then its fallback chain followed transitively
@@ -512,28 +459,6 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				skillsInjected = true
 			}
 		}
-		// Caveman payload compression (opt-in per provider, and per share
-		// endpoint via ep.Caveman). Runs AFTER docs/skills injection so it can
-		// never touch what those just added to System — it only rewrites bulky
-		// `tool` results in the message tail, deterministically, so the
-		// prefix-cached head is byte-identical turn over turn.
-		cmEff = CavemanModeFor(cmMode, cmSet, ep != nil && ep.Caveman, c.prov.Caveman)
-		cavemanApplied := false
-		if cmEff.CompressIn() {
-			// cmSet == the caller asked on THIS request (header/body), which
-			// unlocks compressing large user messages too.
-			cm := CavemanCompress(&creq, cmSet)
-			cavemanApplied = cm.Msgs > 0
-			// Accumulate across failover attempts: a request that gets
-			// compressed then retried on another provider did the work twice,
-			// and the trace should say so rather than report only the last try.
-			tr.CMMsgs += cm.Msgs
-			tr.CMBefore += cm.Before
-			tr.CMAfter += cm.After
-		}
-		// creq is now the request as the model will see it (docs + skills
-		// injected), which is what a warmup must replay to match byte-for-byte.
-		prefixSnap = snapshotPrefix(&creq, c.prov.Name)
 		reqRules, respR, err := p.rules(c.prov.ID, inbound)
 		if err != nil {
 			tr.Status, tr.Err = 500, err.Error()
@@ -548,12 +473,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// rawOK: the client's body can be forwarded verbatim (only the model key
 		// swapped), which is the only path that preserves image content parts.
 		otype := p.otype(c.prov, c.model)
-		// cavemanApplied forces the TRANSLATED send path. Raw passthrough
-		// forwards the ORIGINAL body, so a compressed creq would be recorded
-		// in the trace metrics and then silently discarded — the request the
-		// upstream actually sees would be uncompressed. Same reason
-		// InjectDocs and skillsInjected disable passthrough.
-		rawOK := autoNote == "" && inbound == otype && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs && !skillsInjected && !cavemanApplied
+		rawOK := autoNote == "" && inbound == otype && len(reqRules) == 0 && len(respR) == 0 && !c.prov.InjectDocs && !skillsInjected
 		// Ordinary failover takes the translated path so the alert banner can be
 		// injected into visible content. An image request can too, but only
 		// where the outbound dialect carries pictures through wire.Request —
@@ -705,12 +625,6 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	upstreamBody := newLastByteReader(resp.Body)
 	resp.Body = upstreamBody
 	lastUpstreamByte = upstreamBody.lastByte
-	if req.Stream {
-		// llama.cpp puts `timings` in the final SSE chunk, which is consumed by
-		// readStream/copyRaw and never surfaces in the trace. Tap the tail.
-		sniff = newTimingsSniffer(resp.Body)
-		resp.Body = sniff
-	}
 	defer resp.Body.Close()
 	// Headers are in hand. For a STREAMED response that is genuine
 	// time-to-first-token. For a non-streamed one the upstream withholds
@@ -796,25 +710,6 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	}
 	norm.Model = req.Model
 	tr.PromptTokens, tr.CompletionTokens, tr.CachedTokens = norm.PromptTokens, norm.CompletionTokens, norm.CachedTokens
-	// rb is the raw upstream body: llama.cpp's `timings` object lives there and
-	// does not survive translation into the inbound dialect.
-	applyCacheTimings(tr, rb)
-	// Output compression (CMOut/CMBoth only — never from a standing checkbox,
-	// because this changes what the CALLER receives). Streams are excluded:
-	// compressing one would mean buffering the whole reply, destroying the
-	// streaming the client asked for. Applied before `alert` is prepended so a
-	// failover banner is never truncated away.
-	if cmEff.CompressOut() {
-		if !req.Stream {
-			if cm := CavemanCompressResponse(norm); cm.Msgs > 0 {
-				tr.CMMsgs += cm.Msgs
-				tr.CMBefore += cm.Before
-				tr.CMAfter += cm.After
-			}
-		} else if tr.Note == "" {
-			tr.Note = "caveman: out skipped (streamed)"
-		}
-	}
 	norm.Content = alert + norm.Content
 	final := buildInboundResponse(inbound, norm)
 	final = transform.Apply(final, respRules)
@@ -956,7 +851,6 @@ func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool,
 	if pt, ct, cached, ok := usageFromBody(ptype, rb); ok {
 		tr.PromptTokens, tr.CompletionTokens, tr.CachedTokens = pt, ct, cached
 	}
-	applyCacheTimings(tr, rb)
 	w.Write(rb)
 }
 

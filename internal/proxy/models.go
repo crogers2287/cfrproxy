@@ -454,6 +454,16 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 			}
 		}
 	}
+	// Named fusions list exactly like named routers, so a picker shows
+	// "fusion:deep" beside "auto:code" and either can be selected, put in a
+	// router bucket, or named as a provider's default model.
+	if fusions, err := p.Store.Fusions(); err == nil {
+		for _, f := range fusions {
+			if f.Enabled && f.Judge != "" && len(f.Participants) > 0 {
+				add("fusion:" + f.Name)
+			}
+		}
+	}
 	for i, prov := range provs {
 		if !prov.Enabled {
 			continue

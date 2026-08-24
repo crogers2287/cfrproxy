@@ -136,6 +136,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <button data-tab="accounts">Accounts</button>
     <button data-tab="agents">Agents</button>
     <button data-tab="share">Share</button>
+    <button data-tab="skills">Skills</button>
   </nav>
   <div id="status"></div>
 </header>
@@ -223,6 +224,14 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <div id="routercards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px"></div>
 
   <div class="toolbar" style="margin-top:32px">
+    <h2 style="margin:0">Custom fusions</h2>
+    <div class="spacer"></div>
+    <button class="b primary" onclick="openFusionDialog()">+ New fusion</button>
+  </div>
+  <p class="hint">Named fusion panels, each with its own participants and judge. Address them as <code>fusion:NAME</code> — and because they show up as models, you can drop one into a custom router bucket, a share endpoint's force-model, or a provider's default. Point a harness at <code>/p/cfrproxy-fusion/v1</code> to get a provider whose whole catalogue is your fusions.</p>
+  <div id="fusioncards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px"></div>
+
+  <div class="toolbar" style="margin-top:32px">
     <h2 style="margin:0">Fusion</h2>
     <span id="fusion-state" class="pill"></span>
   </div>
@@ -275,7 +284,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </table>
   <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Tokens are in/out (cached read). Rows in red are real failures.</p>
   <table id="trtable">
-    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Status</th><th>pp tok/s</th><th>tg tok/s</th><th>TTFB</th><th>Post</th><th>Latency</th><th>Stream</th></tr></thead>
+    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th title="bytes removed by Caveman compression on this request">Caveman</th><th>Status</th><th>pp tok/s</th><th>tg tok/s</th><th>TTFB</th><th>Post</th><th>Latency</th><th>Stream</th></tr></thead>
     <tbody></tbody>
   </table>
   <div id="tracedetail" class="hidden"></div>
@@ -419,6 +428,29 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <div id="epcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px"></div>
 </section>
 
+<section id="tab-skills" class="hidden">
+  <div class="toolbar">
+    <h2 style="margin:0">Skill index</h2>
+    <div class="spacer"></div>
+    <button class="b" onclick="openSkillRoots()">Manage roots</button>
+    <button class="b primary" onclick="rescanSkills()">Rescan</button>
+  </div>
+  <p class="hint">Every <code>SKILL.md</code> found under your scan roots, in one place. View &amp; edit them in place, symlink one into another root, and <b>assign skills to any provider or share endpoint</b> — assigned skills are lazy-loaded: their name+description is injected into that target's system prompt and the model fetches the full instructions from <code>/p/{provider}/skills/{name}</code> (or <code>/e/{endpoint}/skills/{name}</code>) only when it needs one.</p>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <input type="text" id="skill-q" placeholder="search name / description / path" oninput="renderSkills()" style="flex:1;min-width:220px">
+    <label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap">Assign to
+      <select id="skill-ep" onchange="loadAssignment()" style="min-width:180px"></select>
+    </label>
+    <button class="b primary" id="skill-assign-save" onclick="saveAssignment()" disabled>Save assignment</button>
+    <label style="margin:0;display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;color:var(--dim)"><input type="checkbox" id="skill-dedupe" checked onchange="renderSkills()"> dedupe</label>
+    <span id="skill-count" style="color:var(--dim);font-size:12px"></span>
+  </div>
+  <table id="skilltable">
+    <thead><tr><th style="width:26px"></th><th>Skill</th><th>Description</th><th>Root</th><th>Location</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
 </main>
 
 <dialog id="rdlg">
@@ -440,6 +472,25 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </form>
 </dialog>
 
+<dialog id="fdlg">
+  <h3 id="fdlg-title">New custom fusion</h3>
+  <form method="dialog" onsubmit="return saveNamedFusion(event)">
+    <input type="hidden" id="f-id">
+    <label>Name (address as <code>fusion:name</code>)</label><input type="text" id="f-name" required placeholder="deep">
+    <label>Participants <span style="color:var(--dim)">(ctrl/cmd-click for several — they answer in parallel)</span></label>
+    <select id="f-parts" multiple size="6" style="height:auto"></select>
+    <label>Judge model <span style="color:var(--dim)">(synthesizes the drafts into the final answer)</span></label>
+    <div style="display:flex;gap:8px"><select id="f-judge-p" style="flex:1" onchange="fillModelSel('f-judge')"></select><select id="f-judge-m" style="flex:2"></select></div>
+    <label style="margin-top:8px">Max tokens per draft <span style="color:var(--dim)">(blank = inherit the default fusion)</span></label>
+    <input type="text" id="f-maxtok" style="max-width:200px" placeholder="2000">
+    <div class="check"><input type="checkbox" id="f-enabled" checked><span>Enabled</span></div>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="fdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="edlg">
   <h3 id="edlg-title">New share endpoint</h3>
   <form method="dialog" onsubmit="return saveEndpoint(event)">
@@ -453,6 +504,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <select id="e-models" multiple size="8" style="height:auto"></select>
     <label>Note (optional)</label><input type="text" id="e-note" placeholder="Bob — gpt + claude only">
     <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
+      <div class="check"><input type="checkbox" id="e-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(off by default)</span></span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="edlg.close()">Cancel</button>
       <button class="b primary" type="submit">Save</button>
@@ -505,6 +557,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
+    <div class="check"><input type="checkbox" id="p-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(shrink bulky tool results — off by default)</span></span></div>
     <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="pdlg.close()">Cancel</button>
@@ -536,6 +589,30 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 
 <div id="toast"></div>
 
+<dialog id="sdlg" style="max-width:820px;width:92vw">
+  <h3 id="sdlg-title">Edit skill</h3>
+  <div id="sdlg-path" style="font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);word-break:break-all;margin-bottom:8px"></div>
+  <form method="dialog" onsubmit="return saveSkill(event)">
+    <input type="hidden" id="s-id">
+    <textarea id="s-content" spellcheck="false" style="width:100%;height:52vh;font-family:ui-monospace,monospace;font-size:12px;white-space:pre;overflow:auto"></textarea>
+    <div class="dlg-actions">
+      <button class="b" type="button" onclick="sdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save (keeps .bak)</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="srdlg">
+  <h3>Skill scan roots</h3>
+  <p class="hint" style="margin-top:0">Directories scanned for <code>SKILL.md</code>. Writes (edit/symlink/copy) are only allowed inside enabled roots.</p>
+  <table id="srtable"><thead><tr><th>Path</th><th style="width:60px">On</th><th style="width:40px"></th></tr></thead><tbody></tbody></table>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <input type="text" id="sr-new" placeholder="/home/crogers2287/some/skills" style="flex:1">
+    <button class="b primary" type="button" onclick="addSkillRoot()">Add</button>
+  </div>
+  <div class="dlg-actions"><button class="b" type="button" onclick="srdlg.close();loadSkills()">Done</button></div>
+</dialog>
+
 <script>
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const api=(path,opt={})=>fetch('/admin/api/'+path,{headers:{'Content-Type':'application/json'},...opt})
@@ -549,11 +626,12 @@ function showTab(name){
   $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
-  if(name==='providers'){renderLaunch();loadRouters();loadGlobalFallback();}
+  if(name==='providers'){renderLaunch();loadRouters();loadNamedFusions();loadGlobalFallback();}
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
   if(name==='share')loadEndpoints();
+  if(name==='skills')loadSkills();
   if(name==='traces')loadStats();
 }
 $$('nav button').forEach(b=>b.onclick=()=>{location.hash=b.dataset.tab});
@@ -672,7 +750,7 @@ function openProviderDialog(id){
   if(p.fallback&&!allModels.includes(p.fallback))$('#p-fallback').insertAdjacentHTML('beforeend',`<option value="${esc(p.fallback)}">${esc(p.fallback)}</option>`);
   $('#p-fallback').value=p.fallback||'';
   $('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
-  $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
+  $('#p-inject').checked=!!p.inject_docs;$('#p-caveman').checked=!!p.caveman;$('#p-enabled').checked=id?!!p.enabled:true;
   resetModelScan();
   pdlg.showModal();
 }
@@ -681,7 +759,7 @@ async function saveProvider(e){
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
     api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,models_filter:$('#p-filter').value,context_length:parseInt($('#p-ctxlen').value,10)||0,
-    doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
+    doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,caveman:$('#p-caveman').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     pdlg.close();toast(r.note||'provider saved',(r.note||'').startsWith('warning'));loadProviders();
@@ -874,7 +952,15 @@ async function fillModelSel(prefix,wanted){
 }
 async function setPair(prefix,val){
   const ps=$('#'+prefix+'-p');
-  ps.innerHTML='<option value="">—</option>'+providers.filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  // "fusion" is a virtual provider: it has no row in the providers table because
+  // a fusion is a pipeline OVER providers, but it has to be selectable here or a
+  // router bucket / force-model / fallback could never target one.
+  // Listed unconditionally rather than gated on namedFusions being loaded: this
+  // widget is opened from several tabs and the fusion list is not fetched on all
+  // of them, so gating would make the option appear only sometimes. When there
+  // are no fusions the model dropdown simply comes back empty.
+  ps.innerHTML='<option value="">—</option><option value="fusion">fusion</option>'
+    +providers.filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
   if(val&&val.includes('/')){
     const i=val.indexOf('/');
     ps.value=val.slice(0,i);
@@ -1021,6 +1107,11 @@ function traceRow(t){
     d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
   tr.title=(t.note?t.note+'  ':'')+(t.err||'');
   const cached=t.cached_tokens?`<span class="badge-ok">${t.cached_tokens}</span>`:'·';
+  // Caveman: measured on THIS request, not a claimed ratio. Blank when the
+  // feature is off for whichever provider/endpoint served it.
+  const cmSaved=(t.cm_before||0)-(t.cm_after||0);
+  const cmPct=t.cm_before?Math.round(100*cmSaved/t.cm_before):0;
+  const cm=t.cm_msgs?`<span class="badge-ok" title="${t.cm_msgs} msg(s): ${t.cm_before}B \u2192 ${t.cm_after}B">\u2212${(cmSaved/1024).toFixed(1)}K (${cmPct}%)</span>`:'\u00b7';
   // generation window = total − upstream think-time − our own post-processing
   const gen=Math.max(0,(t.latency_ms||0)-(t.ttfb_ms||0)-((t.post_us||0)/1000))||(t.latency_ms||0);
   const tps=(t.completion_tokens>0&&gen>0)?(t.completion_tokens/(gen/1000)):0;
@@ -1031,6 +1122,7 @@ function traceRow(t){
   tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
     <td class="mono">${esc(t.model)}</td>
     <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td>${cached}</td>
+    <td class="mono">${cm}</td>
     <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td>
     <td class="mono">${pp?pp.toFixed(0):'·'}</td>
     <td class="mono">${tps?tps.toFixed(1):'·'}</td>
@@ -1380,6 +1472,71 @@ async function delRouter(id,name){
   try{await api('routers/'+id,{method:'DELETE'});toast('deleted');loadRouters()}catch(err){toast(err.message,true)}
 }
 
+// ---- custom fusions ----
+// Same shape as custom routers above: list of cards, one dialog, PUT/POST/DELETE
+// against /admin/api/fusions.
+let namedFusions=[];
+const fdlg=document.getElementById('fdlg');
+async function loadNamedFusions(){
+  try{
+    namedFusions=await api('fusions');
+    const grid=$('#fusioncards');grid.innerHTML='';
+    if(!namedFusions.length){grid.innerHTML='<p class="hint">No custom fusions yet.</p>';return;}
+    namedFusions.forEach(f=>{
+      const parts=f.participants||[];
+      const card=document.createElement('div');
+      card.className='card'+(f.enabled?'':' off');card.style.cursor='default';
+      card.innerHTML=`<h3>fusion:${esc(f.name)}</h3>
+        <div class="meta">${parts.length} participant(s) · judge <b>${esc(f.judge||'—')}</b>${f.max_tokens?' · '+f.max_tokens+' tok/draft':''}</div>
+        <div class="meta" style="opacity:.75">${esc(parts.join(', ')||'no participants')}</div>
+        <div class="row">
+          <button class="b" onclick="openFusionDialog(${f.id})">Edit</button>
+          <button class="b" onclick="toggleNamedFusion(${f.id})">${f.enabled?'Disable':'Enable'}</button>
+          <button class="b danger" onclick="delNamedFusion(${f.id},'${esc(f.name)}')">Delete</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+  }catch(err){toast('fusions: '+err.message,true)}
+}
+async function openFusionDialog(id){
+  const f=namedFusions.find(x=>x.id===id)||{};
+  $('#fdlg-title').textContent=id?'Edit fusion:'+f.name:'New custom fusion';
+  $('#f-id').value=id||'';$('#f-name').value=f.name||'';
+  $('#f-enabled').checked=id?!!f.enabled:true;
+  $('#f-maxtok').value=f.max_tokens?String(f.max_tokens):'';
+  // A fusion must not list itself (or another virtual id) as a participant —
+  // that would recurse into the pipeline it is already running.
+  const chosen=f.participants||[];
+  const ms=$('#f-parts');
+  ms.innerHTML=allModels
+    .filter(m=>m!=='fusion'&&m!=='auto'&&m!=='auto-plan'&&!m.startsWith('fusion:')&&!m.startsWith('auto:')&&!m.startsWith('auto-plan:'))
+    .map(m=>`<option value="${esc(m)}"${chosen.includes(m)?' selected':''}>${esc(m)}</option>`).join('');
+  await setPair('f-judge',f.judge||'');
+  fdlg.showModal();
+}
+async function saveNamedFusion(ev){
+  ev.preventDefault();
+  const id=$('#f-id').value;
+  const parts=Array.from($('#f-parts').selectedOptions).map(o=>o.value);
+  const mt=parseInt($('#f-maxtok').value,10);
+  const body={name:$('#f-name').value,enabled:$('#f-enabled').checked,
+    participants:parts,judge:getPair('f-judge'),max_tokens:isNaN(mt)?0:mt};
+  try{
+    await api(id?'fusions/'+id:'fusions',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    fdlg.close();toast('fusion saved');loadNamedFusions();loadModelMap();
+  }catch(err){toast(err.message,true)}
+  return false;
+}
+async function toggleNamedFusion(id){
+  const f=namedFusions.find(x=>x.id===id);
+  try{await api('fusions/'+id,{method:'PUT',body:JSON.stringify({...f,enabled:!f.enabled})});loadNamedFusions()}
+  catch(err){toast(err.message,true)}
+}
+async function delNamedFusion(id,name){
+  if(!confirm('Delete fusion "'+name+'"?'))return;
+  try{await api('fusions/'+id,{method:'DELETE'});toast('deleted');loadNamedFusions()}catch(err){toast(err.message,true)}
+}
+
 // ---- share endpoints ----
 let endpoints=[];
 const edlg=document.getElementById('edlg');
@@ -1416,7 +1573,7 @@ function openEndpointDialog(id){
   const e=endpoints.find(x=>x.id===id)||{};
   $('#edlg-title').textContent=id?'Edit '+e.name:'New share endpoint';
   $('#e-id').value=id||'';$('#e-name').value=e.name||'';$('#e-key').value=id?'':(e.api_key||'');
-  $('#e-note').value=e.note||'';$('#e-enabled').checked=id?!!e.enabled:true;
+  $('#e-note').value=e.note||'';$('#e-enabled').checked=id?!!e.enabled:true;$('#e-caveman').checked=!!e.caveman;
   // force select: none + auto/auto-plan + all models
   const fs=$('#e-force');
   fs.innerHTML='<option value="">— none (use allow-list) —</option>'+['auto','auto-plan'].concat(allModels.filter(m=>m!=='auto'&&m!=='auto-plan')).map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
@@ -1434,7 +1591,7 @@ async function saveEndpoint(ev){
   const id=$('#e-id').value;
   const models=[...$('#e-models').selectedOptions].map(o=>o.value).join(',');
   const body={name:$('#e-name').value,api_key:$('#e-key').value,force_model:$('#e-force').value,
-    models:$('#e-force').value?'':models,note:$('#e-note').value,enabled:$('#e-enabled').checked};
+    models:$('#e-force').value?'':models,note:$('#e-note').value,caveman:$('#e-caveman').checked,enabled:$('#e-enabled').checked};
   try{
     await api(id?'endpoints/'+id:'endpoints',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     edlg.close();toast('endpoint saved');loadEndpoints();
@@ -1470,6 +1627,143 @@ async function boot(){
     $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
   }catch(err){toast(err.message,true)}
 }
+// ---- skill index ----
+let SKILLS=[], SKILL_ROOTS=[], ASSIGN_TARGET='';
+const ASSIGN_SET=new Set();
+async function loadSkills(){
+  try{
+    await refreshRoots();
+    SKILLS=await api('skills')||[];
+    const provs=await api('providers')||[], eps=await api('endpoints')||[];
+    const sel=$('#skill-ep');
+    sel.innerHTML='<option value="">— none —</option>'+
+      '<optgroup label="Providers">'+provs.map(p=>`<option value="provider:${p.id}">${esc(p.name)}</option>`).join('')+'</optgroup>'+
+      '<optgroup label="Share endpoints">'+eps.map(e=>`<option value="endpoint:${e.id}">${esc(e.name)}</option>`).join('')+'</optgroup>';
+    sel.value=ASSIGN_TARGET;
+    await loadAssignment();
+  }catch(err){toast(err.message,true)}
+}
+async function rescanSkills(){
+  try{const r=await api('skills/rescan',{method:'POST'});toast('indexed '+r.count+' skills');await loadSkills();}
+  catch(err){toast(err.message,true)}
+}
+async function loadAssignment(){
+  ASSIGN_TARGET=$('#skill-ep').value||'';
+  ASSIGN_SET.clear();
+  $('#skill-assign-save').disabled=!ASSIGN_TARGET;
+  if(ASSIGN_TARGET){
+    const [kind,id]=ASSIGN_TARGET.split(':');
+    try{const r=await api('skill-assign?kind='+kind+'&id='+id);(r.skill_ids||[]).forEach(x=>ASSIGN_SET.add(x));}catch(err){}
+  }
+  renderSkills();
+}
+async function saveAssignment(){
+  if(!ASSIGN_TARGET)return;
+  const [kind,id]=ASSIGN_TARGET.split(':');
+  try{await api('skill-assign',{method:'POST',body:JSON.stringify({kind,id:parseInt(id,10),skill_ids:[...ASSIGN_SET]})});toast('assigned '+ASSIGN_SET.size+' skills');}
+  catch(err){toast(err.message,true)}
+}
+function toggleAssign(id,on){on?ASSIGN_SET.add(id):ASSIGN_SET.delete(id);}
+function rootLabel(id){const r=SKILL_ROOTS.find(x=>x.id===id);return r?(r.label||r.path.split('/').pop()):'';}
+function skillRow(rep, extra){ // extra: {badge, loc, ids} for deduped groups
+  const link=rep.is_symlink?' <span title="symlink" style="color:var(--dim)">↗</span>':'';
+  let chk='';
+  if(ASSIGN_TARGET){
+    if(extra){ // deduped group: checked if any copy assigned; assigns the representative
+      const on=extra.ids.some(id=>ASSIGN_SET.has(id));
+      chk=`<input type="checkbox" ${on?'checked':''} onchange="toggleGroup('${extra.ids.join(',')}',${rep.id},this.checked)">`;
+    }else{
+      chk=`<input type="checkbox" ${ASSIGN_SET.has(rep.id)?'checked':''} onchange="toggleAssign(${rep.id},this.checked)">`;
+    }
+  }
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${chk}</td>`+
+    `<td style="font-weight:600;white-space:nowrap">${esc(rep.name)}${extra?extra.badge:''}${link}</td>`+
+    `<td style="color:var(--dim);font-size:12px">${esc(rep.description||'')}</td>`+
+    `<td style="font-size:11px;color:var(--dim);white-space:nowrap">${esc(rootLabel(rep.root_id))}</td>`+
+    `<td style="font-family:ui-monospace,monospace;font-size:10px;color:var(--dim);word-break:break-all">${extra?extra.loc:esc(rep.path)}</td>`+
+    `<td style="white-space:nowrap"><button class="b" onclick="openSkill(${rep.id})">Edit</button> <button class="b" onclick="distSkill(${rep.id})">Send→</button></td>`;
+  return tr;
+}
+function renderSkills(){
+  const q=($('#skill-q').value||'').toLowerCase().trim();
+  const dedupe=$('#skill-dedupe').checked;
+  const filtered=SKILLS.filter(s=>!q||(s.name+' '+s.description+' '+s.path).toLowerCase().includes(q));
+  const tb=$('#skilltable tbody');tb.innerHTML='';
+  if(dedupe){
+    const groups=new Map();
+    filtered.forEach(s=>{const k=(s.name||'').toLowerCase();if(!groups.has(k))groups.set(k,[]);groups.get(k).push(s);});
+    const list=[...groups.values()].sort((a,b)=>(a[0].name||'').localeCompare(b[0].name||''));
+    list.forEach(g=>{
+      const rep=g[0], n=g.length, differ=g.some(x=>x.sha!==rep.sha);
+      const badge=n>1?` <span title="${esc(g.map(x=>x.path).join('\n'))}" style="color:var(--dim);font-size:11px">×${n}${differ?' <span title="copies differ" style="color:var(--err)">⚠</span>':''}</span>`:'';
+      const loc=n>1?`${esc(rep.path)} <span style="color:var(--dim)">(+${n-1})</span>`:esc(rep.path);
+      tb.appendChild(skillRow(rep,{badge,loc,ids:g.map(x=>x.id)}));
+    });
+    $('#skill-count').textContent=list.length+' unique · '+SKILLS.length+' total';
+  }else{
+    filtered.forEach(s=>tb.appendChild(skillRow(s,null)));
+    $('#skill-count').textContent=filtered.length+' / '+SKILLS.length+' skills';
+  }
+}
+function toggleGroup(idsCsv,repId,on){
+  idsCsv.split(',').map(Number).forEach(id=>ASSIGN_SET.delete(id)); // one copy per name
+  if(on)ASSIGN_SET.add(repId);
+  renderSkills();
+}
+async function openSkill(id){
+  try{const r=await api('skills/'+id);
+    $('#s-id').value=id;$('#s-content').value=r.content||'';
+    $('#sdlg-title').textContent=r.skill.name||'Edit skill';$('#sdlg-path').textContent=r.skill.path;
+    sdlg.showModal();
+  }catch(err){toast(err.message,true)}
+}
+async function saveSkill(e){e.preventDefault();
+  try{await api('skills/'+$('#s-id').value,{method:'PUT',body:JSON.stringify({content:$('#s-content').value})});
+    toast('saved (.bak kept)');sdlg.close();loadSkills();
+  }catch(err){toast(err.message,true)} return false;
+}
+async function distSkill(id){
+  if(!SKILL_ROOTS.length)await refreshRoots();
+  const roots=SKILL_ROOTS.filter(r=>r.enabled);
+  const opts=roots.map((r,i)=>`${i+1}) ${r.path}`).join('\n');
+  const pick=prompt('Send this skill into which root?\nPrefix with "copy:" to copy instead of symlink.\n\n'+opts+'\n\nnumber:');
+  if(!pick)return;
+  let copy=false,val=pick.trim();
+  if(val.toLowerCase().startsWith('copy:')){copy=true;val=val.slice(5).trim();}
+  const root=roots[parseInt(val,10)-1];
+  if(!root){toast('bad selection',true);return;}
+  try{await api('skills/'+id+'/'+(copy?'copy':'symlink'),{method:'POST',body:JSON.stringify({dest_root_id:root.id})});
+    toast((copy?'copied':'symlinked')+' → '+root.path);loadSkills();
+  }catch(err){toast(err.message,true)}
+}
+async function refreshRoots(){SKILL_ROOTS=await api('skill-roots')||[];}
+async function openSkillRoots(){await refreshRoots();renderRoots();srdlg.showModal();}
+function renderRoots(){
+  const tb=$('#srtable tbody');tb.innerHTML='';
+  SKILL_ROOTS.forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td style="font-family:ui-monospace,monospace;font-size:11px;word-break:break-all">${esc(r.path)}</td>`+
+      `<td><input type="checkbox" ${r.enabled?'checked':''} onchange="toggleRoot(${r.id},this.checked)"></td>`+
+      `<td><button class="b" onclick="delRoot(${r.id})">✕</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+async function addSkillRoot(){
+  const p=$('#sr-new').value.trim();if(!p)return;
+  try{await api('skill-roots',{method:'POST',body:JSON.stringify({path:p,enabled:true})});$('#sr-new').value='';await refreshRoots();renderRoots();}
+  catch(err){toast(err.message,true)}
+}
+async function toggleRoot(id,on){
+  const r=SKILL_ROOTS.find(x=>x.id===id);if(!r)return;
+  try{await api('skill-roots',{method:'POST',body:JSON.stringify({...r,enabled:on})});await refreshRoots();}
+  catch(err){toast(err.message,true)}
+}
+async function delRoot(id){
+  try{await api('skill-roots/'+id,{method:'DELETE'});await refreshRoots();renderRoots();}
+  catch(err){toast(err.message,true)}
+}
+
 tuneTextInputs();
 boot();
 // initial tab render — must be after all const/let declarations above

@@ -140,3 +140,22 @@ func failureLabel(reason string) string {
 	}
 	return "unavailable"
 }
+
+// peekBodyParam reads a top-level JSON param without removing it. Values may
+// be a JSON string ("both") or a bare literal (true/1); both are returned as
+// text so one caller can handle either.
+func peekBodyParam(body []byte, key string) (string, bool) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "", false
+	}
+	raw, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str, true
+	}
+	return strings.TrimSpace(string(raw)), true
+}

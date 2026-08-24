@@ -80,7 +80,17 @@ func (a *API) basicAuth(next http.Handler) http.Handler {
 func (a *API) Register(mux *http.ServeMux) {
 	sub, _ := fs.Sub(webuiFS, "webui")
 	inner := http.NewServeMux()
-	inner.Handle("GET /admin/", http.StripPrefix("/admin/", http.FileServer(http.FS(sub))))
+	// embed.FS reports a zero ModTime for every file, so http.FileServer never
+	// emits Last-Modified/ETag and browsers are left with no validator at all.
+	// Without an explicit no-store, that reads as "cache this indefinitely" —
+	// after every rebuild+restart, phones kept serving whatever admin HTML/JS
+	// they'd last fetched, silently reintroducing fixed bugs. The WebUI is a
+	// low-traffic single-page admin panel; always-fresh beats any caching win.
+	noStoreFileServer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
+	})
+	inner.Handle("GET /admin/", http.StripPrefix("/admin/", noStoreFileServer))
 
 	inner.HandleFunc("GET /admin/api/status", a.hStatus)
 	inner.HandleFunc("GET /admin/api/providers", a.hProvidersList)
@@ -117,8 +127,24 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("POST /admin/api/routers", a.hRouterSave)
 	inner.HandleFunc("PUT /admin/api/routers/{id}", a.hRouterSave)
 	inner.HandleFunc("DELETE /admin/api/routers/{id}", a.hRouterDelete)
+	inner.HandleFunc("GET /admin/api/fusions", a.hFusionsList)
+	inner.HandleFunc("POST /admin/api/fusions", a.hFusionSave)
+	inner.HandleFunc("PUT /admin/api/fusions/{id}", a.hFusionSave)
+	inner.HandleFunc("DELETE /admin/api/fusions/{id}", a.hFusionDelete)
 	inner.HandleFunc("GET /admin/api/fusion", a.hFusionGet)
 	inner.HandleFunc("PUT /admin/api/fusion", a.hFusionSet)
+	// Skill index (see internal/api/skills.go, internal/store/skills.go)
+	inner.HandleFunc("GET /admin/api/skills", a.hSkillsList)
+	inner.HandleFunc("POST /admin/api/skills/rescan", a.hSkillRescan)
+	inner.HandleFunc("GET /admin/api/skills/{id}", a.hSkillGet)
+	inner.HandleFunc("PUT /admin/api/skills/{id}", a.hSkillSave)
+	inner.HandleFunc("POST /admin/api/skills/{id}/symlink", func(w http.ResponseWriter, r *http.Request) { a.hSkillDistribute(w, r, true) })
+	inner.HandleFunc("POST /admin/api/skills/{id}/copy", func(w http.ResponseWriter, r *http.Request) { a.hSkillDistribute(w, r, false) })
+	inner.HandleFunc("GET /admin/api/skill-roots", a.hSkillRootsList)
+	inner.HandleFunc("POST /admin/api/skill-roots", a.hSkillRootSave)
+	inner.HandleFunc("DELETE /admin/api/skill-roots/{id}", a.hSkillRootDelete)
+	inner.HandleFunc("GET /admin/api/skill-assign", a.hSkillAssignGet)
+	inner.HandleFunc("POST /admin/api/skill-assign", a.hSkillAssignSet)
 	inner.HandleFunc("GET /admin/api/autoroute", a.hAutoRouteGet)
 	inner.HandleFunc("PUT /admin/api/autoroute", a.hAutoRouteSet)
 	inner.HandleFunc("GET /admin/api/global-fallback", a.hGlobalFBGet)
@@ -127,6 +153,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/stats", a.hStats)
 	inner.HandleFunc("GET /admin/api/traces", a.hTraces)
+	inner.HandleFunc("GET /admin/api/usage", a.hUsage)
 	inner.HandleFunc("GET /admin/api/logs/stream", a.hLogStream)
 
 	mux.Handle("/admin/", a.basicAuth(inner))
@@ -642,6 +669,49 @@ func (a *API) hRouterDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
+// Named fusions mirror named routers: same list/save/delete shape, so the WebUI
+// section and any script that already drives /admin/api/routers needs no new
+// vocabulary to drive /admin/api/fusions.
+
+func (a *API) hFusionsList(w http.ResponseWriter, r *http.Request) {
+	fs, err := a.Store.Fusions()
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if fs == nil {
+		fs = []store.Fusion{}
+	}
+	writeJSON(w, 200, fs)
+}
+
+func (a *API) hFusionSave(w http.ResponseWriter, r *http.Request) {
+	var f store.Fusion
+	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if ids := r.PathValue("id"); ids != "" {
+		f.ID, _ = strconv.ParseInt(ids, 10, 64)
+	} else {
+		f.ID = 0
+	}
+	if err := a.Store.SaveFusion(&f); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, f)
+}
+
+func (a *API) hFusionDelete(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := a.Store.DeleteFusion(id); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
 func (a *API) hFusionGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, a.Proxy.FusionConfig())
 }
@@ -705,6 +775,32 @@ func (a *API) hStats(w http.ResponseWriter, r *http.Request) {
 		st = []store.ModelStat{}
 	}
 	writeJSON(w, 200, st)
+}
+
+// hUsage serves the durable per-day usage rollup (usage_daily). Unlike
+// /admin/api/traces — a rolling 5000-row buffer, ~22 h at real volume — this
+// survives indefinitely, so "what burned the plan this week" is answerable
+// from the proxy itself. Watch two columns in particular:
+//   no_usage : responses that carried no token accounting at all (a provider
+//              invisible to billing oversight)
+//   fellback : attempts that failed and continued down the fallback chain,
+//              i.e. one logical call billed against several providers.
+// ?since=YYYY-MM-DD (default: 30 days back), ?limit=N.
+func (a *API) hUsage(w http.ResponseWriter, r *http.Request) {
+	since := strings.TrimSpace(r.URL.Query().Get("since"))
+	if since == "" {
+		since = time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02")
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rows, err := a.Store.UsageDaily(since, limit)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	writeJSON(w, 200, rows)
 }
 
 func (a *API) hTraces(w http.ResponseWriter, r *http.Request) {

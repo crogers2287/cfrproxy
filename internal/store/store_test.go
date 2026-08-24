@@ -140,3 +140,79 @@ func TestSaveProviderTrimsName(t *testing.T) {
 		t.Errorf("stored name not trimmed: %+v", got)
 	}
 }
+
+// The caveman flag must survive a save/load round trip on BOTH tables, and
+// default to OFF. Column lists, placeholders and Scan destinations are three
+// separate lists that must stay in lockstep; a mismatch in any one of them is
+// silent at compile time (it only shows up as a runtime SQL error, or worse, a
+// setting that quietly never persists).
+func TestCavemanFlagRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+
+	t.Run("provider defaults off", func(t *testing.T) {
+		p := Provider{Name: "cave-default", Type: "openai", BaseURL: "https://x.invalid/v1", Enabled: true}
+		if err := s.SaveProvider(&p); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := s.ProviderByName("cave-default")
+		if !ok {
+			t.Fatal("provider not found after save")
+		}
+		if got.Caveman {
+			t.Fatal("caveman must default to OFF")
+		}
+	})
+
+	t.Run("provider on then off", func(t *testing.T) {
+		p := Provider{Name: "cave-on", Type: "openai", BaseURL: "https://y.invalid/v1", Enabled: true, Caveman: true}
+		if err := s.SaveProvider(&p); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.ProviderByName("cave-on")
+		if !got.Caveman {
+			t.Fatal("caveman=true did not persist through insert")
+		}
+		got.Caveman = false
+		if err := s.SaveProvider(&got); err != nil {
+			t.Fatal(err)
+		}
+		again, _ := s.ProviderByName("cave-on")
+		if again.Caveman {
+			t.Fatal("caveman=false did not persist through update")
+		}
+	})
+
+	t.Run("endpoint round trip", func(t *testing.T) {
+		e := Endpoint{Name: "cave-ep", APIKey: "cfr_test", Enabled: true}
+		if err := s.SaveEndpoint(&e); err != nil {
+			t.Fatal(err)
+		}
+		eps, err := s.Endpoints()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found *Endpoint
+		for i := range eps {
+			if eps[i].Name == "cave-ep" {
+				found = &eps[i]
+			}
+		}
+		if found == nil {
+			t.Fatal("endpoint not found")
+		}
+		if found.Caveman {
+			t.Fatal("endpoint caveman must default to OFF")
+		}
+		found.Caveman = true
+		found.APIKey = "" // blank = keep existing key; exercises that UPDATE variant
+		if err := s.SaveEndpoint(found); err != nil {
+			t.Fatal(err)
+		}
+		eps, _ = s.Endpoints()
+		for _, x := range eps {
+			if x.Name == "cave-ep" && !x.Caveman {
+				t.Fatal("endpoint caveman=true did not persist")
+			}
+		}
+	})
+}

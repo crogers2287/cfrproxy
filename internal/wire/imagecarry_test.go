@@ -114,3 +114,73 @@ func TestBuildOpenAIRequestLeavesTextOnlyMessagesAlone(t *testing.T) {
 		t.Fatalf("text-only message should stay a bare string: %s", out)
 	}
 }
+
+// The Responses API requires "output" on every function_call_output item, even
+// when the tool returned nothing. With `omitempty` on a plain string an empty
+// result dropped the key and the WHOLE request 400d with
+// `Missing required parameter: input[N].output` — one silent tool result
+// poisoning an otherwise valid conversation.
+func TestBuildResponsesRequestAlwaysEmitsToolOutput(t *testing.T) {
+	r := &Request{Model: "gpt-5.6-sol", Messages: []Msg{
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_1", Name: "f", Args: "{}"}}},
+		{Role: "tool", ToolCallID: "call_1", Content: ""}, // tool returned nothing
+	}}
+	out, err := BuildResponsesRequest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Input []map[string]json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range body.Input {
+		var typ string
+		json.Unmarshal(it["type"], &typ)
+		if typ != "function_call_output" {
+			continue
+		}
+		found = true
+		if _, ok := it["output"]; !ok {
+			t.Fatalf(`function_call_output is missing "output": %s`, out)
+		}
+		var got string
+		if err := json.Unmarshal(it["output"], &got); err != nil {
+			t.Fatalf("output not a string: %v", err)
+		}
+		if got != "" {
+			t.Fatalf("output = %q, want empty string", got)
+		}
+	}
+	if !found {
+		t.Fatalf("no function_call_output emitted: %s", out)
+	}
+}
+
+// Non-tool items must NOT carry an output key.
+func TestBuildResponsesRequestOmitsOutputElsewhere(t *testing.T) {
+	r := &Request{Model: "m", Messages: []Msg{{Role: "user", Content: "hi"}}}
+	out, err := BuildResponsesRequest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `"output"`) {
+		t.Fatalf("plain message should not carry output: %s", out)
+	}
+}
+
+// A round trip through the parser must survive a nil output (a provider that
+// omitted the key) without panicking.
+func TestParseResponsesRequestToleratesMissingOutput(t *testing.T) {
+	body := []byte(`{"model":"m","input":[{"type":"function_call_output","call_id":"c1"}]}`)
+	r, err := ParseResponsesRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Messages) != 1 || r.Messages[0].Role != "tool" || r.Messages[0].Content != "" {
+		t.Fatalf("unexpected parse: %+v", r.Messages)
+	}
+}
