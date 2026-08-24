@@ -333,3 +333,31 @@ func TestCavemanExplicitStillSpareSystem(t *testing.T) {
 		t.Fatal("explicit policy modified System")
 	}
 }
+
+// In an agent loop the freshly-read file IS the newest tool result and the last
+// message. Under the explicit policy it must still compress, or the biggest
+// payload in the whole loop escapes untouched.
+func TestCavemanExplicitCompressesTrailingToolResult(t *testing.T) {
+	big := bigLog(400)
+	req := &wire.Request{Messages: []wire.Msg{
+		{Role: "user", Content: "find the error"},
+		{Role: "assistant", Content: "", ToolCalls: []wire.ToolCall{{ID: "1", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "1", Content: big},
+	}}
+	st := CavemanCompress(req, true)
+	if st.Msgs != 1 {
+		t.Fatalf("trailing tool result not compressed (msgs=%d)", st.Msgs)
+	}
+	if !strings.Contains(req.Messages[2].Content, "ERROR something exploded") {
+		t.Fatal("error line lost")
+	}
+	// standing policy must still leave it alone
+	req2 := &wire.Request{Messages: []wire.Msg{
+		{Role: "user", Content: "find the error"},
+		{Role: "assistant", Content: "", ToolCalls: []wire.ToolCall{{ID: "1", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "1", Content: big},
+	}}
+	if st2 := CavemanCompress(req2, false); st2.Msgs != 0 {
+		t.Fatal("standing policy compressed the newest tool result")
+	}
+}

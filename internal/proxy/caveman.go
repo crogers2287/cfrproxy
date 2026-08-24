@@ -398,13 +398,28 @@ func CavemanCompress(req *wire.Request, explicit bool) CavemanStats {
 	if len(toolIdx) == 0 && !explicit {
 		return CavemanStats{}
 	}
-	cutoff := len(toolIdx) - cavemanKeepRecent
+	// Under the explicit policy every tool result is fair game. The
+	// keep-the-newest-N rule protects conversational quality under a standing
+	// config, but in an AGENT LOOP the freshly-fetched result is always the
+	// newest — so that rule meant the single biggest payload in the loop
+	// (a whole file the agent just read) never got compressed, which is the
+	// exact traffic this feature exists for. Measured: a 90 KB log read went
+	// upstream at 32k tokens with the rule on.
+	keepRecent := cavemanKeepRecent
+	if explicit {
+		keepRecent = 0
+	}
+	cutoff := len(toolIdx) - keepRecent
 	last := len(req.Messages) - 1
 	var st CavemanStats
 
 	try := func(i int) {
-		if i == last {
-			return // never compress the instruction itself
+		// Never compress a trailing USER message: that is the instruction, and
+		// truncating the question to save tokens on the haystack is a bad
+		// trade. A trailing TOOL result is different — in an agent loop it is
+		// the payload, not the ask — so it stays compressible.
+		if i == last && req.Messages[i].Role == "user" {
+			return
 		}
 		orig := req.Messages[i].Content
 		if len(orig) <= cavemanMinBytes {
