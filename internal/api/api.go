@@ -101,6 +101,15 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("POST /admin/api/providers/scan-models", a.hProviderScanModels)
 	inner.HandleFunc("POST /admin/api/providers/{id}/test", a.hTest)
 	inner.HandleFunc("GET /admin/api/providers/{id}/models", a.hProviderModels)
+	// Admin-plane mirrors of the model list. The WebUI used to fetch /v1/models
+	// and /p/<prov>/v1/models directly, but those are data-plane routes: once
+	// public_api_keys is configured they require a key, and a browser will NOT
+	// attach the /admin/ basic-auth credentials to them (different protection
+	// space), so the model pickers silently emptied for anyone reaching the UI
+	// through the reverse proxy. These live under /admin/ where the browser
+	// already authenticates.
+	inner.HandleFunc("GET /admin/api/allmodels", a.hAllModels)
+	inner.HandleFunc("GET /admin/api/scopedmodels/{provider}", a.hScopedModels)
 	inner.HandleFunc("POST /admin/api/providers/{id}/docs/fetch", a.hDocsFetch)
 	inner.HandleFunc("GET /admin/api/providers/{id}/docs", a.hDocsGet)
 	inner.HandleFunc("GET /admin/api/transforms", a.hTransformsList)
@@ -282,6 +291,31 @@ func (a *API) hTest(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "content": resp.Content, "model": resp.Model,
 		"latency_ms": time.Since(start).Milliseconds(), "tokens": resp.CompletionTokens})
+}
+
+// hAllModels mirrors GET /v1/models for the admin UI.
+func (a *API) hAllModels(w http.ResponseWriter, r *http.Request) {
+	ids := a.Proxy.AllModelIDs(r.Context())
+	data := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, map[string]any{"id": id, "object": "model"})
+	}
+	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
+}
+
+// hScopedModels mirrors GET /p/{provider}/v1/models?all=1 for the admin UI.
+func (a *API) hScopedModels(w http.ResponseWriter, r *http.Request) {
+	prov := r.PathValue("provider")
+	if _, ok := a.Store.ProviderByName(prov); !ok {
+		httpErr(w, 404, "unknown provider: "+prov)
+		return
+	}
+	ids := a.Proxy.ScopedModelIDs(r.Context(), prov, r.URL.Query().Get("all") != "")
+	data := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, map[string]any{"id": id, "object": "model"})
+	}
+	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
 
 func (a *API) hProviderModels(w http.ResponseWriter, r *http.Request) {
@@ -595,7 +629,9 @@ func settingJSONSet(a *API, w http.ResponseWriter, r *http.Request, key string) 
 	w.Write(b)
 }
 
-func (a *API) hRTGet(w http.ResponseWriter, r *http.Request)  { settingJSON(a, w, "roundtable", `{"moderator":"","rounds":2,"max_tokens":1200}`) }
+func (a *API) hRTGet(w http.ResponseWriter, r *http.Request) {
+	settingJSON(a, w, "roundtable", `{"moderator":"","rounds":2,"max_tokens":1200}`)
+}
 
 func (a *API) hRTLogs(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -619,8 +655,10 @@ func (a *API) hRTLogDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, l)
 }
-func (a *API) hRTSet(w http.ResponseWriter, r *http.Request)  { settingJSONSet(a, w, r, "roundtable") }
-func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) { settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`) }
+func (a *API) hRTSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "roundtable") }
+func (a *API) hCompGet(w http.ResponseWriter, r *http.Request) {
+	settingJSON(a, w, "compression", `{"enabled":false,"threshold_tokens":24000,"keep_recent":8,"summarizer":"","target_words":500}`)
+}
 
 func (a *API) hGlobalFBGet(w http.ResponseWriter, r *http.Request) {
 	settingJSON(a, w, "global_fallback", `{"enabled":false,"targets":[]}`)
@@ -628,7 +666,9 @@ func (a *API) hGlobalFBGet(w http.ResponseWriter, r *http.Request) {
 func (a *API) hGlobalFBSet(w http.ResponseWriter, r *http.Request) {
 	settingJSONSet(a, w, r, "global_fallback")
 }
-func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) { settingJSONSet(a, w, r, "compression") }
+func (a *API) hCompSet(w http.ResponseWriter, r *http.Request) {
+	settingJSONSet(a, w, r, "compression")
+}
 
 func (a *API) hRoutersList(w http.ResponseWriter, r *http.Request) {
 	rs, err := a.Store.Routers()
@@ -781,10 +821,12 @@ func (a *API) hStats(w http.ResponseWriter, r *http.Request) {
 // /admin/api/traces — a rolling 5000-row buffer, ~22 h at real volume — this
 // survives indefinitely, so "what burned the plan this week" is answerable
 // from the proxy itself. Watch two columns in particular:
-//   no_usage : responses that carried no token accounting at all (a provider
-//              invisible to billing oversight)
-//   fellback : attempts that failed and continued down the fallback chain,
-//              i.e. one logical call billed against several providers.
+//
+//	no_usage : responses that carried no token accounting at all (a provider
+//	           invisible to billing oversight)
+//	fellback : attempts that failed and continued down the fallback chain,
+//	           i.e. one logical call billed against several providers.
+//
 // ?since=YYYY-MM-DD (default: 30 days back), ?limit=N.
 func (a *API) hUsage(w http.ResponseWriter, r *http.Request) {
 	since := strings.TrimSpace(r.URL.Query().Get("since"))

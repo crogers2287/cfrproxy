@@ -160,19 +160,65 @@ func hasTimestampPrefix(l string) bool {
 	return digits >= 5 && seps >= 2
 }
 
+// looksLikeSource is a loose check used only to decide whether to number lines.
+// It is deliberately more permissive than detectKind's code branch: being wrong
+// here costs a few characters, whereas missing it costs correct citations.
+func looksLikeSource(lines []string) bool {
+	hits := 0
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(t, "def "), strings.HasPrefix(t, "func "),
+			strings.HasPrefix(t, "class "), strings.HasPrefix(t, "import "),
+			strings.HasPrefix(t, "from "), strings.HasPrefix(t, "package "),
+			strings.HasPrefix(t, "function "), strings.HasPrefix(t, "return "),
+			strings.HasPrefix(t, "if "), strings.HasPrefix(t, "for "),
+			strings.HasPrefix(t, "#include"), strings.HasSuffix(t, "{"),
+			strings.HasSuffix(t, ":") && len(t) > 3:
+			hits++
+		}
+		if hits >= 4 {
+			return true
+		}
+	}
+	return false
+}
+
 func elided(what string, n int) string {
 	return fmt.Sprintf("\n… [caveman: elided %d %s] …\n", n, what)
 }
 
 // headTail keeps the first h and last t lines, marking what went missing.
-func headTail(lines []string, h, t int, what string) string {
+// numbered=true prefixes each kept line with its original 1-based number so
+// line references survive the elision (see compressCode).
+func headTail(lines []string, h, t int, what string, numbered bool) string {
 	if len(lines) <= h+t {
 		return strings.Join(lines, "\n")
 	}
+	emit := func(idx int) string {
+		if numbered {
+			return fmt.Sprintf("%d| %s", idx+1, lines[idx])
+		}
+		return lines[idx]
+	}
 	var b strings.Builder
-	b.WriteString(strings.Join(lines[:h], "\n"))
-	b.WriteString(elided(what, len(lines)-h-t))
-	b.WriteString(strings.Join(lines[len(lines)-t:], "\n"))
+	for i := 0; i < h; i++ {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(emit(i))
+	}
+	if numbered {
+		b.WriteString(fmt.Sprintf("\n… [caveman: elided lines %d-%d] …\n", h+1, len(lines)-t))
+	} else {
+		b.WriteString(elided(what, len(lines)-h-t))
+	}
+	for i := len(lines) - t; i < len(lines); i++ {
+		b.WriteString(emit(i))
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 
@@ -211,13 +257,21 @@ func compressLogs(s string) string {
 }
 
 // compressCode keeps imports, declarations and signatures; elides bodies.
+//
+// Kept lines carry their ORIGINAL 1-based line number ("42| func foo() {").
+// Without it, eliding a body renumbers everything below and any line reference
+// the model produces is silently wrong — which makes compression unusable for
+// the most common research ask ("find the bug, cite the line"). Numbering costs
+// a few characters per kept line and buys correct citations; the elision
+// markers name the dropped range for the same reason.
 func compressCode(s string) string {
 	lines := strings.Split(s, "\n")
 	kept := make([]string, 0, len(lines))
-	dropped := 0
+	dropped, dropStart := 0, 0
 	flush := func() {
 		if dropped > 0 {
-			kept = append(kept, strings.TrimSuffix(strings.TrimPrefix(elided("body lines", dropped), "\n"), "\n"))
+			kept = append(kept, fmt.Sprintf("… [caveman: elided lines %d-%d] …",
+				dropStart, dropStart+dropped-1))
 			dropped = 0
 		}
 	}
@@ -237,8 +291,11 @@ func compressCode(s string) string {
 		}
 		if keep {
 			flush()
-			kept = append(kept, l)
+			kept = append(kept, fmt.Sprintf("%d| %s", i+1, l))
 			continue
+		}
+		if dropped == 0 {
+			dropStart = i + 1
 		}
 		dropped++
 	}
@@ -335,10 +392,15 @@ func shrinkJSON(v any, depth int) any {
 }
 
 // compressText is the fallback: keep a generous head and tail.
+//
+// It numbers lines when the payload looks like source. Real files often miss
+// the code detector (a module of mostly assignments has few def/import lines),
+// and losing line references on what is plainly code is worse than the few
+// characters numbering costs.
 func compressText(s string) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > 40 {
-		return headTail(lines, 25, 10, "lines")
+		return headTail(lines, 25, 10, "lines", looksLikeSource(lines))
 	}
 	// one enormous line (minified blob) — cut the middle
 	if len(s) > 4000 {

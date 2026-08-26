@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -359,5 +360,62 @@ func TestCavemanExplicitCompressesTrailingToolResult(t *testing.T) {
 	}}
 	if st2 := CavemanCompress(req2, false); st2.Msgs != 0 {
 		t.Fatal("standing policy compressed the newest tool result")
+	}
+}
+
+// Compressing source must not break line references. Research prompts routinely
+// ask for "evidence with line numbers"; if elision renumbers the file, every
+// citation the model gives is silently wrong — which is why a caller doing code
+// analysis would otherwise have to disable compression entirely.
+func TestCavemanCodeKeepsLineReferences(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("import os\nimport sys\n\ndef alpha(x):\n")
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&b, "    step_%d = x + %d\n", i, i)
+	}
+	b.WriteString("    return step_29\n\ndef beta(y):\n") // "def beta" is line 37
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&b, "    v%d = y * %d\n", i, i)
+	}
+	b.WriteString("    return v29\n")
+	src := b.String()
+
+	if got := strings.Split(src, "\n")[36]; !strings.HasPrefix(got, "def beta") {
+		t.Fatalf("fixture drifted: line 37 is %q", got)
+	}
+	out := cavemanCompressOne(src)
+	if len(out) >= len(src) {
+		t.Fatalf("no reduction: %d -> %d", len(src), len(out))
+	}
+	// every surviving content line must carry its ORIGINAL number
+	var checked int
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "caveman:") || strings.TrimSpace(l) == "" {
+			continue
+		}
+		// format is "<n>| <original line>"; a numbered blank line is "<n>| "
+		bar := strings.Index(l, "| ")
+		if bar < 1 {
+			t.Fatalf("kept line is not numbered: %q", l)
+		}
+		n, err := strconv.Atoi(l[:bar])
+		if err != nil {
+			t.Fatalf("kept line is not numbered: %q", l)
+		}
+		orig := strings.Split(src, "\n")
+		if n < 1 || n > len(orig) {
+			t.Fatalf("line number %d out of range", n)
+		}
+		if got, want := l[bar+2:], orig[n-1]; got != want {
+			t.Fatalf("line %d rendered %q but source has %q", n, got, want)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no numbered lines found")
+	}
+	// and the elision must name the range it dropped, not just a count
+	if !strings.Contains(out, "elided lines ") {
+		t.Fatalf("elision marker does not name a line range: %.200s", out)
 	}
 }

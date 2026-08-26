@@ -905,7 +905,7 @@ async function loadModelMap(){
   });
   // datalist of proxy-wide models for the target field
   try{
-    const r=await fetch('/v1/models').then(r=>r.json());
+    const r=await fetch('/admin/api/allmodels').then(r=>r.json());
     allModels=r.data.map(m=>m.id);
     $('#allmodels').innerHTML=allModels.map(m=>`<option value="${esc(m)}">`).join('');
     fillAllModelSelects();
@@ -935,7 +935,7 @@ async function scopedModels(provName){
     // harness pickers short. In this admin UI the operator is configuring the
     // proxy itself and must be able to reach the whole catalogue; without it a
     // provider with 3 pins offers 3 of its 15 models and looks broken.
-    const r=await fetch('/p/'+encodeURIComponent(provName)+'/v1/models?all=1').then(r=>r.json());
+    const r=await fetch('/admin/api/scopedmodels/'+encodeURIComponent(provName)+'?all=1').then(r=>r.json());
     return scopedModelCache[provName]=r.data.map(m=>m.id);
   }catch{return scopedModelCache[provName]=[]}
 }
@@ -1111,7 +1111,16 @@ function traceRow(t){
   // feature is off for whichever provider/endpoint served it.
   const cmSaved=(t.cm_before||0)-(t.cm_after||0);
   const cmPct=t.cm_before?Math.round(100*cmSaved/t.cm_before):0;
-  const cm=t.cm_msgs?`<span class="badge-ok" title="${t.cm_msgs} msg(s): ${t.cm_before}B \u2192 ${t.cm_after}B">\u2212${(cmSaved/1024).toFixed(1)}K (${cmPct}%)</span>`:'\u00b7';
+  // cm_msgs=0 is ambiguous on its own — it can mean caveman was never asked
+  // for, was asked and disabled (--mode off), or was asked and nothing hit the
+  // 2KB threshold. cm_mode disambiguates, so show it rather than a bare dot.
+  const cm = t.cm_msgs
+    ? `<span class="badge-ok" title="mode=${t.cm_mode||"?"} · ${t.cm_msgs} msg(s): ${t.cm_before}B \u2192 ${t.cm_after}B">\u2212${(cmSaved/1024).toFixed(1)}K (${cmPct}%)</span>`
+    : (t.cm_mode === "off"
+        ? `<span class="tag" title="caller passed --mode off: compression explicitly disabled">off</span>`
+        : (t.cm_mode
+            ? `<span class="tag" title="mode=${t.cm_mode} requested, but nothing met the 2KB threshold">${t.cm_mode}\u00b70</span>`
+            : '\u00b7'));
   // generation window = total − upstream think-time − our own post-processing
   const gen=Math.max(0,(t.latency_ms||0)-(t.ttfb_ms||0)-((t.post_us||0)/1000))||(t.latency_ms||0);
   const tps=(t.completion_tokens>0&&gen>0)?(t.completion_tokens/(gen/1000)):0;

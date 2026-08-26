@@ -87,11 +87,13 @@ type Trace struct {
 	TTFBMS int64 `json:"ttfb_ms"`
 	// microseconds, not milliseconds: cfrproxy's trailing work is routinely
 	// sub-millisecond, and truncating it to "0ms" told the operator nothing.
-	PostUS   int64  `json:"post_us"`
+	PostUS int64 `json:"post_us"`
 	// Caveman compression accounting for this request (0 when disabled).
-	CMMsgs   int   `json:"cm_msgs"`
-	CMBefore int   `json:"cm_before"`
-	CMAfter  int   `json:"cm_after"`
+	// CMMode is the resolved mode: "" = caveman not involved, else off|in|out|both.
+	CMMode   string `json:"cm_mode"`
+	CMMsgs   int    `json:"cm_msgs"`
+	CMBefore int    `json:"cm_before"`
+	CMAfter  int    `json:"cm_after"`
 	ReqSnip  string `json:"req_snippet"`
 	RespSnip string `json:"resp_snippet"`
 
@@ -312,6 +314,11 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_msgs INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_before INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_after INTEGER NOT NULL DEFAULT 0`)
+	// cm_mode records the RESOLVED caveman mode for the request. Byte counts
+	// alone are ambiguous: cm_msgs=0 could mean the caller never asked for
+	// compression, asked and disabled it (--mode off), or asked and nothing
+	// qualified. Those need different responses, so store which one it was.
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_mode TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE usage_daily ADD COLUMN absorbed INTEGER NOT NULL DEFAULT 0`)
 	// usage_daily: durable per-day/provider/model accounting. `traces` is a
 	// rolling 5000-row buffer (~22 h at current volume), which is useless for
@@ -716,8 +723,8 @@ func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
 // ---- traces ----
 
 func (s *Store) AddTrace(t *Trace) {
-	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet,cm_msgs,cm_before,cm_after) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip, t.CMMsgs, t.CMBefore, t.CMAfter)
+	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet,cm_msgs,cm_before,cm_after,cm_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip, t.CMMsgs, t.CMBefore, t.CMAfter, t.CMMode)
 	if err == nil {
 		t.ID, _ = res.LastInsertId()
 	}
@@ -829,7 +836,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,cm_msgs,cm_before,cm_after,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,cm_msgs,cm_before,cm_after,cm_mode,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -838,7 +845,7 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	for rows.Next() {
 		var t Trace
 		var stream int
-		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.CMMsgs, &t.CMBefore, &t.CMAfter, &t.ReqSnip, &t.RespSnip); err != nil {
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.CMMsgs, &t.CMBefore, &t.CMAfter, &t.CMMode, &t.ReqSnip, &t.RespSnip); err != nil {
 			return nil, err
 		}
 		t.Stream = stream == 1

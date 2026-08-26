@@ -128,6 +128,13 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 // scopedModelIDs returns bare model ids for one provider. When the provider
 // has a pinned (curated) list and all==false, only pins are returned — this
 // is what keeps harness pickers short. all==true returns the live catalog.
+// ScopedModelIDs exposes scopedModelIDs to the admin API, which needs the same
+// list the data-plane /p/{provider}/v1/models route returns but served from
+// behind /admin/ basic auth.
+func (p *Proxy) ScopedModelIDs(ctx context.Context, provider string, all bool) []string {
+	return p.scopedModelIDs(ctx, provider, all)
+}
+
 func (p *Proxy) scopedModelIDs(ctx context.Context, provider string, all bool) []string {
 	if isFusionMount(provider) {
 		return p.fusionModelIDs(true)
@@ -530,6 +537,11 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			tr.CMMsgs += cm.Msgs
 			tr.CMBefore += cm.Before
 			tr.CMAfter += cm.After
+		}
+		// Record the resolved mode even when nothing compressed, so the trace
+		// distinguishes "never asked" from "asked and declined/nothing matched".
+		if cmSet || cmEff != CMOff {
+			tr.CMMode = string(cmEff)
 		}
 		// creq is now the request as the model will see it (docs + skills
 		// injected), which is what a warmup must replay to match byte-for-byte.
