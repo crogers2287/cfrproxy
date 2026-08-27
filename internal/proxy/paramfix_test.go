@@ -146,3 +146,25 @@ func TestUnrelated400IsNotRetried(t *testing.T) {
 		t.Errorf("want exactly 1 upstream call, got %d", calls)
 	}
 }
+
+// The failover banner names the PRIMARY provider, so it must quote the
+// primary's own failure. It previously printed the last error in the chain,
+// which announced a dead local model as "fred quota exhausted" because a later
+// hop was out of credits — sending the operator to a billing page instead of to
+// the service that was actually down.
+func TestFailureLabelDistinguishesOutageFromQuota(t *testing.T) {
+	cases := map[string]string{
+		// what a stopped llama-swap actually produces
+		"fred: HTTP 502 ": "upstream error",
+		"fred: HTTP 502 unable to start process: upstream command exited prematurely": "upstream error",
+		"fred: dial tcp 127.0.0.1:9069: connect: connection refused":                  "unreachable",
+		// what a genuinely exhausted account produces
+		`ccbudget: usage cap (HTTP 400) {"message":"You have insufficient credits"}`: "quota exhausted",
+		"grok: usage cap (HTTP 402) balance exhausted":                               "quota exhausted",
+	}
+	for in, want := range cases {
+		if got := failureLabel(in); got != want {
+			t.Errorf("failureLabel(%.50q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -475,6 +475,10 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	var respRules []transform.Rule
 	var passth bool
 	lastErr := ""
+	// primaryErr keeps the ORIGINALLY-REQUESTED provider's own failure, separate
+	// from lastErr which keeps walking down the chain. The chat banner names the
+	// primary, so it has to quote the primary's reason.
+	primaryErr := ""
 	if blindPrimary {
 		// Seed the reason so the trace and the failover banner say what
 		// actually happened. Without it the primary is never attempted, lastErr
@@ -607,6 +611,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			r2, err := p.send(r.Context(), c.prov, providerPath(otype), outBody)
 			if err != nil {
 				lastErr = c.prov.Name + ": " + err.Error()
+				if primaryErr == "" && c.prov.Name == prov.Name {
+					primaryErr = lastErr
+				}
 				if r.Context().Err() != nil {
 					return // client gone
 				}
@@ -616,6 +623,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				eb, _ := io.ReadAll(io.LimitReader(r2.Body, 1<<20))
 				r2.Body.Close()
 				lastErr = fmt.Sprintf("%s: HTTP %d %s", c.prov.Name, r2.StatusCode, snip(eb))
+				if primaryErr == "" && c.prov.Name == prov.Name {
+					primaryErr = lastErr
+				}
 				candStatus = r2.StatusCode
 				softErrs = append(softErrs, lastErr)
 				continue
@@ -633,6 +643,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				// with error strings for it.
 				if r2.StatusCode == 402 || usageExhausted(eb) {
 					lastErr = fmt.Sprintf("%s: usage cap (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					if primaryErr == "" && c.prov.Name == prov.Name {
+						primaryErr = lastErr
+					}
 					candStatus = r2.StatusCode
 					softErrs = append(softErrs, lastErr)
 					break // stop retrying this provider; try the next candidate
@@ -641,6 +654,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				// still serve this, so don't hard-fail the harness either
 				if contextExceeded(eb) {
 					lastErr = fmt.Sprintf("%s: context overflow (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					if primaryErr == "" && c.prov.Name == prov.Name {
+						primaryErr = lastErr
+					}
 					candStatus = r2.StatusCode
 					softErrs = append(softErrs, lastErr)
 					break
@@ -651,6 +667,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				// on — exactly the case the vision chain exists to rescue.
 				if visionFailure(eb) {
 					lastErr = fmt.Sprintf("%s: vision failure (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
+					if primaryErr == "" && c.prov.Name == prov.Name {
+						primaryErr = lastErr
+					}
 					candStatus = r2.StatusCode
 					softErrs = append(softErrs, lastErr)
 					break
@@ -734,6 +753,17 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	tr.Provider, tr.Model = used.prov.Name, used.model
 	alert := ""
 	if used.failover {
+		// The banner must pair the primary's NAME with the primary's OWN reason.
+		// It used to print failureLabel(lastErr), which is the last failure in
+		// the whole chain — so a local model that died with an empty HTTP 502
+		// was announced as "fred quota exhausted" because a later hop ran out
+		// of credits. That sends the operator to a billing page instead of to
+		// the service that is actually down. Fall back to lastErr only when the
+		// primary produced no error of its own.
+		primaryReason := primaryErr
+		if primaryReason == "" {
+			primaryReason = lastErr
+		}
 		tr.Err = "failover from " + prov.Name + " (" + lastErr + ")"
 		// Deliberately terse, and rate-limited per "from -> to" pair rather than
 		// per conversation: harnesses inject the current time and other volatile
@@ -742,7 +772,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// visible in the trace and the WebUI errors panel — where it belongs.
 		if noticeCache.announce(prov.Name + "->" + used.prov.Name + "/" + used.model) {
 			alert = fmt.Sprintf("⚠️ failover: %s %s → %s active\n\n",
-				prov.Name, failureLabel(lastErr), used.model)
+				prov.Name, failureLabel(primaryReason), used.model)
 		}
 	} else if len(softErrs) > 0 && resp.StatusCode < 400 {
 		// request recovered on the same provider after one or more transient
