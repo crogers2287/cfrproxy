@@ -505,6 +505,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <label>Note (optional)</label><input type="text" id="e-note" placeholder="Bob — gpt + claude only">
     <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
       <div class="check"><input type="checkbox" id="e-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(off by default)</span></span></div>
+      <div class="check"><input type="checkbox" id="e-nofb"><span title="Never re-route requests on this shared API to another provider. Off by default. Use it so a key you hand out cannot spend on providers the recipient was never granted.">Disable fallback <span style="color:var(--dim)">(off by default)</span></span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="edlg.close()">Cancel</button>
       <button class="b primary" type="submit">Save</button>
@@ -558,6 +559,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
     <div class="check"><input type="checkbox" id="p-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(shrink bulky tool results — off by default)</span></span></div>
+    <div class="check"><input type="checkbox" id="p-nofb"><span title="Never re-route a failed request from this provider to another. You get the real error instead of a silent switch. Off by default. Use it on a local/free provider so an outage cannot quietly spend on a paid one.">Disable fallback <span style="color:var(--dim)">(fail instead of re-routing — off by default)</span></span></div>
     <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="pdlg.close()">Cancel</button>
@@ -750,7 +752,7 @@ function openProviderDialog(id){
   if(p.fallback&&!allModels.includes(p.fallback))$('#p-fallback').insertAdjacentHTML('beforeend',`<option value="${esc(p.fallback)}">${esc(p.fallback)}</option>`);
   $('#p-fallback').value=p.fallback||'';
   $('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
-  $('#p-inject').checked=!!p.inject_docs;$('#p-caveman').checked=!!p.caveman;$('#p-enabled').checked=id?!!p.enabled:true;
+  $('#p-inject').checked=!!p.inject_docs;$('#p-caveman').checked=!!p.caveman;$('#p-nofb').checked=!!p.no_fallback;$('#p-enabled').checked=id?!!p.enabled:true;
   resetModelScan();
   pdlg.showModal();
 }
@@ -759,7 +761,7 @@ async function saveProvider(e){
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
     api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,models_filter:$('#p-filter').value,context_length:parseInt($('#p-ctxlen').value,10)||0,
-    doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,caveman:$('#p-caveman').checked,enabled:$('#p-enabled').checked};
+    doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,caveman:$('#p-caveman').checked,no_fallback:$('#p-nofb').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     pdlg.close();toast(r.note||'provider saved',(r.note||'').startsWith('warning'));loadProviders();
@@ -1582,7 +1584,7 @@ function openEndpointDialog(id){
   const e=endpoints.find(x=>x.id===id)||{};
   $('#edlg-title').textContent=id?'Edit '+e.name:'New share endpoint';
   $('#e-id').value=id||'';$('#e-name').value=e.name||'';$('#e-key').value=id?'':(e.api_key||'');
-  $('#e-note').value=e.note||'';$('#e-enabled').checked=id?!!e.enabled:true;$('#e-caveman').checked=!!e.caveman;
+  $('#e-note').value=e.note||'';$('#e-enabled').checked=id?!!e.enabled:true;$('#e-caveman').checked=!!e.caveman;$('#e-nofb').checked=!!e.no_fallback;
   // force select: none + auto/auto-plan + all models
   const fs=$('#e-force');
   fs.innerHTML='<option value="">— none (use allow-list) —</option>'+['auto','auto-plan'].concat(allModels.filter(m=>m!=='auto'&&m!=='auto-plan')).map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
@@ -1600,7 +1602,7 @@ async function saveEndpoint(ev){
   const id=$('#e-id').value;
   const models=[...$('#e-models').selectedOptions].map(o=>o.value).join(',');
   const body={name:$('#e-name').value,api_key:$('#e-key').value,force_model:$('#e-force').value,
-    models:$('#e-force').value?'':models,note:$('#e-note').value,caveman:$('#e-caveman').checked,enabled:$('#e-enabled').checked};
+    models:$('#e-force').value?'':models,note:$('#e-note').value,caveman:$('#e-caveman').checked,no_fallback:$('#e-nofb').checked,enabled:$('#e-enabled').checked};
   try{
     await api(id?'endpoints/'+id:'endpoints',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     edlg.close();toast('endpoint saved');loadEndpoints();

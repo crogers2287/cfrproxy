@@ -420,9 +420,16 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// (cycle-safe, max 3 hops). Transient failures retry once per candidate,
 	// then move down the chain.
 	cands := []candidate{{prov: prov, model: model}}
+	// Fallback can be pinned off, per provider or per share endpoint. When it
+	// is, the chain stays a single candidate: the caller gets this provider's
+	// real error rather than a silent reroute. That matters because the reroute
+	// is invisible and expensive — a local model going down otherwise walks the
+	// request onto paid providers, and a share key handed to someone else could
+	// spend on providers they were never granted.
+	noFallback := prov.NoFallback || (ep != nil && ep.NoFallback)
 	seen := map[int64]bool{prov.ID: true}
 	cur := prov
-	for hop := 0; hop < 3 && cur.Fallback != ""; hop++ {
+	for hop := 0; !noFallback && hop < 3 && cur.Fallback != ""; hop++ {
 		fprov, fmodel, ferr := p.ResolveModel(r.Context(), cur.Fallback)
 		if ferr != nil || seen[fprov.ID] {
 			break
@@ -441,7 +448,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// a text-only model, which answers "I can't see the image" with a 200 and
 	// ends the request successfully-but-wrongly.
 	blindPrimary := false
-	if reqHasImage {
+	if reqHasImage && !noFallback {
 		withVis := p.appendVisionFallback(r.Context(), cands, ep, reqHasImage)
 		if !p.visionCapableFor(r.Context(), prov, model) && len(withVis) > len(cands) {
 			// The primary cannot see. Put the vision chain IN FRONT of it
@@ -457,7 +464,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			cands = withVis
 		}
 	}
-	cands = p.appendGlobalFallback(r.Context(), cands, ep)
+	if !noFallback {
+		cands = p.appendGlobalFallback(r.Context(), cands, ep)
+	}
 	// Once a vision chain is in play, ONLY models that can see may serve the
 	// image. The global chain is ordered for text availability and happily
 	// contains text-only models. Gated on the chain existing, so a deployment

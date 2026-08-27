@@ -216,3 +216,87 @@ func TestCavemanFlagRoundTrips(t *testing.T) {
 		}
 	})
 }
+
+// no_fallback must survive a save/load round trip on both tables and default
+// to OFF. Column lists, placeholders and Scan destinations are three separate
+// lists that must stay in lockstep; a mismatch is invisible at compile time and
+// shows up either as a runtime SQL error or, worse, a setting that silently
+// never persists.
+func TestNoFallbackRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+
+	t.Run("provider defaults off then toggles both ways", func(t *testing.T) {
+		p := Provider{Name: "nofb-prov", Type: "openai", BaseURL: "https://a.invalid/v1", Enabled: true}
+		if err := s.SaveProvider(&p); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := s.ProviderByName("nofb-prov")
+		if !ok {
+			t.Fatal("provider missing after save")
+		}
+		if got.NoFallback {
+			t.Fatal("no_fallback must default to OFF")
+		}
+		got.NoFallback = true
+		if err := s.SaveProvider(&got); err != nil {
+			t.Fatal(err)
+		}
+		if again, _ := s.ProviderByName("nofb-prov"); !again.NoFallback {
+			t.Fatal("no_fallback=true did not persist through update")
+		}
+		again, _ := s.ProviderByName("nofb-prov")
+		again.NoFallback = false
+		if err := s.SaveProvider(&again); err != nil {
+			t.Fatal(err)
+		}
+		if back, _ := s.ProviderByName("nofb-prov"); back.NoFallback {
+			t.Fatal("no_fallback=false did not persist through update")
+		}
+	})
+
+	t.Run("provider insert with the flag already set", func(t *testing.T) {
+		p := Provider{Name: "nofb-on", Type: "openai", BaseURL: "https://b.invalid/v1",
+			Enabled: true, NoFallback: true}
+		if err := s.SaveProvider(&p); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := s.ProviderByName("nofb-on"); !got.NoFallback {
+			t.Fatal("no_fallback=true did not persist through insert")
+		}
+	})
+
+	t.Run("endpoint round trip, including the keep-existing-key update path", func(t *testing.T) {
+		e := Endpoint{Name: "nofb-ep", APIKey: "cfr_x", Enabled: true}
+		if err := s.SaveEndpoint(&e); err != nil {
+			t.Fatal(err)
+		}
+		find := func() Endpoint {
+			eps, err := s.Endpoints()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, x := range eps {
+				if x.Name == "nofb-ep" {
+					return x
+				}
+			}
+			t.Fatal("endpoint missing")
+			return Endpoint{}
+		}
+		if find().NoFallback {
+			t.Fatal("endpoint no_fallback must default to OFF")
+		}
+		cur := find()
+		cur.NoFallback = true
+		cur.APIKey = "" // blank = keep existing key; exercises the other UPDATE
+		if err := s.SaveEndpoint(&cur); err != nil {
+			t.Fatal(err)
+		}
+		if !find().NoFallback {
+			t.Fatal("endpoint no_fallback=true did not persist")
+		}
+		if find().APIKey != "cfr_x" {
+			t.Fatal("blank-key update wiped the stored key")
+		}
+	})
+}

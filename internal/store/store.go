@@ -45,6 +45,9 @@ type Provider struct {
 	// Caveman enables payload compression of bulky tool results sent to this
 	// provider. Off by default; see internal/proxy/caveman.go.
 	Caveman bool `json:"caveman"`
+	// NoFallback stops a failed request to this provider being re-routed to any
+	// other. The caller gets the real error instead of a silent switch.
+	NoFallback bool `json:"no_fallback"`
 	// Headers is a JSON object of extra outbound headers to set on every
 	// request to this provider (name -> value). A value of "@file:<path>"
 	// is read from the file on every request, so a CLI auth token that the
@@ -319,6 +322,13 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	// compression, asked and disabled it (--mode off), or asked and nothing
 	// qualified. Those need different responses, so store which one it was.
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cm_mode TEXT NOT NULL DEFAULT ''`)
+	// no_fallback: pin a request to its chosen provider. Silent failover is
+	// usually right, but not always — a local/free provider going down otherwise
+	// reroutes to a paid one without the caller noticing, and a share endpoint
+	// handed to someone else should not spend on providers the recipient was
+	// never granted. Default 0 keeps existing behaviour.
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN no_fallback INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN no_fallback INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE usage_daily ADD COLUMN absorbed INTEGER NOT NULL DEFAULT 0`)
 	// usage_daily: durable per-day/provider/model accounting. `traces` is a
 	// rolling 5000-row buffer (~22 h at current volume), which is useless for
@@ -469,7 +479,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,models_filter,context_length,headers FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,no_fallback,models_filter,context_length,headers FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -478,11 +488,11 @@ func (s *Store) reload() error {
 	for rows.Next() {
 		var p Provider
 		var enc []byte
-		var enabled, inject, cave int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &cave, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
+		var enabled, inject, cave, nofb int
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &cave, &nofb, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
 			return err
 		}
-		p.Enabled, p.InjectDocs, p.Caveman = enabled == 1, inject == 1, cave == 1
+		p.Enabled, p.InjectDocs, p.Caveman, p.NoFallback = enabled == 1, inject == 1, cave == 1, nofb == 1
 		if p.APIKey, err = s.decrypt(enc); err != nil {
 			return fmt.Errorf("provider %s: %w", p.Name, err)
 		}
@@ -618,8 +628,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), p.ModelsFilter, p.ContextLength, p.Headers)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,no_fallback,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers)
 		if err != nil {
 			return err
 		}
@@ -627,11 +637,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,no_fallback=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,no_fallback=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
 		}
 		if err != nil {
 			return err
@@ -1133,10 +1143,11 @@ type Endpoint struct {
 	Enabled    bool   `json:"enabled"`
 	Note       string `json:"note"`
 	Caveman    bool   `json:"caveman"`
+	NoFallback bool   `json:"no_fallback"`
 }
 
 func (s *Store) Endpoints() ([]Endpoint, error) {
-	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman FROM endpoints ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1145,11 +1156,11 @@ func (s *Store) Endpoints() ([]Endpoint, error) {
 	for rows.Next() {
 		var e Endpoint
 		var enc []byte
-		var en, cave int
-		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave); err != nil {
+		var en, cave, nofb int
+		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave, &nofb); err != nil {
 			return nil, err
 		}
-		e.Enabled, e.Caveman = en == 1, cave == 1
+		e.Enabled, e.Caveman, e.NoFallback = en == 1, cave == 1, nofb == 1
 		e.APIKey, _ = s.decrypt(enc)
 		out = append(out, e)
 	}
@@ -1179,8 +1190,8 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return err
 	}
 	if e.ID == 0 {
-		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman) VALUES(?,?,?,?,?,?,?)`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman))
+		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback) VALUES(?,?,?,?,?,?,?,?)`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback))
 		if err != nil {
 			return err
 		}
@@ -1188,11 +1199,11 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return nil
 	}
 	if e.APIKey == "" { // keep existing key on blank
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=? WHERE id=?`,
-			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=? WHERE id=?`,
+			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ID)
 	} else {
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=? WHERE id=?`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=? WHERE id=?`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ID)
 	}
 	return err
 }
