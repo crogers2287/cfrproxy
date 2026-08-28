@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
 )
@@ -192,5 +193,56 @@ func TestDefaultMaxTokens(t *testing.T) {
 	}
 	if doc["model"] != "m" || doc["stream"] != true || doc["messages"] == nil {
 		t.Errorf("lost fields: %v", doc)
+	}
+}
+
+// The upstream ceiling must default to "none": a fixed http.Client.Timeout
+// covers the whole streamed body, so it truncates long agent generations and
+// kills requests that are merely queued behind busy slots.
+func TestUpstreamTimeoutDefaultsToUnlimited(t *testing.T) {
+	s := newDiscoveryStore(t)
+	if got := upstreamTimeout(s); got != 0 {
+		t.Errorf("default upstream timeout = %v, want 0 (no ceiling)", got)
+	}
+	if p := New(s); p.Client.Timeout != 0 {
+		t.Errorf("client timeout = %v, want 0", p.Client.Timeout)
+	}
+	// an operator can still impose one
+	if err := s.SetSetting("upstream_timeout_minutes", "45"); err != nil {
+		t.Skipf("settings not writable in this harness: %v", err)
+	}
+	if got := upstreamTimeout(s); got != 45*time.Minute {
+		t.Errorf("configured timeout = %v, want 45m", got)
+	}
+	for _, bad := range []string{"", "0", "-3", "abc"} {
+		s.SetSetting("upstream_timeout_minutes", bad)
+		if got := upstreamTimeout(s); got != 0 {
+			t.Errorf("%q -> %v, want 0", bad, got)
+		}
+	}
+}
+
+// Connection-level failure must still be fast, or "no ceiling" would mean a
+// dead host hangs the caller.
+func TestProviderTransportFailsFastOnDeadHost(t *testing.T) {
+	tr := providerTransport()
+	if tr.TLSHandshakeTimeout == 0 || tr.TLSHandshakeTimeout > 30*time.Second {
+		t.Errorf("TLS handshake timeout = %v", tr.TLSHandshakeTimeout)
+	}
+	if tr.DialContext == nil {
+		t.Fatal("no DialContext set; a dead host would hang forever")
+	}
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Errorf("ResponseHeaderTimeout = %v, want 0: a queued request waits minutes for its first byte", tr.ResponseHeaderTimeout)
+	}
+	// 203.0.113.0/24 is TEST-NET-3, guaranteed unroutable
+	start := time.Now()
+	c := &http.Client{Transport: tr}
+	req, _ := http.NewRequest("GET", "http://203.0.113.1:9/x", nil)
+	if _, err := c.Do(req); err == nil {
+		t.Fatal("expected a dial failure to an unroutable address")
+	}
+	if el := time.Since(start); el > 40*time.Second {
+		t.Errorf("dead host took %v to fail; connect-level timeout not applied", el)
 	}
 }

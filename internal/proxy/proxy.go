@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"golang.org/x/crypto/bcrypt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -73,7 +74,7 @@ type Proxy struct {
 }
 
 func New(s *store.Store) *Proxy {
-	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: 10 * time.Minute, Transport: providerTransport()},
+	return &Proxy{Store: s, Hub: NewHub(), Client: &http.Client{Timeout: upstreamTimeout(s), Transport: providerTransport()},
 		models:  modelCache{entries: map[int64]modelCacheEntry{}},
 		vision:  visionMetaCache{entries: map[string]bool{}},
 		ctxmeta: contextMetaCache{entries: map[string]int{}}}
@@ -1578,6 +1579,34 @@ func httpErr(w http.ResponseWriter, dialect string, code int, msg string) {
 //
 // This does not change how many requests can be in flight — Go opens as many
 // connections as it needs either way — it changes how many are *reused*.
+// upstreamTimeout is the ceiling on a whole provider call, read once at
+// startup from the "upstream_timeout_minutes" setting. 0 (the default) means
+// no ceiling.
+//
+// http.Client.Timeout covers connect, headers AND the entire body read, so on
+// a streaming generation it is a guillotine on the answer itself. The old
+// fixed 10 minutes cut two legitimate cases: an agent turn that simply
+// generates for longer than that, and a request waiting its turn behind busy
+// slots — llama.cpp sends no response headers until a slot frees, so a deep
+// queue looks exactly like a hung upstream ("context deadline exceeded while
+// awaiting headers") right up until it would have succeeded.
+//
+// Nothing is left unguarded by dropping it: every provider call is made with
+// the inbound request's context (see send), so a client that gives up or
+// disconnects cancels the upstream call immediately, and the dial/TLS
+// timeouts below still fail fast on a host that is genuinely unreachable.
+// An operator who wants a hard ceiling back can set the minutes.
+func upstreamTimeout(s *store.Store) time.Duration {
+	if s == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s.Setting("upstream_timeout_minutes")))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Minute
+}
+
 func providerTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 512
@@ -1586,6 +1615,14 @@ func providerTransport() *http.Transport {
 	// MaxConnsPerHost stays 0 (unlimited): a cap here would queue requests
 	// behind each other, which is the exact failure this is meant to avoid.
 	t.MaxConnsPerHost = 0
+	// With no overall client deadline, these are what still catch an upstream
+	// that is down rather than slow: they bound getting *connected*, never
+	// how long a generation may run once it is.
+	t.DialContext = (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	t.TLSHandshakeTimeout = 15 * time.Second
+	// ResponseHeaderTimeout is deliberately left unset: a request queued
+	// behind busy slots legitimately waits minutes for its first byte, and
+	// any fixed value here would kill exactly the deep-queue case above.
 	return t
 }
 
