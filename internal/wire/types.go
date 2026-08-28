@@ -20,6 +20,11 @@ type Request struct {
 	// reasoning controls, preserved across dialects
 	ReasoningEffort string          // openai reasoning_effort
 	Thinking        json.RawMessage // anthropic thinking block, verbatim
+	// ToolChoice carries the client's tool_choice verbatim in its OpenAI
+	// spelling ("auto" | "none" | "required" | {"type":"function",...}).
+	// Only dialects whose live protocol is known to accept a tool choice may
+	// emit it; the rest leave it alone rather than inventing a field.
+	ToolChoice json.RawMessage
 }
 
 type Msg struct {

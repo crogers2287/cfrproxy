@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -302,6 +303,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	if stripped, ok := stripBodyParam(body, "caveman"); ok {
 		body = stripped
 	}
+	// Providers like DeepSeek 400 on empty system messages; several agent
+	// stacks emit them when no system prompt is configured.
+	body = sanitizeEmptySystem(body)
 	// Resolved per candidate (a failover may land on a provider with a
 	// different standing setting); kept here so the response path can see
 	// which mode actually served the request.
@@ -1448,11 +1452,32 @@ func (p *Proxy) otype(prov store.Provider, model string) string {
 // ---- helpers ----
 
 func snip(b []byte) string {
-	s := string(b)
+	s := string(redactImagePayloads(b))
 	if len(s) > snippetMax {
 		s = s[:snippetMax] + "…"
 	}
 	return s
+}
+
+// dataURLImageRe matches the base64 payload of an inline image data URL.
+var dataURLImageRe = regexp.MustCompile(`data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=_-]*`)
+
+// redactImagePayloads strips inline image bytes out of anything bound for a
+// trace snippet or a log line. A vision request is mostly base64: left alone
+// it would evict the actual conversation from the snippet window, bloat the
+// trace table, and park a copy of the user's screenshot — a construction plan,
+// a whiteboard, whatever it is — in a database that exists for debugging. The
+// marker keeps the trace honest about the image having been there.
+func redactImagePayloads(b []byte) []byte {
+	if !bytes.Contains(b, []byte(";base64,")) {
+		return b // fast path: no inline image anywhere in the body
+	}
+	return dataURLImageRe.ReplaceAllFunc(b, func(m []byte) []byte {
+		i := bytes.Index(m, []byte(";base64,"))
+		head := m[:i+len(";base64,")]
+		n := len(m) - len(head)
+		return append(append([]byte{}, head...), []byte(fmt.Sprintf("[%d base64 chars redacted]", n))...)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

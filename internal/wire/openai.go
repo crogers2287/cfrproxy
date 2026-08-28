@@ -42,6 +42,7 @@ type oaiReq struct {
 	Stream          bool            `json:"stream,omitempty"`
 	StreamOpts      map[string]any  `json:"stream_options,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 type oaiTool struct {
@@ -118,7 +119,7 @@ func ParseOpenAIRequest(body []byte) (*Request, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, fmt.Errorf("bad openai request: %w", err)
 	}
-	r := &Request{Model: in.Model, MaxTokens: in.MaxTokens, Temperature: in.Temperature, TopP: in.TopP, Stream: in.Stream, ReasoningEffort: in.ReasoningEffort}
+	r := &Request{Model: in.Model, MaxTokens: in.MaxTokens, Temperature: in.Temperature, TopP: in.TopP, Stream: in.Stream, ReasoningEffort: in.ReasoningEffort, ToolChoice: in.ToolChoice}
 	if len(in.Stop) > 0 {
 		var one string
 		if json.Unmarshal(in.Stop, &one) == nil {
