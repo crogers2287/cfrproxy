@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,5 +151,46 @@ func TestContextOverflowWithNothingToCompressStillFails(t *testing.T) {
 	}
 	if hits > 3 {
 		t.Errorf("rescue looped: %d upstream attempts", hits)
+	}
+}
+
+// A caller that omits max_tokens must get a ceiling, or llama.cpp's
+// n_predict = -1 parks a 262K slot for hours and everything queues behind it.
+func TestDefaultMaxTokens(t *testing.T) {
+	// omitted -> filled in
+	got := string(defaultMaxTokens([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`), 4096))
+	if !strings.Contains(got, `"max_tokens":4096`) {
+		t.Errorf("cap not applied: %s", got)
+	}
+	// an explicit limit always wins, even a large one
+	for _, body := range []string{
+		`{"model":"m","max_tokens":28000,"messages":[]}`,
+		`{"model":"m","max_completion_tokens":9000,"messages":[]}`,
+		`{"model":"m","max_output_tokens":123,"messages":[]}`,
+		`{"model":"m","options":{"num_predict":512},"messages":[]}`,
+	} {
+		if out := string(defaultMaxTokens([]byte(body), 4096)); strings.Contains(out, "4096") {
+			t.Errorf("overrode an explicit client limit: %s -> %s", body, out)
+		}
+	}
+	// disabled, malformed, and null cases
+	orig := `{"model":"m","messages":[]}`
+	if string(defaultMaxTokens([]byte(orig), 0)) != orig {
+		t.Error("cap applied while disabled")
+	}
+	if string(defaultMaxTokens([]byte("not json"), 4096)) != "not json" {
+		t.Error("mangled a non-JSON body")
+	}
+	if !strings.Contains(string(defaultMaxTokens([]byte(`{"max_tokens":null,"messages":[]}`), 777)), `"max_tokens":777`) {
+		t.Error("explicit null should be treated as absent")
+	}
+	// the body must stay valid and keep its other fields
+	out := defaultMaxTokens([]byte(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`), 2048)
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("produced invalid JSON: %v", err)
+	}
+	if doc["model"] != "m" || doc["stream"] != true || doc["messages"] == nil {
+		t.Errorf("lost fields: %v", doc)
 	}
 }

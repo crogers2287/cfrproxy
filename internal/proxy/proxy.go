@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -306,6 +307,13 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// Providers like DeepSeek 400 on empty system messages; several agent
 	// stacks emit them when no system prompt is configured.
 	body = sanitizeEmptySystem(body)
+	// A caller that omits max_tokens gets llama.cpp's n_predict = -1, i.e.
+	// "generate until the 262K context is full", which parks a serving slot
+	// for hours and queues everyone behind it. Supply a ceiling when the
+	// operator has configured one; an explicit client limit always wins.
+	if n, err := strconv.Atoi(strings.TrimSpace(p.Store.Setting("default_max_tokens"))); err == nil && n > 0 {
+		body = defaultMaxTokens(body, n)
+	}
 	// Resolved per candidate (a failover may land on a provider with a
 	// different standing setting); kept here so the response path can see
 	// which mode actually served the request.

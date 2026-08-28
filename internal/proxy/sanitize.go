@@ -106,3 +106,51 @@ func sanitizeEmptySystem(body []byte) []byte {
 	}
 	return out
 }
+
+// defaultMaxTokens fills in a generation cap when the caller omitted one.
+//
+// llama.cpp's n_predict defaults to -1 — generate until the context window is
+// full. On a 262K-context local model that is a request which owns a serving
+// slot for hours: one observed turn had grown 6.5K -> 13.3K tokens and was
+// still going, while every other request queued behind it. The harness that
+// sent it never asked for that; it just left max_tokens off, which on a cloud
+// API means "a sensible default" and here means "until the context ends".
+//
+// This is applied to the raw inbound body so the passthrough path (which
+// forwards the client's bytes verbatim) is covered too, not just translated
+// requests. A caller that specifies its own limit — even a large one — is left
+// alone; this only supplies what was missing. 0 disables it.
+func defaultMaxTokens(body []byte, n int) []byte {
+	if n <= 0 {
+		return body
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body
+	}
+	// any spelling the caller might have used, across dialects
+	for _, k := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		if raw, ok := doc[k]; ok && string(raw) != "null" {
+			return body
+		}
+	}
+	// ollama carries it as options.num_predict
+	if raw, ok := doc["options"]; ok {
+		var opts map[string]json.RawMessage
+		if json.Unmarshal(raw, &opts) == nil {
+			if v, ok := opts["num_predict"]; ok && string(v) != "null" {
+				return body
+			}
+		}
+	}
+	b, err := json.Marshal(n)
+	if err != nil {
+		return body
+	}
+	doc["max_tokens"] = b
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return body
+	}
+	return out
+}
