@@ -96,6 +96,17 @@ func contextExceeded(body []byte) bool {
 		"reduce the length",
 		"prompt is too long",
 		"exceeds the maximum",
+		// llama.cpp's own spelling shares not one word with the phrasings
+		// above: "request (395264 tokens) exceeds the available context size
+		// (262144 tokens), try increasing it", type exceed_context_size_error.
+		// Missing it meant every local-model overflow was filed as a plain
+		// malformed 400 — no failover, no recovery, and a harness turn killed
+		// outright.
+		"exceed_context_size_error",
+		"exceeds the available context size",
+		"exceeds the context size",
+		"try increasing the context size",
+		"context shift is disabled",
 	} {
 		if strings.Contains(s, m) {
 			return true

@@ -555,6 +555,39 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			tr.CMBefore += cm.Before
 			tr.CMAfter += cm.After
 		}
+		// Enforce the model's usable context BEFORE the upstream has to reject
+		// it. A harness cannot always avoid this on its own: Claude Code sizes
+		// its window from the context we advertise and compacts against it,
+		// but a single turn can add hundreds of thousands of tokens at once —
+		// four MCP calls that each return the whole network — and land past
+		// the limit with no turn boundary in between at which to compact. The
+		// upstream's only answer is a 400 that kills the turn, so squeeze the
+		// bulky tool results here instead. Only fires when the request already
+		// does not fit, so a conversation that fits is byte-identical to
+		// before and the prefix cache is untouched.
+		if !cavemanApplied {
+			if ctxLimit := p.ContextLengthFor(c.prov, c.model); ctxLimit > 0 {
+				// Reserve room for the answer and for the estimate being low.
+				// estTokens is chars/4; real Claude Code traffic measures ~3.9
+				// chars/token and dense JSON tool results closer to 2.9, so the
+				// estimate reads under. The upstream needs prompt + completion
+				// to fit, not just the prompt.
+				reserve := creq.MaxTokens
+				if reserve <= 0 || reserve > ctxLimit/8 {
+					reserve = ctxLimit / 8
+				}
+				if est := estTokens(&creq); est > ctxLimit-reserve {
+					if cm := CavemanCompress(&creq, true); cm.Msgs > 0 {
+						cavemanApplied = true
+						cmEff = CMIn
+						tr.CMMsgs += cm.Msgs
+						tr.CMBefore += cm.Before
+						tr.CMAfter += cm.After
+						softErrs = append(softErrs, fmt.Sprintf("%s: request ~%d tok against a %d-tok window (reserving %d) — compressed %d tool result(s) to fit", c.prov.Name, est, ctxLimit, reserve, cm.Msgs))
+					}
+				}
+			}
+		}
 		// Record the resolved mode even when nothing compressed, so the trace
 		// distinguishes "never asked" from "asked and declined/nothing matched".
 		if cmSet || cmEff != CMOff {
@@ -616,6 +649,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// parameter buys one extra attempt, so the recovery never eats the
 		// transient budget.
 		maxAttempts, droppedParam, paramRetry := 2, false, false
+		cavemanRescued := false
 		for attempt := 0; attempt < maxAttempts && resp == nil; attempt++ {
 			if attempt > 0 && !paramRetry {
 				time.Sleep(1200 * time.Millisecond)
@@ -666,6 +700,31 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 				// context overflow: a larger-window model down the chain can
 				// still serve this, so don't hard-fail the harness either
 				if contextExceeded(eb) {
+					// ...but first try to make it fit. A harness turn that
+					// overflows is usually one enormous tool result away from
+					// fitting — an MCP call that returned every client on the
+					// network, a whole log, a directory dump. Compressing
+					// those is exactly what caveman is for, and it rescues the
+					// turn on THIS model, which matters because the operator
+					// may have pinned the provider (no_fallback) precisely so
+					// their local model keeps the conversation. Costs nothing
+					// when nothing bulky is there to compress: cm.Msgs == 0
+					// falls straight through to the failover path below.
+					if !cavemanRescued {
+						if cm := CavemanCompress(&creq, true); cm.Msgs > 0 {
+							if nb, berr := buildOutbound(otype, &creq); berr == nil {
+								outBody = transform.Apply(nb, reqRules)
+								cavemanRescued, paramRetry = true, true
+								maxAttempts++
+								tr.CMMsgs += cm.Msgs
+								tr.CMBefore += cm.Before
+								tr.CMAfter += cm.After
+								tr.CMMode = string(CMIn)
+								softErrs = append(softErrs, fmt.Sprintf("%s: context overflow — compressed %d tool result(s) (~%d→~%d bytes) and retried", c.prov.Name, cm.Msgs, cm.Before, cm.After))
+								continue
+							}
+						}
+					}
 					lastErr = fmt.Sprintf("%s: context overflow (HTTP %d) %s", c.prov.Name, r2.StatusCode, snip(eb))
 					if primaryErr == "" && c.prov.Name == prov.Name {
 						primaryErr = lastErr
