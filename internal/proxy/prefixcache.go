@@ -29,9 +29,9 @@ import (
 // across every turn of a session — into a content-addressed manifest. The
 // warmup daemon replays those manifests to keep the prefix resident.
 //
-// Only prefixes served by a llama.cpp-family upstream are recorded (detected by
-// the presence of the `timings.cache_reason` field), because those are the only
-// ones whose KV cache lives on hardware we control.
+// Only prefixes served by a local upstream are recorded. llama.cpp identifies
+// itself through timings; fred is also local when its backend is vLLM, whose
+// OpenAI responses do not expose cache timings.
 
 const (
 	// Below this, warming costs more than it saves: the KVarN cache retains an
@@ -169,8 +169,13 @@ func recordPrefix(snap *prefixSnapshot, tr *store.Trace) {
 	if snap == nil || tr.Status != 200 {
 		return
 	}
-	// Only llama.cpp-family upstreams — the ones whose KV cache is ours.
-	if tr.CacheReason == "" && tr.CacheSource == "" {
+	// Only local upstreams — the ones whose KV cache is ours. vLLM omits the
+	// llama.cpp timings fields, so the explicitly local fred provider is enough
+	// evidence; remote providers still need timings and remain excluded.
+	// Stock llama.cpp exposes prompt timing and cached-token counts but not the
+	// KVarN-specific cache_source/cache_reason fields. PromptMS is still a
+	// reliable local-server signature (remote providers do not emit it).
+	if snap.provider != "fred" && tr.CacheReason == "" && tr.CacheSource == "" && tr.PromptMS == 0 {
 		return
 	}
 	// The warmup daemon replays these manifests; recording its own traffic
@@ -194,7 +199,7 @@ func recordPrefix(snap *prefixSnapshot, tr *store.Trace) {
 	toolsSHA := sha256hex(toolsJSON)
 	fp := sha256hex([]byte(snap.provider + "\x00" + snap.model + "\x00" + sysSHA + "\x00" + toolsSHA))
 
-	client := tr.Client
+	client := harnessClient(tr.Client, snap.system)
 	if client == "" {
 		client = "unknown"
 	}
@@ -231,6 +236,22 @@ func recordPrefix(snap *prefixSnapshot, tr *store.Trace) {
 	tmp := path + ".tmp"
 	if os.WriteFile(tmp, b, 0o600) == nil {
 		os.Rename(tmp, path)
+	}
+}
+
+func harnessClient(client, system string) string {
+	head := system
+	if len(head) > 8192 {
+		head = head[:8192]
+	}
+	head = strings.ToLower(head)
+	switch {
+	case strings.Contains(head, "oh my pi coding harness"):
+		return "omp"
+	case strings.Contains(head, "you are codex"):
+		return "codex"
+	default:
+		return client
 	}
 }
 

@@ -111,6 +111,35 @@ func TestPrefixSkipsNonLlamaCppAndTinyPrompts(t *testing.T) {
 	}
 }
 
+func TestPrefixRecordsStockLlamaCppTiming(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CFRPROXY_PREFIX_CACHE", root)
+	recordPrefix(&prefixSnapshot{provider: "fred", model: "qwen", system: bigSystem("s")},
+		&store.Trace{Status: 200, Client: "hermes", PromptTokens: 22000, PromptMS: 33000})
+	if got := listManifests(t, root); len(got) != 1 {
+		t.Fatalf("stock llama.cpp timing should identify a warmable prefix: %v", got)
+	}
+}
+
+func TestPrefixRecordsLocalFredVLLMWithoutLlamaTimings(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CFRPROXY_PREFIX_CACHE", root)
+	recordPrefix(&prefixSnapshot{provider: "fred", model: "27b", system: bigSystem("vllm")},
+		&store.Trace{Status: 200, Client: "claude-code", PromptTokens: 22000})
+	if got := listManifests(t, root); len(got) != 1 {
+		t.Fatalf("local fred vLLM prefix was not recorded: %v", got)
+	}
+}
+
+func TestHarnessClientUsesStablePromptIdentity(t *testing.T) {
+	if got := harnessClient("Bun", "<system-conventions>\nHelpful assistant for the Oh My Pi coding harness."); got != "omp" {
+		t.Fatalf("OMP prompt labeled %q", got)
+	}
+	if got := harnessClient("OpenAI/Python", "You are Codex, a coding agent."); got != "codex" {
+		t.Fatalf("Codex prompt labeled %q", got)
+	}
+}
+
 // Namespace layout is part of the contract with the warmup daemon.
 func TestPrefixNamespaceLayout(t *testing.T) {
 	root := t.TempDir()
