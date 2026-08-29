@@ -140,3 +140,94 @@ func TestSaveProviderTrimsName(t *testing.T) {
 		t.Errorf("stored name not trimmed: %+v", got)
 	}
 }
+
+func TestIntegritySettingsRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	p := Provider{
+		Name: "observed", Type: "openai", BaseURL: "https://example.invalid/v1", Enabled: true,
+		IntegrityMode: "OBSERVE", IntegrityModels: "code-*,!*-vision", IntegrityProfile: "CODE",
+	}
+	if err := s.SaveProvider(&p); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.ProviderByName(p.Name)
+	if !ok || got.IntegrityMode != "observe" || got.IntegrityModels != p.IntegrityModels || got.IntegrityProfile != "code" {
+		t.Fatalf("provider integrity settings did not round-trip: %+v", got)
+	}
+
+	ep := Endpoint{
+		Name: "team", APIKey: "share-secret", Enabled: true,
+		IntegrityMode: "observe", IntegrityModels: "observed/code-*", IntegrityProfile: "multilingual",
+	}
+	if err := s.SaveEndpoint(&ep); err != nil {
+		t.Fatal(err)
+	}
+	eps, err := s.Endpoints()
+	if err != nil || len(eps) != 1 {
+		t.Fatalf("endpoints: %v %+v", err, eps)
+	}
+	if got := eps[0]; got.IntegrityMode != "observe" || got.IntegrityModels != ep.IntegrityModels || got.IntegrityProfile != "multilingual" {
+		t.Fatalf("endpoint integrity settings did not round-trip: %+v", got)
+	}
+	badProvider := Provider{Name: "bad", Type: "openai", BaseURL: "https://example.invalid", IntegrityMode: "enforce"}
+	if err := s.SaveProvider(&badProvider); err == nil {
+		t.Fatal("reserved enforce mode was accepted")
+	}
+	badEndpoint := Endpoint{Name: "bad", IntegrityMode: "enforce"}
+	if err := s.SaveEndpoint(&badEndpoint); err == nil {
+		t.Fatal("reserved endpoint enforce mode was accepted")
+	}
+}
+
+func TestGuardTraceRoundTripLabelAndStats(t *testing.T) {
+	s := newTestStore(t)
+	trace := Trace{
+		TS: 1, Provider: "observed", Model: "code-model", Status: 200,
+		GuardMode: "observe", GuardProfile: "code", GuardState: "corrupt",
+		GuardScore: 0.82, GuardMaxScore: 0.91, GuardReason: "repetition loop",
+		GuardOnset: 750, GuardChars: 1500, GuardCheckpoints: 4,
+		GuardData: `{"version":1,"samples":[]}`, GuardExcerpt: "loop loop loop",
+	}
+	s.AddTrace(&trace)
+	if trace.ID == 0 {
+		t.Fatal("trace was not inserted")
+	}
+	traces, err := s.Traces(0, 10)
+	if err != nil || len(traces) != 1 {
+		t.Fatalf("traces: %v %+v", err, traces)
+	}
+	got := traces[0]
+	if got.GuardState != "corrupt" || got.GuardMaxScore != trace.GuardMaxScore || got.GuardData != trace.GuardData || got.GuardExcerpt != trace.GuardExcerpt {
+		t.Fatalf("guard observation did not round-trip: %+v", got)
+	}
+	if err := s.SetGuardLabel(trace.ID, "clean"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGuardLabel(trace.ID, "not-a-label"); err == nil {
+		t.Fatal("invalid label was accepted")
+	}
+	cleanTrace := Trace{TS: 2, Provider: "observed", Model: "code-model", Status: 200,
+		GuardMode: "observe", GuardProfile: "code", GuardState: "clean", GuardData: `{"version":1}`}
+	s.AddTrace(&cleanTrace)
+	if err := s.SetGuardLabel(cleanTrace.ID, "corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	traces, _ = s.Traces(0, 10)
+	if traces[0].GuardLabel != "corrupt" || traces[1].GuardLabel != "clean" {
+		t.Fatalf("labels not stored: %+v", traces)
+	}
+	stats, err := s.Stats()
+	if err != nil || len(stats) != 1 {
+		t.Fatalf("stats: %v %+v", err, stats)
+	}
+	if stats[0].GuardObserved != 2 || stats[0].GuardCorrupt != 1 || stats[0].GuardReviewed != 2 || stats[0].GuardFalseAlarms != 1 || stats[0].GuardMisses != 1 {
+		t.Fatalf("guard stats wrong: %+v", stats[0])
+	}
+	export, err := s.IntegrityObservations(0)
+	if err != nil || len(export) != 2 {
+		t.Fatalf("integrity export: %v %+v", err, export)
+	}
+	if export[0].GuardData != trace.GuardData || export[0].GuardLabel != "clean" || export[0].ReqSnip != "" || export[0].RespSnip != "" {
+		t.Fatalf("integrity export omitted or leaked fields: %+v", export[0])
+	}
+}

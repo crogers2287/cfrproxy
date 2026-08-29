@@ -28,11 +28,20 @@ Their tool's model picker (`GET /e/<name>/v1/models`) shows only what you allowe
 - **Model policy** — a request for a model outside the allow-list → 403. A forced model overrides whatever the caller sends.
 - Everything else still applies: failover, tracing (their calls show in your Live Traces), token accounting, and — if the forced model is `auto`/`auto-plan` — your auto-router.
 
+## Output integrity policy
+
+A Share card can inherit the actual serving provider's output-integrity policy,
+force observation off, or force observation on for traffic through that URL.
+When forced on, optional model globs and a profile can narrow the canary. This
+is observation only; it records trace evidence and never blocks or replaces a
+response. See [Output integrity observer](integrity-observer.md).
+
 ## API
 
 ```
 GET    /admin/api/endpoints
-POST   /admin/api/endpoints        {name, models?, force_model?, note?, enabled}
+POST   /admin/api/endpoints        {name, models?, force_model?, note?, enabled,
+                                    integrity_mode?, integrity_models?, integrity_profile?}
 PUT    /admin/api/endpoints/{id}
 DELETE /admin/api/endpoints/{id}
 ```

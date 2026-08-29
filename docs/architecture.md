@@ -29,6 +29,7 @@ inbound request (any dialect)
               │   (or copy bytes untouched on the raw fast path)
               ├─ apply response-phase transforms
               ├─ capture usage (tokens, cache-read)
+              ├─ observe visible assistant text when the resolved policy enables it
               └─ record a trace → SQLite + live SSE
 ```
 
@@ -52,6 +53,13 @@ Streaming is re-framed *between* dialects: an OpenAI SSE stream from the provide
 | `internal/wire` | Normalized schema + per-dialect parse/build + stream re-framing |
 | `internal/transform` | Declarative JSON rewrite rules (set/default/rename/delete) |
 | `internal/proxy` | Data plane: routing, candidate chain, auto-router, compression, tracing |
+| `internal/integrity` | Bounded, observation-only streaming corruption features and scoring |
 | `internal/api` | Management REST + SSE + embedded WebUI + OAuth account proxy |
 | `internal/tui` | Bubble Tea management console |
 | `main.go`, `launch.go`, `mcp.go` | CLI, harness launcher, MCP server |
+
+The integrity observer runs after the successful provider/model is known. On
+the raw fast path, the original bytes are delivered before each frame's visible
+text is scored. On translated streams, a delta is made available to the writer
+before it is scored. Reasoning and tool arguments are not included. See
+[Output integrity observer](integrity-observer.md).

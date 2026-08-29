@@ -127,6 +127,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/stats", a.hStats)
 	inner.HandleFunc("GET /admin/api/traces", a.hTraces)
+	inner.HandleFunc("PUT /admin/api/traces/{id}/guard-label", a.hGuardLabel)
+	inner.HandleFunc("GET /admin/api/integrity/observations.jsonl", a.hIntegrityExport)
 	inner.HandleFunc("GET /admin/api/logs/stream", a.hLogStream)
 
 	mux.Handle("/admin/", a.basicAuth(inner))
@@ -719,6 +721,43 @@ func (a *API) hTraces(w http.ResponseWriter, r *http.Request) {
 		ts = []store.Trace{}
 	}
 	writeJSON(w, 200, ts)
+}
+
+func (a *API) hGuardLabel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpErr(w, 400, "invalid trace id")
+		return
+	}
+	var body struct {
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if err := a.Store.SetGuardLabel(id, body.Label); err != nil {
+		httpErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "label": strings.ToLower(strings.TrimSpace(body.Label))})
+}
+
+func (a *API) hIntegrityExport(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	observations, err := a.Store.IntegrityObservations(limit)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", `attachment; filename="cfrproxy-integrity-observations.jsonl"`)
+	enc := json.NewEncoder(w)
+	for _, observation := range observations {
+		if err := enc.Encode(observation); err != nil {
+			return
+		}
+	}
 }
 
 func (a *API) hLogStream(w http.ResponseWriter, r *http.Request) {
