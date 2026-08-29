@@ -124,6 +124,8 @@ Usage:
                    [--doc-file F.md] [--inject-docs] [--models-filter 'claude-*,!claude-*-thinking']
                    [--context-length 262144]   advertised context window; 0 = auto-detect
                    [--headers '{"User-Agent":"...","Authorization":"@file:/path"}']
+                   [--integrity-mode off|observe] [--integrity-models 'model-*,!*-vision']
+                   [--integrity-profile general|code|multilingual]
                    extra outbound headers; @file: reads the value live each request
   cfrproxy provider list | rm --name N | edit --name N [flags]
                    on edit, passing an optional flag empty clears it:
@@ -219,7 +221,7 @@ func cmdTUI(args []string) {
 
 func providerFlags(fs *flag.FlagSet) map[string]*string {
 	m := map[string]*string{}
-	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned", "models-filter", "context-length", "headers"} {
+	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned", "models-filter", "context-length", "headers", "integrity-mode", "integrity-models", "integrity-profile"} {
 		m[f] = fs.String(f, "", "")
 	}
 	return m
@@ -302,6 +304,9 @@ func cmdProvider(args []string) {
 		applyOptional("pinned", &p.PinnedModels)
 		applyOptional("models-filter", &p.ModelsFilter)
 		applyOptional("headers", &p.Headers)
+		applyOptional("integrity-mode", &p.IntegrityMode)
+		applyOptional("integrity-models", &p.IntegrityModels)
+		applyOptional("integrity-profile", &p.IntegrityProfile)
 		if *f["context-length"] != "" || passed["context-length"] {
 			n, err := strconv.Atoi(strings.TrimSpace(*f["context-length"]))
 			if err != nil || n < 0 {

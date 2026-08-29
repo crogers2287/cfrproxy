@@ -613,8 +613,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	}
 
 	uotype := p.otype(used.prov, used.model)
+	observation := p.newOutputObservation(used.prov, used.model, ep, tr)
 	if passth {
-		p.copyRaw(w, resp, req.Stream, uotype, tr)
+		p.copyRaw(w, resp, req.Stream, uotype, tr, observation)
 		return
 	}
 
@@ -624,20 +625,50 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// capture usage from the final delta as it flows through
 		var upt, uct, ucached int
 		cap := make(chan wire.Delta, 16)
+		stopCapture := make(chan struct{})
+		captureDone := make(chan struct{})
 		go func(in <-chan wire.Delta) {
-			if alert != "" {
-				cap <- wire.Delta{Text: alert}
-			}
-			for d := range in {
-				if d.Finish != "" {
-					upt, uct, ucached = d.PromptTokens, d.CompletionTokens, d.CachedTokens
+			defer close(captureDone)
+			defer close(cap)
+			send := func(d wire.Delta) bool {
+				select {
+				case cap <- d:
+					return true
+				case <-stopCapture:
+					return false
 				}
-				cap <- d
 			}
-			close(cap)
+			if alert != "" {
+				if !send(wire.Delta{Text: alert}) {
+					return
+				}
+			}
+			for {
+				select {
+				case <-stopCapture:
+					return
+				case d, ok := <-in:
+					if !ok {
+						return
+					}
+					if d.Finish != "" {
+						upt, uct, ucached = d.PromptTokens, d.CompletionTokens, d.CachedTokens
+					}
+					if !send(d) {
+						return
+					}
+					// Delivery owns the critical path. Observe only after the delta is
+					// available to the writer, so scoring cannot hold back a token.
+					observation.Feed(d.Text)
+				}
+			}
 		}(deltas)
-		if err := writeStream(inbound, w, req.Model, cap); err != nil {
-			tr.Status, tr.Err = 200, "stream aborted: "+err.Error()
+		writeErr := writeStream(inbound, w, req.Model, cap)
+		close(stopCapture)
+		<-captureDone
+		observation.Finish(tr)
+		if writeErr != nil {
+			tr.Status, tr.Err = 200, "stream aborted: "+writeErr.Error()
 			return
 		}
 		tr.Status = 200
@@ -667,6 +698,8 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	tr.RespSnip = snip(final)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(final)
+	observation.Feed(strings.TrimPrefix(norm.Content, alert))
+	observation.Finish(tr)
 }
 
 type candidate struct {
@@ -766,7 +799,8 @@ func rawWithModel(body []byte, model string) []byte {
 // copyRaw streams the provider's bytes through untouched (passthrough mode),
 // scanning them for usage so token/cache stats are captured without altering
 // the response.
-func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool, ptype string, tr *store.Trace) {
+func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool, ptype string, tr *store.Trace, observation *outputObservation) {
+	defer observation.Finish(tr)
 	for _, h := range []string{"Content-Type", "Cache-Control"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
@@ -786,6 +820,7 @@ func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool,
 			if fl != nil {
 				fl.Flush()
 			}
+			observation.Feed(wire.StreamVisibleText(ptype, chunk))
 			// anthropic splits usage across message_start (input+cache) and
 			// message_delta (output); keep the max so neither is clobbered.
 			if pt, ct, cached, ok := usageFromStreamLine(ptype, chunk); ok {
@@ -802,6 +837,9 @@ func (p *Proxy) copyRaw(w http.ResponseWriter, resp *http.Response, stream bool,
 		tr.PromptTokens, tr.CompletionTokens, tr.CachedTokens = pt, ct, cached
 	}
 	w.Write(rb)
+	if norm, err := parseOutboundResponse(ptype, rb); err == nil {
+		observation.Feed(norm.Content)
+	}
 }
 
 // scanLinesKeepEnds splits on \n while preserving the newline, so passthrough

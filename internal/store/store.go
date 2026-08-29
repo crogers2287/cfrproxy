@@ -50,6 +50,13 @@ type Provider struct {
 	// a proxy routes harness traffic while sending the exact Authorization
 	// and User-Agent a native CLI sends.
 	Headers string `json:"headers"`
+	// IntegrityMode is "off" or "observe". Observe mode computes and records
+	// output-corruption signals but never gates, alters, aborts, or retries a
+	// response. "enforce" is deliberately reserved for the later calibrated
+	// rollout and is not accepted yet.
+	IntegrityMode    string `json:"integrity_mode"`
+	IntegrityModels  string `json:"integrity_models"`  // comma globs; blank = all
+	IntegrityProfile string `json:"integrity_profile"` // general | code | multilingual
 }
 
 type Transform struct {
@@ -63,19 +70,19 @@ type Transform struct {
 }
 
 type Trace struct {
-	ID        int64  `json:"id"`
-	TS        int64  `json:"ts"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	Inbound   string `json:"inbound"`
-	Stream    bool   `json:"stream"`
-	Status    int    `json:"status"`
-	LatencyMS int64  `json:"latency_ms"`
-	Err       string `json:"err"`
-	Note      string `json:"note"`
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	CachedTokens     int `json:"cached_tokens"`
+	ID               int64  `json:"id"`
+	TS               int64  `json:"ts"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	Inbound          string `json:"inbound"`
+	Stream           bool   `json:"stream"`
+	Status           int    `json:"status"`
+	LatencyMS        int64  `json:"latency_ms"`
+	Err              string `json:"err"`
+	Note             string `json:"note"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	CachedTokens     int    `json:"cached_tokens"`
 	// TTFBMS is time-to-first-byte from the upstream: prompt processing plus
 	// queue/load time, before any token is produced. PostMS is what cfrproxy
 	// itself spent after the upstream finished (dialect translation, transform
@@ -84,9 +91,25 @@ type Trace struct {
 	TTFBMS int64 `json:"ttfb_ms"`
 	// microseconds, not milliseconds: cfrproxy's trailing work is routinely
 	// sub-millisecond, and truncating it to "0ms" told the operator nothing.
-	PostUS int64 `json:"post_us"`
-	ReqSnip   string `json:"req_snippet"`
-	RespSnip  string `json:"resp_snippet"`
+	PostUS   int64  `json:"post_us"`
+	ReqSnip  string `json:"req_snippet"`
+	RespSnip string `json:"resp_snippet"`
+	// Integrity observation is structured separately from Err/Status because
+	// observe mode must never turn a successful response into an operational
+	// failure. GuardData contains bounded checkpoint feature vectors for later
+	// calibration; GuardExcerpt is captured only after a suspect/corrupt score.
+	GuardMode        string  `json:"guard_mode"`
+	GuardProfile     string  `json:"guard_profile"`
+	GuardState       string  `json:"guard_state"`
+	GuardScore       float64 `json:"guard_score"`
+	GuardMaxScore    float64 `json:"guard_max_score"`
+	GuardReason      string  `json:"guard_reason"`
+	GuardOnset       int     `json:"guard_onset"`
+	GuardChars       int     `json:"guard_chars"`
+	GuardCheckpoints int     `json:"guard_checkpoints"`
+	GuardData        string  `json:"guard_data,omitempty"`
+	GuardExcerpt     string  `json:"guard_excerpt,omitempty"`
+	GuardLabel       string  `json:"guard_label,omitempty"` // clean | corrupt | uncertain
 }
 
 // GenMS is the time the model spent actually producing tokens: total latency
@@ -189,7 +212,10 @@ CREATE TABLE IF NOT EXISTS providers (
   pinned_models TEXT NOT NULL DEFAULT '',
   models_filter TEXT NOT NULL DEFAULT '',
   context_length INTEGER NOT NULL DEFAULT 0,
-  headers TEXT NOT NULL DEFAULT ''
+  headers TEXT NOT NULL DEFAULT '',
+  integrity_mode TEXT NOT NULL DEFAULT 'off',
+  integrity_models TEXT NOT NULL DEFAULT '',
+  integrity_profile TEXT NOT NULL DEFAULT 'general'
 );
 CREATE TABLE IF NOT EXISTS transforms (
   id INTEGER PRIMARY KEY,
@@ -217,7 +243,19 @@ CREATE TABLE IF NOT EXISTS traces (
   ttfb_ms INTEGER NOT NULL DEFAULT 0,
   post_us INTEGER NOT NULL DEFAULT 0,
   req_snippet TEXT NOT NULL DEFAULT '',
-  resp_snippet TEXT NOT NULL DEFAULT ''
+  resp_snippet TEXT NOT NULL DEFAULT '',
+  guard_mode TEXT NOT NULL DEFAULT '',
+  guard_profile TEXT NOT NULL DEFAULT '',
+  guard_state TEXT NOT NULL DEFAULT '',
+  guard_score REAL NOT NULL DEFAULT 0,
+  guard_max_score REAL NOT NULL DEFAULT 0,
+  guard_reason TEXT NOT NULL DEFAULT '',
+  guard_onset INTEGER NOT NULL DEFAULT 0,
+  guard_chars INTEGER NOT NULL DEFAULT 0,
+  guard_checkpoints INTEGER NOT NULL DEFAULT 0,
+  guard_data TEXT NOT NULL DEFAULT '',
+  guard_excerpt TEXT NOT NULL DEFAULT '',
+  guard_label TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS traces_ts ON traces(ts);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -236,7 +274,10 @@ CREATE TABLE IF NOT EXISTS endpoints (
   models TEXT NOT NULL DEFAULT '',
   force_model TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
-  note TEXT NOT NULL DEFAULT ''
+  note TEXT NOT NULL DEFAULT '',
+  integrity_mode TEXT NOT NULL DEFAULT 'inherit',
+  integrity_models TEXT NOT NULL DEFAULT '',
+  integrity_profile TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS roundtable_logs (
   id INTEGER PRIMARY KEY,
@@ -270,12 +311,30 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN models_filter TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN context_length INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN headers TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN integrity_mode TEXT NOT NULL DEFAULT 'off'`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN integrity_models TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN integrity_profile TEXT NOT NULL DEFAULT 'general'`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN ttfb_ms INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE traces ADD COLUMN post_us INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_mode TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_profile TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_state TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_score REAL NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_max_score REAL NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_reason TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_onset INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_chars INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_checkpoints INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_data TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_excerpt TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE traces ADD COLUMN guard_label TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN integrity_mode TEXT NOT NULL DEFAULT 'inherit'`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN integrity_models TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN integrity_profile TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -342,7 +401,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers,integrity_mode,integrity_models,integrity_profile FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -352,7 +411,7 @@ func (s *Store) reload() error {
 		var p Provider
 		var enc []byte
 		var enabled, inject int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &p.ModelsFilter, &p.ContextLength, &p.Headers, &p.IntegrityMode, &p.IntegrityModels, &p.IntegrityProfile); err != nil {
 			return err
 		}
 		p.Enabled, p.InjectDocs = enabled == 1, inject == 1
@@ -480,6 +539,14 @@ func (s *Store) SaveProvider(p *Provider) error {
 	// UI but breaks every scoped mount built from it (/p/<name>/v1).
 	p.Name = strings.TrimSpace(p.Name)
 	p.BaseURL = strings.TrimSpace(p.BaseURL)
+	if !validProviderIntegrityMode(p.IntegrityMode) {
+		return errors.New("integrity_mode must be off or observe")
+	}
+	if !validIntegrityProfile(p.IntegrityProfile) {
+		return errors.New("integrity_profile must be general, code, or multilingual")
+	}
+	p.IntegrityMode = normalizeProviderIntegrityMode(p.IntegrityMode)
+	p.IntegrityProfile = normalizeIntegrityProfile(p.IntegrityProfile)
 	if p.Name == "" || p.BaseURL == "" {
 		return errors.New("name and base_url are required")
 	}
@@ -491,8 +558,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,models_filter,context_length,headers,integrity_mode,integrity_models,integrity_profile) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.IntegrityMode, p.IntegrityModels, p.IntegrityProfile)
 		if err != nil {
 			return err
 		}
@@ -500,11 +567,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=?,integrity_mode=?,integrity_models=?,integrity_profile=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.IntegrityMode, p.IntegrityModels, p.IntegrityProfile, p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,models_filter=?,context_length=?,headers=?,integrity_mode=?,integrity_models=?,integrity_profile=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, p.ModelsFilter, p.ContextLength, p.Headers, p.IntegrityMode, p.IntegrityModels, p.IntegrityProfile, p.ID)
 		}
 		if err != nil {
 			return err
@@ -596,20 +663,25 @@ func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
 // ---- traces ----
 
 func (s *Store) AddTrace(t *Trace) {
-	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip)
+	res, err := s.db.Exec(`INSERT INTO traces(ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet,guard_mode,guard_profile,guard_state,guard_score,guard_max_score,guard_reason,guard_onset,guard_chars,guard_checkpoints,guard_data,guard_excerpt,guard_label) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.TS, t.Provider, t.Model, t.Inbound, b2i(t.Stream), t.Status, t.LatencyMS, t.Err, t.Note, t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.TTFBMS, t.PostUS, t.ReqSnip, t.RespSnip,
+		t.GuardMode, t.GuardProfile, t.GuardState, t.GuardScore, t.GuardMaxScore, t.GuardReason, t.GuardOnset, t.GuardChars, t.GuardCheckpoints, t.GuardData, t.GuardExcerpt, t.GuardLabel)
 	if err == nil {
 		t.ID, _ = res.LastInsertId()
 	}
-	// retention: keep newest 5000
-	s.db.Exec(`DELETE FROM traces WHERE id <= (SELECT MAX(id) FROM traces) - 5000`)
+	// Retention keeps the newest 5000 traces plus up to 5000 older observed
+	// traces. A narrow share-endpoint canary would otherwise be aged out by
+	// unrelated traffic before it accumulated enough calibration samples.
+	s.db.Exec(`DELETE FROM traces
+		WHERE id <= (SELECT MAX(id) FROM traces) - 5000
+		AND id NOT IN (SELECT id FROM traces WHERE guard_mode='observe' ORDER BY id DESC LIMIT 5000)`)
 }
 
 func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,err,note,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,req_snippet,resp_snippet,guard_mode,guard_profile,guard_state,guard_score,guard_max_score,guard_reason,guard_onset,guard_chars,guard_checkpoints,guard_data,guard_excerpt,guard_label FROM traces WHERE id > ? ORDER BY id DESC LIMIT ?`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -618,13 +690,61 @@ func (s *Store) Traces(afterID int64, limit int) ([]Trace, error) {
 	for rows.Next() {
 		var t Trace
 		var stream int
-		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.ReqSnip, &t.RespSnip); err != nil {
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS, &t.Err, &t.Note, &t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS, &t.ReqSnip, &t.RespSnip,
+			&t.GuardMode, &t.GuardProfile, &t.GuardState, &t.GuardScore, &t.GuardMaxScore, &t.GuardReason, &t.GuardOnset, &t.GuardChars, &t.GuardCheckpoints, &t.GuardData, &t.GuardExcerpt, &t.GuardLabel); err != nil {
 			return nil, err
 		}
 		t.Stream = stream == 1
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// IntegrityObservations returns the retained observation set in chronological
+// order for offline calibration. The admin export intentionally reuses Trace:
+// request/response snippets are omitted by the SELECT, while the bounded flag
+// excerpt and feature payload remain available for review and training.
+func (s *Store) IntegrityObservations(limit int) ([]Trace, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 5000
+	}
+	rows, err := s.db.Query(`SELECT id,ts,provider,model,inbound,stream,status,latency_ms,prompt_tokens,completion_tokens,cached_tokens,ttfb_ms,post_us,guard_mode,guard_profile,guard_state,guard_score,guard_max_score,guard_reason,guard_onset,guard_chars,guard_checkpoints,guard_data,guard_excerpt,guard_label FROM traces WHERE guard_mode='observe' ORDER BY id ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Trace
+	for rows.Next() {
+		var t Trace
+		var stream int
+		if err := rows.Scan(&t.ID, &t.TS, &t.Provider, &t.Model, &t.Inbound, &stream, &t.Status, &t.LatencyMS,
+			&t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.TTFBMS, &t.PostUS,
+			&t.GuardMode, &t.GuardProfile, &t.GuardState, &t.GuardScore, &t.GuardMaxScore, &t.GuardReason,
+			&t.GuardOnset, &t.GuardChars, &t.GuardCheckpoints, &t.GuardData, &t.GuardExcerpt, &t.GuardLabel); err != nil {
+			return nil, err
+		}
+		t.Stream = stream == 1
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// SetGuardLabel records an operator review without mutating the immutable
+// observation itself. Labels become the ground truth used by the later
+// calibration/enforcement phase.
+func (s *Store) SetGuardLabel(id int64, label string) error {
+	label = strings.ToLower(strings.TrimSpace(label))
+	if label != "" && label != "clean" && label != "corrupt" && label != "uncertain" {
+		return errors.New("guard label must be clean, corrupt, uncertain, or blank")
+	}
+	res, err := s.db.Exec(`UPDATE traces SET guard_label=? WHERE id=? AND guard_mode='observe'`, label, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("observed trace not found")
+	}
+	return nil
 }
 
 // ---- model map ----
@@ -676,20 +796,32 @@ func (s *Store) ModelMapLookup(model string, match func(pattern, model string) b
 // ---- per-model stats ----
 
 type ModelStat struct {
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	Requests     int    `json:"requests"`
-	Errors       int    `json:"errors"`
-	PromptTokens int64  `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
-	CachedTokens int64  `json:"cached_tokens"`
-	AvgLatencyMS int64  `json:"avg_latency_ms"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	Requests         int    `json:"requests"`
+	Errors           int    `json:"errors"`
+	GuardObserved    int    `json:"guard_observed"`
+	GuardSuspect     int    `json:"guard_suspect"`
+	GuardCorrupt     int    `json:"guard_corrupt"`
+	GuardReviewed    int    `json:"guard_reviewed"`
+	GuardFalseAlarms int    `json:"guard_false_alarms"`
+	GuardMisses      int    `json:"guard_misses"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	CachedTokens     int64  `json:"cached_tokens"`
+	AvgLatencyMS     int64  `json:"avg_latency_ms"`
 }
 
 // Stats aggregates the trace table per provider/model (most-used first).
 func (s *Store) Stats() ([]ModelStat, error) {
 	rows, err := s.db.Query(`SELECT provider, model,
 	  COUNT(*), SUM(CASE WHEN status>=400 OR (err!='' AND err NOT LIKE 'failover%') THEN 1 ELSE 0 END),
+	  SUM(CASE WHEN guard_mode='observe' THEN 1 ELSE 0 END),
+	  SUM(CASE WHEN guard_state='suspect' THEN 1 ELSE 0 END),
+	  SUM(CASE WHEN guard_state='corrupt' THEN 1 ELSE 0 END),
+		  SUM(CASE WHEN guard_label!='' THEN 1 ELSE 0 END),
+		  SUM(CASE WHEN guard_state IN ('suspect','corrupt') AND guard_label='clean' THEN 1 ELSE 0 END),
+		  SUM(CASE WHEN guard_state='clean' AND guard_label='corrupt' THEN 1 ELSE 0 END),
 	  COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(cached_tokens),0),
 	  COALESCE(AVG(latency_ms),0)
 	  FROM traces GROUP BY provider, model ORDER BY COUNT(*) DESC`)
@@ -702,6 +834,7 @@ func (s *Store) Stats() ([]ModelStat, error) {
 		var m ModelStat
 		var avg float64
 		if err := rows.Scan(&m.Provider, &m.Model, &m.Requests, &m.Errors,
+			&m.GuardObserved, &m.GuardSuspect, &m.GuardCorrupt, &m.GuardReviewed, &m.GuardFalseAlarms, &m.GuardMisses,
 			&m.PromptTokens, &m.CompletionTokens, &m.CachedTokens, &avg); err != nil {
 			return nil, err
 		}
@@ -805,15 +938,20 @@ func (s *Store) DeleteRouter(id int64) error {
 type Endpoint struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
-	APIKey     string `json:"api_key"`      // decrypted; the shareable key
-	Models     string `json:"models"`       // comma-sep allowed model ids/globs; "" = all
-	ForceModel string `json:"force_model"`  // if set, every request routes here (e.g. "auto")
+	APIKey     string `json:"api_key"`     // decrypted; the shareable key
+	Models     string `json:"models"`      // comma-sep allowed model ids/globs; "" = all
+	ForceModel string `json:"force_model"` // if set, every request routes here (e.g. "auto")
 	Enabled    bool   `json:"enabled"`
 	Note       string `json:"note"`
+	// Share endpoints can inherit the resolved provider policy or explicitly
+	// force observation off/on for every request through the shared URL.
+	IntegrityMode    string `json:"integrity_mode"`    // inherit | off | observe
+	IntegrityModels  string `json:"integrity_models"`  // optional endpoint-specific globs
+	IntegrityProfile string `json:"integrity_profile"` // blank inherits provider profile
 }
 
 func (s *Store) Endpoints() ([]Endpoint, error) {
-	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note FROM endpoints ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,integrity_mode,integrity_models,integrity_profile FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -823,7 +961,7 @@ func (s *Store) Endpoints() ([]Endpoint, error) {
 		var e Endpoint
 		var enc []byte
 		var en int
-		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note); err != nil {
+		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &e.IntegrityMode, &e.IntegrityModels, &e.IntegrityProfile); err != nil {
 			return nil, err
 		}
 		e.Enabled = en == 1
@@ -845,6 +983,16 @@ func (s *Store) EndpointByName(name string) (Endpoint, bool) {
 
 func (s *Store) SaveEndpoint(e *Endpoint) error {
 	e.Name = strings.TrimSpace(e.Name)
+	if !validEndpointIntegrityMode(e.IntegrityMode) {
+		return errors.New("integrity_mode must be inherit, off, or observe")
+	}
+	if !validIntegrityProfile(e.IntegrityProfile) {
+		return errors.New("integrity_profile must be blank, general, code, or multilingual")
+	}
+	e.IntegrityMode = normalizeEndpointIntegrityMode(e.IntegrityMode)
+	if e.IntegrityProfile != "" {
+		e.IntegrityProfile = normalizeIntegrityProfile(e.IntegrityProfile)
+	}
 	if e.Name == "" {
 		return errors.New("endpoint name is required")
 	}
@@ -856,8 +1004,8 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return err
 	}
 	if e.ID == 0 {
-		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note) VALUES(?,?,?,?,?,?)`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note)
+		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,integrity_mode,integrity_models,integrity_profile) VALUES(?,?,?,?,?,?,?,?,?)`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.IntegrityMode, e.IntegrityModels, e.IntegrityProfile)
 		if err != nil {
 			return err
 		}
@@ -865,11 +1013,11 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return nil
 	}
 	if e.APIKey == "" { // keep existing key on blank
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=? WHERE id=?`,
-			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,integrity_mode=?,integrity_models=?,integrity_profile=? WHERE id=?`,
+			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.IntegrityMode, e.IntegrityModels, e.IntegrityProfile, e.ID)
 	} else {
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=? WHERE id=?`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,integrity_mode=?,integrity_models=?,integrity_profile=? WHERE id=?`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, e.IntegrityMode, e.IntegrityModels, e.IntegrityProfile, e.ID)
 	}
 	return err
 }
@@ -992,6 +1140,64 @@ func (s *Store) SaveAgentProfile(a *AgentProfile) error {
 func (s *Store) DeleteAgentProfile(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM agent_profiles WHERE id=?`, id)
 	return err
+}
+
+func normalizeProviderIntegrityMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "observe") {
+		return "observe"
+	}
+	return "off"
+}
+
+func validProviderIntegrityMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "off", "observe":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeEndpointIntegrityMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "off":
+		return "off"
+	case "observe":
+		return "observe"
+	default:
+		return "inherit"
+	}
+}
+
+func validEndpointIntegrityMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "inherit", "off", "observe":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeIntegrityProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "code":
+		return "code"
+	case "multilingual":
+		return "multilingual"
+	default:
+		return "general"
+	}
+}
+
+func validIntegrityProfile(profile string) bool {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "":
+		return true
+	case "general", "code", "multilingual":
+		return true
+	default:
+		return false
+	}
 }
 
 func b2i(b bool) int {

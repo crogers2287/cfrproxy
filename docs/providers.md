@@ -68,6 +68,17 @@ Each provider is also addressable on its own at `/p/<name>/v1/...`:
 
 This is what lets tools that only support a flat provider→model picker still drill down router → provider → model.
 
+## Output integrity observation
+
+Provider cards have an **Observe** switch for recording likely decode
+corruption without changing the response. Edit the card to select model globs
+and the `general`, `code`, or `multilingual` profile. The same controls are
+available through `cfrproxy provider edit --integrity-*` flags.
+
+Observation is off by default. Read [Output integrity observer](integrity-observer.md)
+for the signals, trace labels, privacy/retention behavior, and the deferred
+enforcement plan.
+
 ## Transforms
 
 Declarative JSON rules rewrite the request sent to a provider, or the response returned to the consumer — scoped per provider and/or inbound dialect. Ops: `set`, `default`, `rename`, `delete`, on dot-paths.

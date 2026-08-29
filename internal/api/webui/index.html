@@ -256,6 +256,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <h2 style="margin:0">Live request trace</h2>
     <span id="sse-state" class="pill">connecting…</span>
     <div class="spacer"></div>
+    <button class="b" onclick="location.href='/admin/api/integrity/observations.jsonl'">Export observations</button>
     <button class="b" onclick="clearTraces()">Clear view</button>
   </div>
   <div id="errpanel" style="margin:12px 0;border:1px solid var(--err);border-radius:10px;overflow:hidden">
@@ -270,12 +271,12 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   </div>
   <h2 style="margin:18px 0 8px">Token burn by model</h2>
   <table id="statstable">
-    <thead><tr><th>Model</th><th>Reqs</th><th>Err</th><th>In tok</th><th>Out tok</th><th>Cached</th><th>Cache hit</th><th>Avg latency</th></tr></thead>
+    <thead><tr><th>Model</th><th>Reqs</th><th>Err</th><th>Observed</th><th>Flags</th><th>Reviewed / FP / FN</th><th>In tok</th><th>Out tok</th><th>Cached</th><th>Cache hit</th><th>Avg latency</th></tr></thead>
     <tbody></tbody>
   </table>
-  <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Tokens are in/out (cached read). Rows in red are real failures.</p>
+  <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Integrity FP = flag labeled clean; FN = clean observation labeled corrupt. Tokens are in/out (cached read). Rows in red are real failures.</p>
   <table id="trtable">
-    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Status</th><th>pp tok/s</th><th>tg tok/s</th><th>TTFB</th><th>Post</th><th>Latency</th><th>Stream</th></tr></thead>
+    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th>Integrity</th><th>Status</th><th>pp tok/s</th><th>tg tok/s</th><th>TTFB</th><th>Post</th><th>Latency</th><th>Stream</th></tr></thead>
     <tbody></tbody>
   </table>
   <div id="tracedetail" class="hidden"></div>
@@ -451,6 +452,13 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <select id="e-force"></select>
     <label>Allowed models <span style="color:var(--dim)">(used only when Force is none; nothing selected = ALL models)</span></label>
     <select id="e-models" multiple size="8" style="height:auto"></select>
+    <label>Output integrity observer</label>
+    <select id="e-integrity-mode"><option value="inherit">inherit resolved provider</option><option value="off">off for this share URL</option><option value="observe">observe for this share URL</option></select>
+    <label>Observed models (comma globs; used when mode = observe; blank = all)</label>
+    <input type="text" id="e-integrity-models" placeholder="provider/model-*, !*-vision">
+    <label>Observer profile</label>
+    <select id="e-integrity-profile"><option value="">inherit provider profile</option><option value="general">general prose</option><option value="code">code-safe</option><option value="multilingual">multilingual</option></select>
+    <p class="hint">This is an observation switch only. Enforcement remains unavailable until the recorded data is reviewed and calibrated.</p>
     <label>Note (optional)</label><input type="text" id="e-note" placeholder="Bob — gpt + claude only">
     <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
     <div class="dlg-actions">
@@ -503,6 +511,13 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
     <label>Fallback (provider/model — chains follow transitively, e.g. Nexum→fred→ollama)</label><select id="p-fallback"></select>
     <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
+    <label>Output integrity observer</label>
+    <select id="p-integrity-mode"><option value="off">off</option><option value="observe">observe (record only)</option></select>
+    <label>Observed models (comma globs; blank = all; <code>!</code> excludes)</label>
+    <input type="text" id="p-integrity-models" placeholder="code-*, !*-vision">
+    <label>Observer profile</label>
+    <select id="p-integrity-profile"><option value="general">general prose</option><option value="code">code-safe</option><option value="multilingual">multilingual</option></select>
+    <p class="hint">Observe mode records bounded SIMURG-derived features and flags in traces. It does not block, retry, alter, or replace a response.</p>
     <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
     <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
     <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
@@ -609,10 +624,11 @@ async function loadProviders(){
       <h3>${esc(p.name)}</h3>
       <span class="type">${p.type}</span>
       <div class="url">${esc(p.base_url)}</div>
-      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · chain:<b>${esc(fbChain(p))}</b>`:''}${p.pinned_models?` · pins:<b>${p.pinned_models.split(',').filter(x=>x.trim()).length}</b>`:''}</div>
+      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · chain:<b>${esc(fbChain(p))}</b>`:''}${p.pinned_models?` · pins:<b>${p.pinned_models.split(',').filter(x=>x.trim()).length}</b>`:''} · integrity: ${p.integrity_mode==='observe'?`<span class="badge-ok">observe · ${esc(p.integrity_profile||'general')}</span>`:'off'}</div>
       <div class="row">
         <button class="b" onclick="openProviderDialog(${p.id})">Edit</button>
         <button class="b" onclick="testProvider(${p.id},this)">Test</button>
+        <button class="b" onclick="toggleProviderIntegrity(${p.id})">${p.integrity_mode==='observe'?'Stop observe':'Observe'}</button>
         <button class="b" onclick="toggleProvider(${p.id})">${p.enabled?'Disable':'Enable'}</button>
         <button class="b danger" onclick="delProvider(${p.id},'${esc(p.name)}')">Delete</button>
       </div>
@@ -672,6 +688,9 @@ function openProviderDialog(id){
   if(p.fallback&&!allModels.includes(p.fallback))$('#p-fallback').insertAdjacentHTML('beforeend',`<option value="${esc(p.fallback)}">${esc(p.fallback)}</option>`);
   $('#p-fallback').value=p.fallback||'';
   $('#p-pinned').value=p.pinned_models||'';$('#p-docurl').value=p.doc_url||'';
+  $('#p-integrity-mode').value=p.integrity_mode||'off';
+  $('#p-integrity-models').value=p.integrity_models||'';
+  $('#p-integrity-profile').value=p.integrity_profile||'general';
   $('#p-inject').checked=!!p.inject_docs;$('#p-enabled').checked=id?!!p.enabled:true;
   resetModelScan();
   pdlg.showModal();
@@ -681,6 +700,7 @@ async function saveProvider(e){
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
     api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,models_filter:$('#p-filter').value,context_length:parseInt($('#p-ctxlen').value,10)||0,
+    integrity_mode:$('#p-integrity-mode').value,integrity_models:$('#p-integrity-models').value,integrity_profile:$('#p-integrity-profile').value,
     doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
@@ -739,6 +759,12 @@ async function scanModels(){
 async function toggleProvider(id){
   const p=providers.find(x=>x.id===id);
   try{await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',enabled:!p.enabled})});loadProviders()}
+  catch(err){toast(err.message,true)}
+}
+async function toggleProviderIntegrity(id){
+  const p=providers.find(x=>x.id===id);
+  const mode=p.integrity_mode==='observe'?'off':'observe';
+  try{await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',integrity_mode:mode})});toast('integrity observer '+mode);loadProviders()}
   catch(err){toast(err.message,true)}
 }
 async function delProvider(id,name){
@@ -1012,13 +1038,40 @@ function pushErr(t){
   while(list.children.length>50)list.lastChild.remove();
 }
 function clearErrs(){$('#errlist').innerHTML='';errShown=0;bumpErrCount()}
+function guardBadge(t){
+  if(t.guard_mode!=='observe')return '·';
+  const state=t.guard_state||'clean';
+  const color=state==='corrupt'?'var(--err)':(state==='suspect'?'var(--warn)':(state==='skipped'?'var(--dim)':'var(--ok)'));
+  const label=t.guard_label?' · '+esc(t.guard_label):'';
+  return `<span style="color:${color};font-weight:600">${esc(state)}${label}</span>`;
+}
+function showTrace(t){
+  const d=$('#tracedetail');d.classList.remove('hidden');
+  const observed=t.guard_mode==='observe';
+  const guard=observed?`<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+      <b>OUTPUT INTEGRITY · ${esc(t.guard_state||'clean')}</b>
+      <div class="meta">profile ${esc(t.guard_profile||'general')} · current ${(t.guard_score||0).toFixed(3)} · max ${(t.guard_max_score||0).toFixed(3)} · ${t.guard_chars||0} chars · ${t.guard_checkpoints||0} checkpoints${t.guard_onset?' · onset '+t.guard_onset:''}</div>
+      ${t.guard_reason?`<pre>${esc(t.guard_reason)}</pre>`:''}
+      ${t.guard_excerpt?`<label>Flagged excerpt</label><pre>${esc(t.guard_excerpt)}</pre>`:''}
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="hint" style="margin:0">Review label:</span>
+        <button class="b" onclick="labelGuard(${Number(t.id)},'clean')">Clean</button>
+        <button class="b" onclick="labelGuard(${Number(t.id)},'corrupt')">Corrupt</button>
+        <button class="b" onclick="labelGuard(${Number(t.id)},'uncertain')">Uncertain</button>
+        <span>${t.guard_label?'<b>'+esc(t.guard_label)+'</b>':'unreviewed'}</span></div>
+      ${t.guard_data?`<details style="margin-top:10px"><summary>Calibration features</summary><pre>${esc(t.guard_data)}</pre></details>`:''}
+    </div>`:'';
+  d.innerHTML=`<b>REQUEST</b><pre>${esc(t.req_snippet||'(empty)')}</pre><b>RESPONSE</b><pre>${esc(t.resp_snippet||t.err||'(empty)')}</pre>${guard}`;
+}
+async function labelGuard(id,label){
+  try{await api('traces/'+id+'/guard-label',{method:'PUT',body:JSON.stringify({label})});toast('trace labeled '+label);await loadTraces();$('#tracedetail').classList.add('hidden')}
+  catch(err){toast(err.message,true)}
+}
 function traceRow(t){
   const tr=document.createElement('tr');
   if(t.status>=400)tr.classList.add('err');
   else if(t.err&&!t.err.startsWith('failover'))tr.classList.add('warn');
   tr.style.cursor='pointer';
-  tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');
-    d.textContent='REQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
+  tr.onclick=()=>showTrace(t);
   tr.title=(t.note?t.note+'  ':'')+(t.err||'');
   const cached=t.cached_tokens?`<span class="badge-ok">${t.cached_tokens}</span>`:'·';
   // generation window = total − upstream think-time − our own post-processing
@@ -1031,6 +1084,7 @@ function traceRow(t){
   tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
     <td class="mono">${esc(t.model)}</td>
     <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td>${cached}</td>
+    <td>${guardBadge(t)}</td>
     <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td>
     <td class="mono">${pp?pp.toFixed(0):'·'}</td>
     <td class="mono">${tps?tps.toFixed(1):'·'}</td>
@@ -1043,13 +1097,15 @@ async function loadStats(){
   try{
     const st=await api('stats');
     const tb=$('#statstable tbody');tb.innerHTML='';
-    let tin=0,tout=0,tcache=0;
+    let tin=0,tout=0,tcache=0,gobs=0,gflags=0,greview=0,gfp=0,gfn=0;
     st.forEach(m=>{
       tin+=m.prompt_tokens;tout+=m.completion_tokens;tcache+=m.cached_tokens;
+      gobs+=m.guard_observed||0;gflags+=(m.guard_suspect||0)+(m.guard_corrupt||0);greview+=m.guard_reviewed||0;gfp+=m.guard_false_alarms||0;gfn+=m.guard_misses||0;
       const hit=m.prompt_tokens?Math.round(100*m.cached_tokens/m.prompt_tokens):0;
       const tr=document.createElement('tr');
       tr.innerHTML=`<td class="mono">${esc(m.provider)}/${esc(m.model)}</td>
         <td>${m.requests}</td><td>${m.errors?'<span class="badge-err">'+m.errors+'</span>':'0'}</td>
+        <td>${m.guard_observed||0}</td><td>${(m.guard_suspect||0)+(m.guard_corrupt||0)}</td><td>${m.guard_reviewed||0} / ${m.guard_false_alarms||0} / ${m.guard_misses||0}</td>
         <td>${fmtK(m.prompt_tokens)}</td><td>${fmtK(m.completion_tokens)}</td>
         <td>${fmtK(m.cached_tokens)}</td><td>${hit?'<span class="badge-ok">'+hit+'%</span>':'0%'}</td>
         <td>${m.avg_latency_ms}ms</td>`;
@@ -1058,7 +1114,7 @@ async function loadStats(){
     if(st.length>1){
       const hit=tin?Math.round(100*tcache/tin):0;
       const tr=document.createElement('tr');tr.style.borderTop='2px solid var(--border)';
-      tr.innerHTML=`<td><b>All models</b></td><td></td><td></td><td><b>${fmtK(tin)}</b></td><td><b>${fmtK(tout)}</b></td><td><b>${fmtK(tcache)}</b></td><td><b>${hit}%</b></td><td></td>`;
+      tr.innerHTML=`<td><b>All models</b></td><td></td><td></td><td><b>${gobs}</b></td><td><b>${gflags}</b></td><td><b>${greview} / ${gfp} / ${gfn}</b></td><td><b>${fmtK(tin)}</b></td><td><b>${fmtK(tout)}</b></td><td><b>${fmtK(tcache)}</b></td><td><b>${hit}%</b></td><td></td>`;
       tb.appendChild(tr);
     }
   }catch(err){/* stats best-effort */}
@@ -1395,12 +1451,14 @@ async function loadEndpoints(){
                              : 'ALL models');
       const card=document.createElement('div');
       card.className='card'+(e.enabled?'':' off');card.style.cursor='default';
+      const guard=e.integrity_mode||'inherit';
       card.innerHTML=`<h3>${esc(e.name)}</h3>
-        <div class="meta">${policy}${e.note?' · '+esc(e.note):''}</div>
+        <div class="meta">${policy}${e.note?' · '+esc(e.note):''} · integrity: ${guard==='observe'?`<span class="badge-ok">observe · ${esc(e.integrity_profile||'provider profile')}</span>`:esc(guard)}</div>
         <div class="meta" style="margin-top:8px">URL<div style="display:flex;gap:6px;margin-top:2px"><code style="flex:1;background:var(--panel2);padding:4px 6px;border-radius:5px;overflow-x:auto;white-space:nowrap">${esc(epURL(e.name))}</code><button class="b" onclick="copyText('${esc(epURL(e.name))}')">Copy</button></div></div>
         <div class="meta" style="margin-top:6px">Key<div style="display:flex;gap:6px;margin-top:2px"><code style="flex:1;background:var(--panel2);padding:4px 6px;border-radius:5px;overflow-x:auto;white-space:nowrap">${esc(e.api_key)}</code><button class="b" onclick="copyText('${esc(e.api_key)}')">Copy</button></div></div>
         <div class="row">
           <button class="b" onclick="openEndpointDialog(${e.id})">Edit</button>
+          <button class="b" onclick="toggleEndpointIntegrity(${e.id})">${guard==='observe'?'Stop observe':'Observe'}</button>
           <button class="b" onclick="toggleEndpoint(${e.id})">${e.enabled?'Disable':'Enable'}</button>
           <button class="b danger" onclick="delEndpoint(${e.id},'${esc(e.name)}')">Delete</button>
         </div>`;
@@ -1417,6 +1475,9 @@ function openEndpointDialog(id){
   $('#edlg-title').textContent=id?'Edit '+e.name:'New share endpoint';
   $('#e-id').value=id||'';$('#e-name').value=e.name||'';$('#e-key').value=id?'':(e.api_key||'');
   $('#e-note').value=e.note||'';$('#e-enabled').checked=id?!!e.enabled:true;
+  $('#e-integrity-mode').value=e.integrity_mode||'inherit';
+  $('#e-integrity-models').value=e.integrity_models||'';
+  $('#e-integrity-profile').value=e.integrity_profile||'';
   // force select: none + auto/auto-plan + all models
   const fs=$('#e-force');
   fs.innerHTML='<option value="">— none (use allow-list) —</option>'+['auto','auto-plan'].concat(allModels.filter(m=>m!=='auto'&&m!=='auto-plan')).map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
@@ -1434,7 +1495,8 @@ async function saveEndpoint(ev){
   const id=$('#e-id').value;
   const models=[...$('#e-models').selectedOptions].map(o=>o.value).join(',');
   const body={name:$('#e-name').value,api_key:$('#e-key').value,force_model:$('#e-force').value,
-    models:$('#e-force').value?'':models,note:$('#e-note').value,enabled:$('#e-enabled').checked};
+    models:$('#e-force').value?'':models,note:$('#e-note').value,enabled:$('#e-enabled').checked,
+    integrity_mode:$('#e-integrity-mode').value,integrity_models:$('#e-integrity-models').value,integrity_profile:$('#e-integrity-profile').value};
   try{
     await api(id?'endpoints/'+id:'endpoints',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     edlg.close();toast('endpoint saved');loadEndpoints();
@@ -1444,6 +1506,12 @@ async function saveEndpoint(ev){
 async function toggleEndpoint(id){
   const e=endpoints.find(x=>x.id===id);
   try{await api('endpoints/'+id,{method:'PUT',body:JSON.stringify({...e,api_key:'',enabled:!e.enabled})});loadEndpoints()}
+  catch(err){toast(err.message,true)}
+}
+async function toggleEndpointIntegrity(id){
+  const e=endpoints.find(x=>x.id===id);
+  const mode=e.integrity_mode==='observe'?'off':'observe';
+  try{await api('endpoints/'+id,{method:'PUT',body:JSON.stringify({...e,api_key:'',integrity_mode:mode})});toast('share integrity observer '+mode);loadEndpoints()}
   catch(err){toast(err.message,true)}
 }
 async function delEndpoint(id,name){

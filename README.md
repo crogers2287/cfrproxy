@@ -24,6 +24,7 @@ cfrproxy is the generic version of what `ollama launch claude --model glm-5.2:cl
 - **🔀 Auto-router.** Send the model `auto` and a small classifier buckets each request (code / reasoning / quick / long / vision) and delegates to the model *you* mapped for that task. `auto-plan` adds a planning stage that briefs the executor first.
 - **♻️ Failover chains.** Give a provider a fallback; on a timeout or 5xx cfrproxy retries once, then transparently reroutes down the chain — with a visible ⚠️ notice injected into the response so you know the model changed.
 - **📊 Live dashboard.** A built-in WebUI (and TUI) shows every request in real time: which model, token burn, **cache-hit %**, latency, and auto-route decisions — per model.
+- **🛡️ Output integrity observation.** Per-provider/model and per-share switches flag likely decode corruption using a native SIMURG-derived signal ensemble, record bounded calibration data, and leave responses untouched while you build local ground truth.
 - **🔑 OAuth subscriptions as providers.** Bring your Claude, Codex, Grok/SuperGrok, Gemini, and Kimi *subscriptions* in as models (via [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) — interactive login right in the WebUI.
 - **🗜️ Context compression** (opt-in): summarize old conversation turns to cut token bills on long chats, cached per prefix, fail-open.
 - **⚗️ Fusion.** Send `fusion` and several models draft in parallel, then a judge synthesizes one best answer (à la OpenRouter Fusion) — returned as a single model would.
@@ -85,6 +86,7 @@ You can also **map** fixed harness names (`cfrproxy map 'claude-sonnet*' openrou
 | [docs/oauth.md](docs/oauth.md) | Bringing Claude/Codex/Grok/Gemini/Kimi subscriptions in via OAuth |
 | [docs/roundtable.md](docs/roundtable.md) | Agent profiles + the consensus MCP server |
 | [docs/compression.md](docs/compression.md) | Context compression: how it works and when to use it |
+| [docs/integrity-observer.md](docs/integrity-observer.md) | SIMURG-derived observe mode, profiles, trace labels, and the calibrated enforcement plan |
 | [docs/deployment.md](docs/deployment.md) | systemd, exposing it publicly (safely), the API-key gate |
 | [docs/share-endpoints.md](docs/share-endpoints.md) | Scoped URL + key to give someone access to only certain models |
 | [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md) | Optional: wiring cfrproxy into the Hermes agent platform |
@@ -114,6 +116,7 @@ cfrproxy <harness>  launch a harness through the proxy (claude, codex, opencode,
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Third-party attributions and license copies are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 > Built as a personal homelab tool and shared in case it's useful. Contributions and issues welcome.
