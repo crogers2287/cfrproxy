@@ -1,5 +1,52 @@
 # cfrproxy timeline
 
+## 2026-08-28
+
+### REQ-089 — Tiel concurrent throughput: 17-20 t/s -> 48.6 t/s per stream behind one endpoint
+
+**Ask:** "we need to be hitting 60"; refined to "concurrent streams running at at least 40 tokens
+per second", then "what if we ran two sep instances of the model, one on each card and just
+aggregate the streams?" and "we want llamaswap to queue behind the same endpoint so it uses
+whichever card is free or queues it for after."
+
+**Why one layer-split instance was slow:** `-sm layer` across both W6800s makes every decoded
+token cross PCIe. Measured under identical contention: **single card 30.2 t/s vs two-card split
+17.6 t/s** (1.7x). `-sm row` is impossible here -- ROCm gfx1030 reports
+`device ROCm0 does not support split buffers`. Deeper speculative drafts also hurt
+(n_max 3 = 48.0 t/s, 6 = 15.4, 10 = 12.5).
+
+**Change:**
+1. llama-swap: added `tiel-b-w6800`, a whole-model mirror of `tiel-coder-q5-w6800` pinned to
+   ROCm1 (`TIEL_DEV/TIEL_DRAFT_DEV/TIEL_MMPROJ_DEV=ROCm1`), deliberately alias-free. Both
+   instances coexist at 31.6 GB/card.
+2. cfrproxy: `internal/proxy/modelpool.go` -- a `model_pools` setting maps a client-visible name
+   to its member instances; each request picks the member with the fewest in flight. llama-swap
+   has no load balancing of its own, and cfrproxy is already the single endpoint.
+3. **Every alias must be a pool key.** A name that is not a key bypasses the pool and pins that
+   traffic to one card -- observed live before the fix: one pooled request queued **394 s** behind
+   alias traffic on instance A while instance B served the same 250 tokens in **4.8 s**.
+4. Corrected llama-swap metadata: both instances run `CTX=196608 NP=2`, so a slot is **98,304**
+   tokens, not the advertised 262,144. cfrproxy's overflow guard reads that number
+   (`ContextLengthFor` -> `lookupContextMeta`), so the lie was the same class of bug as REQ-086's
+   395k-into-262k overflow.
+
+**Verify** (250-token completions, single endpoint `fred/tiel-w6800`, fresh instances):
+
+| concurrency | per-stream | aggregate | split A/B |
+|---|---|---|---|
+| 2 | **48.6 t/s** | **94.8 t/s** | 1 / 1 |
+| 4 | 34.0 t/s | **131.5 t/s** | 2 / 2 |
+
+Baseline was 17-20 t/s per stream. The 40 t/s per-stream target is met at 2 concurrent; at 4
+concurrent (2 slots per card) it lands at 34.0 -- that is the ceiling of two cards, not a
+misconfiguration.
+
+**Files:** `internal/proxy/modelpool.go`, `modelpool_test.go`, `proxy.go` (63982eb);
+`~/llama-swap/config.yaml` (backups `.bak-tielspec-20260828`, `.bak-poolmeta-20260828`);
+`~/llama-swap/run-tiel-w6800.sh`.
+
+**REQ-089 status: COMPLETE.**
+
 ## 2026-08-22
 
 ### REQ-084 — api.skinnyc.pro (and 29 other hosts) down: fred's DHCP lease drifted
