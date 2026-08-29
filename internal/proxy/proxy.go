@@ -71,6 +71,7 @@ type Proxy struct {
 	vision    visionMetaCache
 	ctxmeta   contextMetaCache
 	summaries summaryCache
+	inflight  inflightCounter
 }
 
 func New(s *store.Store) *Proxy {
@@ -432,6 +433,14 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// candidate chain: primary, then its fallback chain followed transitively
 	// (cycle-safe, max 3 hops). Transient failures retry once per candidate,
 	// then move down the chain.
+	// A pooled logical model fans out to whichever instance is least busy;
+	// llama.cpp queues it there if every member is full.
+	if members := p.poolMembers(model); members != nil {
+		picked := p.pickPoolMember(members)
+		p.inflight.add(picked, 1)
+		defer p.inflight.add(picked, -1)
+		model = picked
+	}
 	cands := []candidate{{prov: prov, model: model}}
 	// Fallback can be pinned off, per provider or per share endpoint. When it
 	// is, the chain stays a single candidate: the caller gets this provider's
