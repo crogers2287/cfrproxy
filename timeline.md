@@ -1,5 +1,55 @@
 # cfrproxy timeline
 
+## 2026-08-30
+
+### REQ-090 — Tower array recovery, array-guard watchdog, and the speculation investigation
+
+**Tower/Fred Storage outage.** A brownout dropped every array disk off Tower's Thunderbolt-attached
+LSI SAS2308 HBA. `mdcmd` still reported `mdState=STARTED` with every disk `DISK_OK` while
+`/dev/sd*` were simply gone — so "array looks healthy" is not evidence; check device-node presence.
+Symptom chain from fred: `/mnt/fred-storage` ENOENT -> CIFS `reconnect tcon failed rc = -2` ->
+`smbclient` returns `NT_STATUS_BAD_NETWORK_NAME` for *every* credential (a permissions fault would
+say ACCESS_DENIED). Cache-backed shares (appdata/isos/domains/files/SHARE) kept working; only
+array-backed shares (Fred Storage, media, movies, tv) failed. That split is the fingerprint.
+
+Recovery: `mpt3sas` driver unbind/rebind on `0000:3c:00.0` brought disks back (9 -> 20), but under
+new letters while md held the old ones. A clean reboot deadlocked in runlevel 6 on `txg_sync`/
+`zpool` in D state (ZFS pool `media` SUSPENDED, plus leaked docker.img/libvirt.img loop devices),
+so `/boot` was synced and sysrq-b used. Post-reboot every slot remapped to its original letter,
+`mdNumMissing/Wrong/New = 0/0/0`, all shares back. **Parity remains `DISK_DSBL` — the array is
+unprotected pending a ~28-33 h rebuild.** Root cause is unmitigated: `apcupsd` is configured but
+not running and there is no UPS data.
+
+**Guard added** (`/boot/config/array-guard.sh`, cron every minute, `startArray="no"`): stops the
+array when a member's device node vanishes *while unprotected* (parity invalid, or >1 disk missing);
+alerts only when parity is valid and one disk is missing, since Unraid emulates that safely.
+Two silent-failure traps found the hard way: `/boot` is vfat so the script can never be `+x` (cron
+must call `bash <script>`, else exit 126 every minute), and the host `crond` keeps stale state after
+`update_cron` (needs `/etc/rc.d/rc.crond restart`). It now touches
+`/var/tmp/array-guard.heartbeat` every run so a stale mtime proves it is dead.
+
+**MMVQ cap (llama.cpp, gfx1030).** `get_mmvq_mmid_max_batch_rdna1_rdna2()` caps Q5_K at 6 and
+Q6_K at 5. Deleting those two arms (they fall through to `MMVQ_MAX_BATCH_SIZE = 8`) cuts MoE
+`mul_mat_id` by **35-56% at batch 6-8**, is inert below the cap, and passes 16/16 correctness vs
+the CPU backend. **But it does not help end to end** — a warm A/B on the live pool showed stock
+62.4 tok/s per stream / 122.9 aggregate at C2 vs patched 58.1 / 107.2, and the C4 edge was inside
+run-to-run noise. Production stays on stock libs; the patch is upstreamable, not deployable.
+
+**Speculation is the open item.** On Ornith-1.5-9B (dense qwen35) the built-in heads give high
+acceptance but no speedup: no-spec 48.7 tok/s vs `draft-mtp` n3 47.4 (accept 0.52, mean len 2.57)
+and `draft-dflash` 44.5 (2.39). Passing the lightweight MTP head explicitly via `--spec-draft-model`
+changed acceptance not at all (byte-identical), so that flag appears inert for `draft-mtp`.
+A published SGLang recipe for the *same* model and draft reports **44.8 -> 207.5 tok/s (4.63x)**
+with 6.5-8.5 accepted tokens at DFlash block size 16 — near-identical baseline, so the engine's
+speculative implementation looks like the entire difference. Under investigation.
+
+**Also measured:** Fred Storage runs at 283 MB/s read / 237 MB/s write because tower's `bond0` has a
+single 2500 Mb/s slave (`eth0`) while its **10 GbE `eth1` is cabled, link-up, and completely
+unconfigured**. Thor does 576 MB/s. Beellama's `kvarn2..kvarn8` KV types need
+`GGML_CUDA_FA_ALL_QUANTS=ON` or attention falls back to materialization (22 GB compute buffer, OOM).
+
+**REQ-090 status: IN PROGRESS** — parity rebuild, UPS, and the speculation fix all open.
+
 ## 2026-08-28
 
 ### REQ-089 — Tiel concurrent throughput: 17-20 t/s -> 48.6 t/s per stream behind one endpoint
