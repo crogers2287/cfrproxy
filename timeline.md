@@ -35,13 +35,37 @@ the CPU backend. **But it does not help end to end** — a warm A/B on the live 
 62.4 tok/s per stream / 122.9 aggregate at C2 vs patched 58.1 / 107.2, and the C4 edge was inside
 run-to-run noise. Production stays on stock libs; the patch is upstreamable, not deployable.
 
-**Speculation is the open item.** On Ornith-1.5-9B (dense qwen35) the built-in heads give high
-acceptance but no speedup: no-spec 48.7 tok/s vs `draft-mtp` n3 47.4 (accept 0.52, mean len 2.57)
-and `draft-dflash` 44.5 (2.39). Passing the lightweight MTP head explicitly via `--spec-draft-model`
-changed acceptance not at all (byte-identical), so that flag appears inert for `draft-mtp`.
-A published SGLang recipe for the *same* model and draft reports **44.8 -> 207.5 tok/s (4.63x)**
-with 6.5-8.5 accepted tokens at DFlash block size 16 — near-identical baseline, so the engine's
-speculative implementation looks like the entire difference. Under investigation.
+**Speculation — RESOLVED, and every intermediate conclusion was wrong.** Four separate rounds
+measured speculation as a loss, all at shallow context, which is the one regime where it loses. The
+operator pushed back that it "only proves itself at depth" and was right: the draft head's cost is
+roughly fixed while the target forward slows as KV grows, so the advantage grows with depth.
+
+Tiel decode (tok/s), np=2, by context depth:
+
+| depth | no spec | **draft-mtp n=2** | draft-dflash n=3 |
+|---|---|---|---|
+| ~0k | 60.4 | **74.8** | 38.7 |
+| ~12k | 53.3 | **58.3** | 28.6 |
+| ~48k | 37.6 | **49.9** | 27.9 |
+
+Production had been running `draft-dflash n_max 3` — the worst of the three at every depth we
+operate. It was briefly switched to no-speculation (also wrong) before landing on **`draft-mtp`
+n_max=2 at 131k/slot**, measured in production at 69.8 / 60.1 / 46.4 tok/s across those depths.
+
+Two hard constraints found: at 256k/slot the MTP draft cannot allocate its KV (`failed to create
+MTP context`, ~1.2 GB spare), so 256k/slot and speculation are mutually exclusive; and
+`--spec-draft-model` is honoured for `draft-mtp` but redundant — the nextn tensors are already in
+the target GGUF — so the launcher now skips it for that type.
+
+**Method note:** speculation throughput is content-dependent. Varying the prompt between runs
+produced 35-58 tok/s swings on identical configs and invalidated every early comparison. Identical
+prompt, temperature 0, 3 repeats, medians; discard the first deep request after load (measured 32.6
+against a 46.4 median).
+
+**MoE kernel patches: built, correctness-clean, NOT deployed.** The MMVQ cap fix plus PR #27558 at
+`/mnt/docker-storage/moe-patched-build` passed 885/885 MUL_MAT_ID and 1193/1193 MUL_MAT, but showed
+no consistent win at production's real config (69.4 vs 71.0 at 0k, 56.4 vs 62.0 at 11k, 54.4 vs
+53.4 at 48k). Its earlier +4-5% was at np=4 with no speculation, a shape no longer run.
 
 **Also measured:** Fred Storage runs at 283 MB/s read / 237 MB/s write because tower's `bond0` has a
 single 2500 Mb/s slave (`eth0`) while its **10 GbE `eth1` is cabled, link-up, and completely
