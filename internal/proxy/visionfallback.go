@@ -425,6 +425,29 @@ const DefaultContextLength = 0 // 0 = advertise nothing rather than guess
 // from the model id, and cfrproxy's ids are frequently renamed by the upstream
 // ("claude-opencode-go-deepseek-v4-flash"), so the guess lands on a default
 // that is wrong in both directions.
+// ContextLimitFor resolves the window to enforce for one request, honouring a
+// share endpoint's cap.
+//
+// The cap is deliberately one-directional: it can only LOWER the window derived
+// from the upstream, never raise it. A share that could advertise more than the
+// backend holds would let a harness build prompts no slot can accept — a real
+// failure we have already paid for once, where a model whose slot holds 98,304
+// tokens was advertised as 256,000 and an agent ran 3h36m before dying.
+//
+// The one case where the cap supplies rather than limits is an upstream that
+// reports nothing at all (derived == 0). There is no number to contradict, and
+// a documented operator value beats the harness inventing one from the model id.
+func (p *Proxy) ContextLimitFor(ep *store.Endpoint, prov store.Provider, model string) int {
+	derived := p.ContextLengthFor(prov, model)
+	if ep == nil || ep.ContextLength <= 0 {
+		return derived
+	}
+	if derived <= 0 || ep.ContextLength < derived {
+		return ep.ContextLength
+	}
+	return derived
+}
+
 func (p *Proxy) ContextLengthFor(prov store.Provider, model string) int {
 	if prov.ContextLength > 0 {
 		return prov.ContextLength
@@ -447,6 +470,10 @@ func (p *Proxy) ContextLengthFor(prov store.Provider, model string) int {
 // mounts (/p/{provider}/v1/models) carry bare ids and already know the
 // provider; the global list carries "provider/model" and has to split it.
 // Virtual ids (auto, fusion, auto:<router>) belong to no provider and return 0.
+// AdvertisedContext exposes advertisedContext to the admin API so the UI can
+// display the window a model actually reports.
+func (p *Proxy) AdvertisedContext(scope, id string) int { return p.advertisedContext(scope, id) }
+
 func (p *Proxy) advertisedContext(scope, id string) int {
 	if scope != "" {
 		prov, ok := p.Store.ProviderByName(scope)

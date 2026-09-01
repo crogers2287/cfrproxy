@@ -584,7 +584,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// does not fit, so a conversation that fits is byte-identical to
 		// before and the prefix cache is untouched.
 		if !cavemanApplied {
-			if ctxLimit := p.ContextLengthFor(c.prov, c.model); ctxLimit > 0 {
+			if ctxLimit := p.ContextLimitFor(ep, c.prov, c.model); ctxLimit > 0 {
 				// Reserve room for the answer and for the estimate being low.
 				// estTokens is chars/4; real Claude Code traffic measures ~3.9
 				// chars/token and dense JSON tool results closer to 2.9, so the

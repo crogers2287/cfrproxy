@@ -298,7 +298,14 @@ func (a *API) hAllModels(w http.ResponseWriter, r *http.Request) {
 	ids := a.Proxy.AllModelIDs(r.Context())
 	data := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		data = append(data, map[string]any{"id": id, "object": "model"})
+		m := map[string]any{"id": id, "object": "model"}
+		// Carry the derived window so the UI can show what a share would be
+		// capping, instead of asking the operator to type a number blind.
+		// Omitted when unknown, matching the public listing.
+		if n := a.Proxy.AdvertisedContext("", id); n > 0 {
+			m["context_length"] = n
+		}
+		data = append(data, m)
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }

@@ -110,7 +110,18 @@ func (p *Proxy) handleEndpointModels(w http.ResponseWriter, r *http.Request) {
 	ids := p.endpointModels(r.Context(), ep)
 	data := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		data = append(data, map[string]any{"id": id, "object": "model", "owned_by": "cfrproxy"})
+		m := map[string]any{"id": id, "object": "model", "owned_by": "cfrproxy"}
+		// Advertise the window here too, capped by this share. Share-key clients
+		// previously got a bare id list and had to guess the context from the
+		// model name; that guess is what let a harness build a 256k prompt for a
+		// 98,304-token slot. Both spellings, and omitted when unknown, matching
+		// the public listing: a wrong number is worse than none, because none
+		// lets the harness fall back to its own documented default.
+		if n := p.endpointAdvertisedContext(ep, id); n > 0 {
+			m["context_length"] = n
+			m["context_window"] = n
+		}
+		data = append(data, m)
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
@@ -123,4 +134,27 @@ func (p *Proxy) handleEndpoint(w http.ResponseWriter, r *http.Request, inbound s
 		return
 	}
 	p.handleCore(w, r, inbound, "", &ep)
+}
+
+// endpointAdvertisedContext resolves the window to advertise for one model on a
+// share endpoint: the upstream-derived value, lowered by the share's cap.
+//
+// A ForceModel share pins every request to one model, so that is the window the
+// client will actually get regardless of which id it asked about.
+func (p *Proxy) endpointAdvertisedContext(ep store.Endpoint, id string) int {
+	target := id
+	if ep.ForceModel != "" {
+		target = ep.ForceModel
+	}
+	i := strings.IndexByte(target, '/')
+	if i <= 0 {
+		// Unqualified id: no provider to resolve against, so the only number we
+		// can honestly offer is an explicit operator cap.
+		return ep.ContextLength
+	}
+	prov, ok := p.Store.ProviderByName(target[:i])
+	if !ok {
+		return ep.ContextLength
+	}
+	return p.ContextLimitFor(&ep, prov, target[i+1:])
 }

@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	// never granted. Default 0 keeps existing behaviour.
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN no_fallback INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN no_fallback INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN context_length INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE usage_daily ADD COLUMN absorbed INTEGER NOT NULL DEFAULT 0`)
 	// usage_daily: durable per-day/provider/model accounting. `traces` is a
 	// rolling 5000-row buffer (~22 h at current volume), which is useless for
@@ -1144,10 +1145,16 @@ type Endpoint struct {
 	Note       string `json:"note"`
 	Caveman    bool   `json:"caveman"`
 	NoFallback bool   `json:"no_fallback"`
+	// ContextLength caps the context window this share advertises and enforces.
+	// It only ever LOWERS the window derived from the upstream; a value above
+	// what the backend reports is ignored. A field that can raise the window
+	// would let a harness build prompts no slot can accept -- the exact failure
+	// this exists to prevent. 0 means "no cap, use the derived value".
+	ContextLength int `json:"context_length"`
 }
 
 func (s *Store) Endpoints() ([]Endpoint, error) {
-	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback FROM endpoints ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1157,7 +1164,7 @@ func (s *Store) Endpoints() ([]Endpoint, error) {
 		var e Endpoint
 		var enc []byte
 		var en, cave, nofb int
-		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave, &nofb); err != nil {
+		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave, &nofb, &e.ContextLength); err != nil {
 			return nil, err
 		}
 		e.Enabled, e.Caveman, e.NoFallback = en == 1, cave == 1, nofb == 1
@@ -1190,8 +1197,8 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return err
 	}
 	if e.ID == 0 {
-		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback) VALUES(?,?,?,?,?,?,?,?)`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback))
+		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length) VALUES(?,?,?,?,?,?,?,?,?)`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength)
 		if err != nil {
 			return err
 		}
@@ -1199,11 +1206,11 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 		return nil
 	}
 	if e.APIKey == "" { // keep existing key on blank
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=? WHERE id=?`,
-			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=?,context_length=? WHERE id=?`,
+			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ID)
 	} else {
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=? WHERE id=?`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=?,context_length=? WHERE id=?`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ID)
 	}
 	return err
 }

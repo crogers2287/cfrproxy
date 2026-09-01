@@ -503,6 +503,9 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
     <label>Allowed models <span style="color:var(--dim)">(used only when Force is none; nothing selected = ALL models)</span></label>
     <select id="e-models" multiple size="8" style="height:auto"></select>
     <label>Note (optional)</label><input type="text" id="e-note" placeholder="Bob — gpt + claude only">
+    <label>Context window cap <span style="font-weight:normal;opacity:.7">— optional; lowers only</span></label>
+    <input type="number" id="e-ctx" min="0" step="1024" placeholder="0 = use the model's own window">
+    <div id="e-ctx-hint" style="font-size:12px;opacity:.75;margin:-4px 0 8px"></div>
     <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
       <div class="check"><input type="checkbox" id="e-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(off by default)</span></span></div>
       <div class="check"><input type="checkbox" id="e-nofb"><span title="Never re-route requests on this shared API to another provider. Off by default. Use it so a key you hand out cannot spend on providers the recipient was never granted.">Disable fallback <span style="color:var(--dim)">(off by default)</span></span></div>
@@ -882,6 +885,7 @@ async function saveGlobalFallback(){
 // ---- model map ----
 let modelMap={};
 let allModels=[];
+let modelCtx={};   // model id -> window the backend reports (absent when unknown)
 function fillAllModelSelects(){
   // launch-model: virtual routers first, then every model
   const lm=$('#launch-model');
@@ -909,6 +913,7 @@ async function loadModelMap(){
   try{
     const r=await fetch('/admin/api/allmodels').then(r=>r.json());
     allModels=r.data.map(m=>m.id);
+    modelCtx={}; r.data.forEach(m=>{ if(m.context_length) modelCtx[m.id]=m.context_length; });
     $('#allmodels').innerHTML=allModels.map(m=>`<option value="${esc(m)}">`).join('');
     fillAllModelSelects();
   }catch{}
@@ -1594,15 +1599,32 @@ function openEndpointDialog(id){
   ms.innerHTML=allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
   const allowed=(e.models||'').split(',').map(x=>x.trim()).filter(Boolean);
   [...ms.options].forEach(o=>o.selected=allowed.includes(o.value));
+  $('#e-ctx').value=e.context_length||'';
+  fs.onchange=updateCtxHint; $('#e-ctx').oninput=updateCtxHint;
+  updateCtxHint();
   if(!id&&!$('#e-key').value)genEpKey();
   edlg.showModal();
+}
+// Show the window the backend actually reports for the pinned model, so the cap
+// is entered against a real number instead of a guess. A value above it is
+// ignored server-side; say so rather than letting the field look effective.
+function updateCtxHint(){
+  const hint=$('#e-ctx-hint'); if(!hint) return;
+  const target=$('#e-force').value;
+  if(!target){ hint.textContent='Applies to whichever model the request selects.'; return; }
+  const real=modelCtx[target]||0;
+  const cap=parseInt($('#e-ctx').value||'0',10)||0;
+  if(!real){ hint.textContent=esc(target)+': upstream reports no window — a value here becomes the advertised one.'; return; }
+  hint.textContent=esc(target)+' reports '+real.toLocaleString()+' tokens'
+    + (cap>real ? ' — a cap above that is ignored (it can only lower).' : cap? ' — capping to '+cap.toLocaleString()+'.' : '.');
 }
 async function saveEndpoint(ev){
   ev.preventDefault();
   const id=$('#e-id').value;
   const models=[...$('#e-models').selectedOptions].map(o=>o.value).join(',');
   const body={name:$('#e-name').value,api_key:$('#e-key').value,force_model:$('#e-force').value,
-    models:$('#e-force').value?'':models,note:$('#e-note').value,caveman:$('#e-caveman').checked,no_fallback:$('#e-nofb').checked,enabled:$('#e-enabled').checked};
+    models:$('#e-force').value?'':models,note:$('#e-note').value,caveman:$('#e-caveman').checked,no_fallback:$('#e-nofb').checked,enabled:$('#e-enabled').checked,
+    context_length:parseInt($('#e-ctx').value||'0',10)||0};
   try{
     await api(id?'endpoints/'+id:'endpoints',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     edlg.close();toast('endpoint saved');loadEndpoints();
