@@ -54,3 +54,46 @@ func TestContextLimitForNilEndpoint(t *testing.T) {
 		t.Fatalf("nil endpoint: got %d, want 131072", got)
 	}
 }
+
+// A ForceModel share pins every request to one model, so that is the window the
+// client will actually get — the advertised number must follow the pin, not the
+// id the client happened to ask about.
+func TestEndpointAdvertisedContextFollowsForceModel(t *testing.T) {
+	s := newDiscoveryStore(t)
+	if err := s.SaveProvider(&store.Provider{
+		Name: "fred", Type: "openai", BaseURL: "http://x", Enabled: true, ContextLength: 98304,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(s)
+
+	// pinned to a fred model: the pin's window is what the client gets
+	ep := store.Endpoint{ForceModel: "fred/pinned"}
+	if got := p.endpointAdvertisedContext(ep, "fred/something-else"); got != 98304 {
+		t.Fatalf("force-model window: got %d, want 98304", got)
+	}
+
+	// the share's cap lowers it
+	ep.ContextLength = 32768
+	if got := p.endpointAdvertisedContext(ep, "fred/something-else"); got != 32768 {
+		t.Fatalf("capped: got %d, want 32768", got)
+	}
+
+	// a cap above the backend's window is ignored, never advertised
+	ep.ContextLength = 262144
+	if got := p.endpointAdvertisedContext(ep, "fred/anything"); got != 98304 {
+		t.Fatalf("over-cap must be ignored: got %d, want 98304", got)
+	}
+}
+
+// An unqualified id has no provider to resolve against. We must not invent a
+// window; only an explicit operator cap is honest there.
+func TestEndpointAdvertisedContextUnqualifiedID(t *testing.T) {
+	p := New(newDiscoveryStore(t))
+	if got := p.endpointAdvertisedContext(store.Endpoint{}, "bare-model"); got != 0 {
+		t.Fatalf("unqualified with no cap: got %d, want 0", got)
+	}
+	if got := p.endpointAdvertisedContext(store.Endpoint{ContextLength: 8192}, "bare-model"); got != 8192 {
+		t.Fatalf("unqualified with cap: got %d, want 8192", got)
+	}
+}
