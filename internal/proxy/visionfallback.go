@@ -484,6 +484,18 @@ func (p *Proxy) advertisedContext(scope, id string) int {
 	}
 	i := strings.IndexByte(id, '/')
 	if i <= 0 {
+		// An unqualified id can still be an operator-declared model_map alias,
+		// which resolves to a real provider/model. It has to advertise THAT
+		// model's window: a harness left to guess is exactly how REQ-086's
+		// 395k-into-262k overflow happened, and REQ-089 found the same class of
+		// bug again in llama-swap's own metadata.
+		if mapped := p.Store.ModelMapLookup(id, MatchMapPattern); mapped != "" {
+			if j := strings.IndexByte(mapped, '/'); j > 0 {
+				if prov, ok := p.Store.ProviderByName(mapped[:j]); ok {
+					return p.ContextLengthFor(prov, mapped[j+1:])
+				}
+			}
+		}
 		return 0
 	}
 	prov, ok := p.Store.ProviderByName(id[:i])

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -397,6 +398,42 @@ func (p *Proxy) ResolveModel(ctx context.Context, model string) (store.Provider,
 	return store.Provider{}, "", fmt.Errorf("no enabled providers configured")
 }
 
+// mapAliasIDs returns the model_map keys worth advertising, sorted so the
+// listing is stable.
+//
+// Glob patterns ("claude-sonnet*") are deliberately excluded: those are
+// interception rules for ids a client already knows — they exist to catch a
+// name the harness will send anyway — and a pattern is not a selectable id.
+// An exact key is the opposite: a name that exists only because the operator
+// invented it, and that nothing will ever send unless it is advertised.
+//
+// An alias whose target names a provider that is missing or disabled is left
+// out, since ResolveModel answers that with a hard error: offering it in a
+// picker would hand the caller an id that can only fail.
+func (p *Proxy) mapAliasIDs() []string {
+	m := p.Store.ModelMap()
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for alias, target := range m {
+		if alias == "" || strings.Contains(alias, "*") {
+			continue
+		}
+		// A target with no provider prefix is another virtual name ("auto") and
+		// is left to resolve on its own.
+		if i := strings.IndexByte(target, '/'); i > 0 {
+			prov, ok := p.Store.ProviderByName(target[:i])
+			if !ok || !prov.Enabled {
+				continue
+			}
+		}
+		out = append(out, alias)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // AllModelIDs merges every enabled provider's scanned models (as
 // provider/model), plus configured aliases and defaults. Scans run in
 // parallel on cold cache.
@@ -463,6 +500,15 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 				add("fusion:" + f.Name)
 			}
 		}
+	}
+	// Exact model_map aliases are selectable names in their own right, the same
+	// class of thing as "auto" and "fusion:deep": the operator declared them,
+	// ResolveModel rewrites them before anything else, and a picker offering one
+	// gets exactly what the map promises. They were invisible here, so an alias
+	// only worked if you already knew its name and typed it — which is no use to
+	// a client that enumerates.
+	for _, alias := range p.mapAliasIDs() {
+		add(alias)
 	}
 	for i, prov := range provs {
 		if !prov.Enabled {

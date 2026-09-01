@@ -2,6 +2,52 @@
 
 ## 2026-09-01
 
+### REQ-092 — `ornith-aggregate` was routable but not enumerable
+
+**Ask:** REQ-091's aggregate name worked on a direct POST but was absent from `GET /v1/models`
+(218 ids, none containing "aggregate"), so it never appeared in the operator's Hermes model
+selector.
+
+**Diagnosis.** `AllModelIDs` enumerates provider scans, provider aliases, and the virtual names
+`auto` / `auto-plan` / `auto:<router>` / `fusion:<name>`. It never enumerated `model_map`. That was
+right for the three entries the map held — `claude-opus*`, `claude-sonnet*`, `claude-haiku*` are
+**interception patterns**: they exist to catch ids a harness will send anyway, and a glob is not a
+selectable id. `ornith-aggregate` is the opposite kind of entry: an exact key that exists only
+because the operator invented it, and that nothing will ever send unless it is advertised. So the
+rule is not "enumerate the map", it is **enumerate exact map keys**, which puts them in the same
+class as `auto` and `fusion:deep`. Keys whose target names a missing or disabled provider are left
+out — `ResolveModel` answers those with a hard error, and a picker should not offer an id that can
+only fail.
+
+**Second half of the bug.** `advertisedContext` returned 0 for any id without a `/`, so the alias
+would have listed with no window at all — worse than `fred/ornith`, which advertises 131,072. A
+harness left to guess its context is precisely how REQ-086's 395k-into-262k overflow happened and
+how REQ-089's llama-swap metadata lie bit. An unqualified id is now resolved through the map before
+giving up, so an alias advertises the window of the model it actually resolves to.
+
+**Verify.** `go vet ./... && go test ./...` — 6 packages ok, 5 new tests (exact-vs-glob selection,
+disabled/unknown target exclusion, the listing carrying 131,072, the provider-scoped mount still
+omitting the router-level alias, and the alias resolving to `fred/ornith`). The listing test asserts
+the property the operator cares about directly: the id set grows by exactly one and every id present
+before is still present.
+
+Live, `curl http://fred:8420/v1/models`:
+
+```
+total ids: 219                                        (was 218)
+{"id":"ornith-aggregate","context_length":131072,"context_window":131072,...}
+```
+
+All nine `fred/ornith*` ids unchanged, and a POST to `ornith-aggregate` still routes through the
+pool (`pool→ornith-kvx-w6800 (cold/inflight)`). `/api/tags` shares `AllModelIDs`, so the ollama
+listing gained it too.
+
+**Files:** `internal/proxy/models.go` (`mapAliasIDs`), `internal/proxy/visionfallback.go`
+(`advertisedContext`), `internal/proxy/modelalias_test.go`. Binary rebuilt,
+`cfrproxy.bak-prealiaslist-*` kept, service restarted. llama-swap untouched.
+
+**REQ-092 status: COMPLETE.**
+
 ### REQ-091 — Ornith aggregate: one endpoint across both W6800 instances, routed by prefix affinity
 
 **Ask:** two identical Ornith instances now run behind llama-swap (`ornith-kvx-w6800` on ROCm0,
