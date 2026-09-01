@@ -72,6 +72,7 @@ type Proxy struct {
 	ctxmeta   contextMetaCache
 	summaries summaryCache
 	inflight  inflightCounter
+	poolload  poolLoadCache
 }
 
 func New(s *store.Store) *Proxy {
@@ -435,13 +436,31 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// then move down the chain.
 	// A pooled logical model fans out to whichever instance is least busy;
 	// llama.cpp queues it there if every member is full.
-	if members := p.poolMembers(model); members != nil {
-		picked := p.pickPoolMember(members)
-		p.inflight.add(picked, 1)
-		defer p.inflight.add(picked, -1)
-		model = picked
+	var pooled poolChoice
+	if spec := p.poolSpecFor(model); spec != nil {
+		pooled = p.routePool(spec, prov, req)
+		p.inflight.add(pooled.member, 1)
+		defer p.inflight.add(pooled.member, -1)
+		model = pooled.member
+		if spec.Affinity {
+			// Only annotated for affinity pools: a plain least-busy pool keeps
+			// the trace it has always written. Appended to tr.Note rather than
+			// autoNote because autoNote != "" disables raw passthrough, and a
+			// pooled request has no reason to lose it.
+			tr.Note = strings.TrimSpace(tr.Note + " pool→" + pooled.member + " (" + pooled.why + ")")
+		}
 	}
 	cands := []candidate{{prov: prov, model: model}}
+	// Sibling instances of the same pool come first in the chain: they are the
+	// SAME weights on another card, so an instance that is down or erroring
+	// costs a retry rather than a reroute onto a different (often paid) model.
+	// Deliberately not gated on no_fallback — that flag exists to stop silent
+	// reroutes to other providers/models, which is the opposite of this.
+	if pooled.failover {
+		for _, m := range pooled.rest {
+			cands = append(cands, candidate{prov: prov, model: m, sibling: true})
+		}
+	}
 	// Fallback can be pinned off, per provider or per share endpoint. When it
 	// is, the chain stays a single candidate: the caller gets this provider's
 	// real error rather than a silent reroute. That matters because the reroute
@@ -841,6 +860,12 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		tr.TTFBMS = time.Since(start).Milliseconds()
 	}
 	tr.Provider, tr.Model = used.prov.Name, used.model
+	if pooled.active() && used.sibling {
+		// The picked instance failed and a sibling served it. Re-point the
+		// bindings, or every conversation on the dead card pays this same
+		// failed round-trip for the whole affinity TTL.
+		pooled.rebind(used.model)
+	}
 	alert := ""
 	if used.failover {
 		// The banner must pair the primary's NAME with the primary's OWN reason.
@@ -864,6 +889,11 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			alert = fmt.Sprintf("⚠️ failover: %s %s → %s active\n\n",
 				prov.Name, failureLabel(primaryReason), used.model)
 		}
+	} else if used.sibling {
+		// Intra-pool retry: same provider, same weights, another card. No
+		// banner is injected into the reply — nothing about the answer changed
+		// — but the errors panel must still show that an instance is down.
+		tr.Err = "pool failover: " + prov.Name + "/" + pooled.member + " → " + used.model + " (" + lastErr + ")"
 	} else if len(softErrs) > 0 && resp.StatusCode < 400 {
 		// request recovered on the same provider after one or more transient
 		// errors (429 rate limit, 5xx, overload). The final response is a
@@ -966,6 +996,11 @@ type candidate struct {
 	// text with image parts dropped, so a translated "vision fallback" would
 	// quietly ask a blind question and get a confident wrong answer.
 	vision bool
+	// sibling marks another instance of the same pooled model on the same
+	// provider. It is NOT a failover in the user-visible sense: the weights,
+	// the provider and the answer are identical, so it must not trigger the
+	// failover banner or lose raw passthrough — only be recorded.
+	sibling bool
 }
 
 // transientStatus: worth retrying / failing over. 4xx auth/validation errors

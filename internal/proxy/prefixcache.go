@@ -95,6 +95,15 @@ func canonicalTools(tools []wire.Tool) []byte {
 	return b
 }
 
+// staticPrefixSHAs hashes the two halves of a request's static head. It is the
+// single definition of "what a prefix IS" in this package: the manifest
+// fingerprint is built from it, and so is the pool's prefix-affinity key, so
+// the prefix a warmup replays and the prefix a route sticks to can never drift
+// apart.
+func staticPrefixSHAs(system string, tools []wire.Tool) (sysSHA, toolsSHA string) {
+	return sha256hex([]byte(system)), sha256hex(canonicalTools(tools))
+}
+
 func sha256hex(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
@@ -195,8 +204,7 @@ func recordPrefix(snap *prefixSnapshot, tr *store.Trace) {
 		return
 	}
 
-	sysSHA := sha256hex([]byte(snap.system))
-	toolsSHA := sha256hex(toolsJSON)
+	sysSHA, toolsSHA := staticPrefixSHAs(snap.system, snap.tools)
 	fp := sha256hex([]byte(snap.provider + "\x00" + snap.model + "\x00" + sysSHA + "\x00" + toolsSHA))
 
 	client := harnessClient(tr.Client, snap.system)

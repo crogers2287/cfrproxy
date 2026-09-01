@@ -1,5 +1,83 @@
 # cfrproxy timeline
 
+## 2026-09-01
+
+### REQ-091 — Ornith aggregate: one endpoint across both W6800 instances, routed by prefix affinity
+
+**Ask:** two identical Ornith instances now run behind llama-swap (`ornith-kvx-w6800` on ROCm0,
+`ornith-kvx-w6800-b` on ROCm1, 2 slots x 131,072 each). llama-swap has no load balancing, so
+everything addressed to `ornith` lands on instance A and B idles. Make all four streams reachable
+through one name — but NOT by round-robin: each instance has its own KV attachment store keyed by
+llama-swap model name, so a prefix captured on A cannot be restored on B, and moving a continuing
+30-90k-token conversation to the other card forces a cold prefill worth tens of seconds.
+
+**Change — `internal/proxy/poolaffinity.go`.** The REQ-089 pool gains a second setting form and a
+routing ladder. `model_pools` still accepts the array it always did; an entry written as an object
+turns on the new behaviour, so every existing pool (all eleven tiel aliases) is byte-for-byte
+unchanged:
+
+```json
+{"tiel-w6800": ["tiel-coder-q5-w6800", "tiel-b-w6800"],
+ "ornith":     {"members": ["ornith-kvx-w6800", "ornith-kvx-w6800-b"]}}
+```
+
+Routing, in order, with the reason recorded on every trace:
+
+| rule | key | yields to load? |
+|---|---|---|
+| `conversation` | system + first user message (`conversationFingerprint`, reused from routesticky.go) | **never** — re-prefilling 60k tokens costs more than any queue |
+| `prefix` | system + tool schemas (`staticPrefixSHAs`, the same two hashes the warmup manifest is built from) | yes, at 1 in flight: a conversation that does not exist yet has no KV to lose |
+| `cold/slots` | — | llama-swap's own slot table |
+| `cold/inflight` | — | the REQ-089 counter |
+
+Why not round-robin: each instance has its own slot cache **and** its own KVarN attachment store,
+both keyed by llama-swap model name, so a prefix captured on A cannot be restored on B. Bindings
+live 2 h and are dropped when they name a member that has left the pool.
+
+**Load probe is safe and off the hot path.** `/upstream/<model>/...` *starts* a model that is not
+loaded, so the probe asks `GET /running` first and reads `/slots` only for members llama-swap
+already reports `ready`; a non-resident member scores as the worst possible placement rather than
+being woken. The whole probe runs in the background behind a 900 ms per-call timeout, is cached 3 s,
+and every failure degrades to the in-flight counter — the request never waits on it. Verified after
+the change: `/running` still lists exactly the two ornith instances, nothing was swapped in.
+
+**Failover.** The other members are appended to the candidate chain as `sibling` candidates ahead of
+the fallback chain, so a wedged instance costs one retry on the same weights instead of a reroute
+onto a paid provider. A sibling retry is deliberately *not* a `failover` candidate: no ⚠️ banner is
+injected (the answer is identical) and raw passthrough is kept. It is recorded on the trace as
+`pool failover: …` and the affinity binding follows the instance that actually served.
+
+**Addressing it.** `model_map` gained `ornith-aggregate → fred/ornith`, and all nine llama-swap
+ornith aliases became pool keys (REQ-089 rule 3: an alias that is not a pool key pins its traffic to
+one card). So `"model": "ornith-aggregate"` — or any existing ornith name — now fans across both
+cards. `http://fred:9069/upstream/<instance>/` remains the way to address one card explicitly.
+
+**Verify.** `go test ./...` — 6 packages ok (11 new tests, incl. an httptest llama-swap that fails
+the test if `/slots` is probed for a non-resident model, and an end-to-end 503-instance → sibling
+case). Live on `:8420`, `"model":"ornith-aggregate"`, traces:
+
+| request | instance | reason |
+|---|---|---|
+| first, idle pool | `ornith-kvx-w6800` | `cold/inflight` |
+| new conversation, same prefix, concurrent | `ornith-kvx-w6800` | `prefix` |
+| new conversation, same prefix, concurrent | `ornith-kvx-w6800-b` | `cold/slots` |
+| turn 2 of each of the three | A / B / B respectively | `conversation` |
+
+The last row is the proof that matters: conversation three keeps returning to instance **B** on an
+idle pool, where least-busy would have sent it back to A. Both cards are reachable concurrently
+through one name and no conversation moves between them.
+
+**Not verified:** no throughput measurement was taken (REQ-089 style 4-stream benchmark); the win
+claimed here is avoided cold prefills, not tok/s. Sibling failover is proven by test, not by killing
+a live instance.
+
+**Files:** `internal/proxy/poolaffinity.go`, `poolaffinity_test.go`, `modelpool.go`,
+`prefixcache.go` (`staticPrefixSHAs` extracted), `proxy.go`; settings `model_pools` + `model_map`
+(backups in the session scratchpad). Binary rebuilt, `cfrproxy.bak-prepoolaffinity-*` kept, service
+restarted.
+
+**REQ-091 status: COMPLETE.**
+
 ## 2026-08-30
 
 ### REQ-090 — Tower array recovery, array-guard watchdog, and the speculation investigation

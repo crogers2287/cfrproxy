@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"encoding/json"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -57,30 +55,14 @@ func (c *inflightCounter) add(model string, d int64) { atomic.AddInt64(c.counter
 func (c *inflightCounter) get(model string) int64    { return atomic.LoadInt64(c.counter(model)) }
 
 // poolMembers returns the upstream models a logical name fans out to, or nil
-// when the name is not pooled.
+// when the name is not pooled. Both setting forms are accepted — see
+// poolaffinity.go for the object form that turns on prefix-affine routing.
 func (p *Proxy) poolMembers(model string) []string {
-	raw := strings.TrimSpace(p.Store.Setting("model_pools"))
-	if raw == "" {
+	spec := p.poolSpecFor(model)
+	if spec == nil {
 		return nil
 	}
-	var pools map[string][]string
-	if json.Unmarshal([]byte(raw), &pools) != nil {
-		return nil
-	}
-	members := pools[model]
-	if len(members) < 2 {
-		return nil // a pool of one is just the model itself
-	}
-	out := make([]string, 0, len(members))
-	for _, m := range members {
-		if m = strings.TrimSpace(m); m != "" {
-			out = append(out, m)
-		}
-	}
-	if len(out) < 2 {
-		return nil
-	}
-	return out
+	return spec.Members
 }
 
 // pickPoolMember returns the least-busy member. Ties go to the earlier member,
