@@ -186,6 +186,7 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <p class="hint">The catch-all safety net for <b>every</b> model. If the model a harness asked for can't serve — subscription/quota exhausted, rate limited, provider overloaded or unreachable, or the prompt overflows its context — the request continues down this list instead of failing. Runs <i>after</i> a provider's own <code>fallback</code> field, so you don't have to wire each provider by hand. Order matters; the first target that answers wins, and the reply is tagged with a ⚠️ notice saying what was skipped. Up to 5 targets are tried per request.</p>
   <div style="max-width:760px">
     <div class="check"><input type="checkbox" id="gf-enabled" onchange="renderGF()"><span>Enabled</span></div>
+    <div class="check"><input type="checkbox" id="pf-enabled"><span title="Each provider can name its own fallback (provider/model) in its settings. That per-provider hop runs BEFORE this chain and is invisible here, so it is off by default: a local provider going down otherwise quietly bills whatever its own fallback names.">Also honour each provider's own <code>fallback</code> field <span style="color:var(--dim)">(off by default; runs before this chain)</span></span></div>
     <div id="gf-list" style="margin-top:8px"></div>
     <div style="margin-top:10px;display:flex;gap:8px">
       <button class="b" onclick="gfAdd()">+ Add target</button>
@@ -871,12 +872,15 @@ async function loadGlobalFallback(){
     $('#gf-enabled').checked=!!c.enabled;
     gfTargets=(c.targets||[]).slice();
     renderGF();
+    const pf=await api('provider-fallback');
+    $('#pf-enabled').checked=!!pf.enabled;
   }catch(err){/* panel is best-effort */}
 }
 async function saveGlobalFallback(){
   const targets=gfTargets.map(t=>(t||'').trim()).filter(Boolean);
   try{
     await api('global-fallback',{method:'PUT',body:JSON.stringify({enabled:$('#gf-enabled').checked,targets})});
+    await api('provider-fallback',{method:'PUT',body:JSON.stringify({enabled:$('#pf-enabled').checked})});
     gfTargets=targets;renderGF();
     toast(targets.length?`fallback chain saved (${targets.length} targets)`:'fallback chain cleared');
   }catch(err){toast('fallback: '+err.message,true)}

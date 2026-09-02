@@ -45,6 +45,13 @@ func newDiscoveryStore(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
+	// The per-provider fallback chain is off by default in production (see
+	// providerfallback.go); the legacy tests here were written when it was
+	// unconditional, so opt in. TestProviderFallbackGatedBySetting covers the
+	// default.
+	if err := s.SetSetting("provider_fallback", `{"enabled":true}`); err != nil {
+		t.Fatal(err)
+	}
 	return s
 }
 

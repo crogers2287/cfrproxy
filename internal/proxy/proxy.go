@@ -479,7 +479,11 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	noFallback := prov.NoFallback || (ep != nil && ep.NoFallback)
 	seen := map[int64]bool{prov.ID: true}
 	cur := prov
-	for hop := 0; !noFallback && hop < 3 && cur.Fallback != ""; hop++ {
+	// The per-provider chain is gated by the provider_fallback setting (see
+	// providerfallback.go): off by default, so the visible global chain alone
+	// decides failover unless the operator opts the per-provider hops back in.
+	providerChain := p.ProviderFallbackConfig().Enabled
+	for hop := 0; providerChain && !noFallback && hop < 3 && cur.Fallback != ""; hop++ {
 		fprov, fmodel, ferr := p.ResolveModel(r.Context(), cur.Fallback)
 		if ferr != nil || seen[fprov.ID] {
 			break
@@ -944,6 +948,14 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			close(cap)
 		}(deltas)
 		if err := writeStream(inbound, w, req.Model, cap); err != nil {
+			// The writer stopped early (client gone, or an upstream error). The
+			// reader and relay goroutines may still hold deltas; drain them so
+			// they can observe the closed body (deferred above) and exit
+			// instead of blocking on a channel nobody reads.
+			go func() {
+				for range cap {
+				}
+			}()
 			tr.Status, tr.Err = 200, "stream aborted: "+err.Error()
 			return
 		}
