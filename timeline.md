@@ -56,7 +56,21 @@ stored provider key to an attacker URL), bcrypt result cache (one bcrypt per adm
 first-run password kept out of the journal. Also noted, not done: `Fusions()` is still one query
 per request; `handleCore` (726 lines) was left intact by design.
 
-**REQ-094 status: COMPLETE** (Tiers 0, 1, 3). Deploy stamps below.
+#### Deploy + verify (2026-09-02)
+- `make deploy` × 4 through the day, last: `running: {"built":"2026-09-02T18:22:04Z","commit":"3608bdd"}`,
+  `MainPID=3555832 ActiveState=active`; the restart before it logged
+  `cfrproxy: shutting down, draining in-flight requests (up to 25s)`.
+- `go vet ./... && go test ./...` green; `go test -race` green on proxy/wire/store; GitHub Actions
+  green on `7e39722` and the merge; master = origin/master = origin/main = `3608bdd`.
+- Journal after deploy: `level=INFO msg=request … client=curl model=gpt-5.6-terra provider=codex status=200 ms=3713`
+  and `level=WARN … status=400 … err=…` for a rejected request; a live Hermes request that
+  failed over showed `note="attempt failed — request continued"` at WARN.
+- Live `curl -N` stream aborted after 3 chunks → trace `stream aborted: context canceled`.
+- Noted for later: an unknown model id (`nope/none`) still falls through to the first enabled
+  provider's default model (here `xai/grok-imagine-image`) instead of a 404 — pre-existing
+  `ResolveModel` behaviour, now visible with `cfrproxy explain`.
+
+**REQ-094 status: COMPLETE** (Tiers 0, 1, 3; Tier 2 deferred).
 
 ## 2026-09-01
 
