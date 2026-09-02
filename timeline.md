@@ -2,6 +2,91 @@
 
 ## 2026-09-01
 
+### REQ-093 — ExLlamaV3 trial on our models (3090s), and a ROCm fork for the W6800s
+
+**Ask (2026-09-01):** try the recent ExLlamaV3 updates (CPU expert offload, Qwen3.8-Flash-Next /
+GLM-5.3-Flash support, self-calibrated quants) on our hardware and see whether the results are
+good; then find a ROCm fork to try on the AMD cards. Chad later freed all four GPUs for the trial.
+
+**Setup.** Upstream exllamav3 is NVIDIA-only (ROCm still on its to-do list). Installed 1.4.6
+(cu128 / torch 2.8.0, cp312) in `~/exllamav3-venv`, tabbyAPI alongside; harness in
+`~/exl3-bench/` (`bench.py` reuses exllamav3's own argparser; `bench_lcpp.py` is the same protocol
+against a llama-server; results in `results.jsonl`, full completions in `out/`). Protocol: fixed
+prompt, greedy, 512 new tokens, depths 0 / 12k / 48k, three repeats, medians of the non-first
+repeats, plus 2- and 4-stream batches; both engines measured on the *same* card the same hour.
+Quants on Fred Storage: `Qwen3.8-27B-exl3-SC4.00bpw-H5`, `Ornith-1.5-35B-A3B-exl3-4bpw`,
+`Qwen3.8-Flash-Next-exl3-3.05bpw-h5-ng5` (85 GB).
+
+**Harness traps, all self-inflicted and all now fixed.** (1) exl3's `Tokenizer.encode` treats
+`<|im_start|>` as plain text unless `encode_special_tokens=True`; with a literal-text chat
+template the model answered a bare user turn but *echoed the whole prompt* as soon as a system
+turn or any prefix was added. That echo is trivially predictable, so MTP "acceptance" read 98 %
+and 104-110 t/s at depth 0 — those numbers were wrong and are replaced below. It also mimicked a
+broken kernel on the ROCm port and cost two hours of bisection before the identical config on a
+3090 reproduced it. (2) exl3's prefix cache makes repeat prefill numbers meaningless unless each
+repeat differs early; a per-repeat system turn fixes that without touching the user text.
+(3) `-ambs` (autosplit max batch size) defaults to 1 and caps recurrent-state slots on hybrid GDN
+models, so batched jobs silently serialize; llama.cpp needs `-np N` likewise. (4) Generator
+`max_chunk_size` 2048 -> 8192 lifts exl3 prefill ~30 % at depth.
+
+**Qwen3.8-27B, one 3090, single stream, q8 KV** (llama.cpp = UD-Q4_K_XL on beellama, MTP draft
+= mtp-Qwen3.8-27B-Q8_0; exl3 = SC 4.00bpw, built-in MTP, 8k chunks):
+
+| depth | llama.cpp | llama.cpp +MTP | exl3 | exl3 +MTP |
+|---|---|---|---|---|
+| 0 | 29.5 t/s (pp 214) | 42.9 (acc .58) | 38.6 (pp 436) | 66.5 (acc .56) |
+| 12k | 27.1 (pp 1042) | 40.7 (acc .59) | 35.8 (pp 884) | 67.3 (acc .65) |
+| 48k | 21.6 (pp 888) | 32.5 (acc .50) | 31.1 (pp 746) | 52.5 (acc .68) |
+
+exl3 decode is +31 % / +32 % / +44 % over llama.cpp without speculation and +55 % / +65 % / +62 %
+with MTP on both; exl3 prefill trails llama.cpp by ~15 % at depth. Batched at depth 0 (aggregate):
+llama.cpp 44 t/s (2 streams) / 59 (4); exl3 65 / 110; exl3 +MTP 114 / 122. Speculation is not
+bit-exact at depth on either engine (coherent alternate phrasings after a few hundred chars).
+
+**Ornith-1.5-35B-A3B (Tiel's model), exl3 4bpw on one 3090, no speculation:** 112 t/s single
+stream, 153 aggregate at 2 streams, 249 at 4; prefill ~3.2k t/s at 12k. For reference Tiel on a
+W6800 under llama.cpp is 60 / 53 / 38 t/s (REQ-090). exl3's MTP on this quant *hurts* (acc 0.27:
+96 t/s single, 88 aggregate at 2 streams) — run it without speculation.
+
+**Qwen3.8-Flash-Next 3.05bpw with CPU expert offload, both 3090s** (layer-split; offload needs
+layer-split, not TP; the n-gram table (30 GB) lives in RAM via `-ngr`; this architecture's
+attention only supports the fp16 cache, so no `-cq`). 12 of 48 layers' experts on CPU
+(`-mcl 12`, 32 threads) fills both cards (23 + 19 GB): 17.9 t/s single stream, prefill ~70 t/s,
+19 / 26 t/s aggregate at 2 / 4 streams; with MTP 22.1 t/s (acc 0.71), 28 / 33 aggregate. The
+per-layer expert split (`-mcs 128`) is no better (16.7 t/s). Twenty layers offloaded gave 10.5.
+llama.cpp with the Q4 dense-HC8 GGUF entirely on the two cards does ~51 t/s single stream, so on
+this box the offload path is a capacity feature, not a speed one: it lets an 85 GB quant run, at a
+third of the all-GPU speed and with prefill an order of magnitude slower. Loads take ~11 min from
+the NAS. (Side effects handled on the way: the NTFS `/mnt/storage` filled to 100 % during the
+download and silently corrupted the 30 GB n-gram table; re-downloaded to local scratch, verified
+against the LFS sha256, copied to Fred Storage.)
+
+**Recommendation.** exl3 is worth adopting on the 3090s for the dense 27B (SC 4.00bpw, MTP on,
+8k prefill chunks: 66 / 67 / 52 t/s vs 43 / 41 / 33 for llama.cpp with its MTP draft) and for
+Ornith without speculation (112 t/s vs ~60 on a W6800 under llama.cpp). Serve it through tabbyAPI
+(installed in `~/exllamav3-venv`) behind cfrproxy; keep llama.cpp for Flash-Next on the 3090s and
+for everything on the W6800s.
+
+**ROCm.** `Calandracas606/exllamav3` (branch `rocm-plumbing`, upstream PRs #283/#289 open) is the
+only real port: HIP compat layer, Triton EXL3 GEMV, whole-step graph capture, tested on gfx1100
+with ROCm 7 wheels. Built it for gfx1030 against the host's ROCm 6.4.3 in `~/exl3-rocm-venv`
+(torch 2.9.1+rocm6.4, triton 3.5.1) with four fixes: `__syncwarp` and `hipblasSetWorkspace`
+polyfills in `compat_rocm.cuh` (both missing before ROCm 7); `-isystem $ROCM_HOME/include` in
+hipcc flags because clang drops a `-I` that duplicates a built-in dir and the apt CUDA toolkit's
+`/usr/include/thrust` shadowed rocThrust; a one-line null guard in torch's `cpp_extension.py`
+hipify path; plus a Python scoping bug in the fork's `exl3.py` (local import shadowing
+`linear_exl3_triton`). Verified on the W6800: Triton `tl.dot` correct, the fork's 74 Triton GEMM
+tests pass, the GDN recurrent kernel and FLA chunked prefill are bit-identical to the 3090, cache
+positions advance correctly, and with the fixed harness the 27B produces the same sane output as
+CUDA. **Result: it works but is slow — 5-6 t/s decode, ~5 t/s prefill, versus llama.cpp ROCm on
+the same W6800 at 18.9 / 16.2 / 11.1 t/s (21.1 / 18.6 / 17.4 with MTP).** Triton-linear and
+fallback-linear paths are identical, so the bottleneck is per-step overhead, not the GEMV. Hard
+gaps: no MoE kernels in the ROCm build (`exl3_mgemm`/`exl3_moe`/routing absent, so Tiel/Ornith
+cannot load) and no quantized-cache kernel (`quant_cache_paged`), fp16 KV only. Not a production
+option for the W6800s; llama.cpp stays.
+
+**REQ-093 status: COMPLETE** (measurement). Not done: wiring tabbyAPI into llama-swap/cfrproxy — separate request.
+
 ### REQ-092 — `ornith-aggregate` was routable but not enumerable
 
 **Ask:** REQ-091's aggregate name worked on a direct POST but was absent from `GET /v1/models`
