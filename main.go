@@ -210,7 +210,14 @@ func cmdServe(args []string) {
 	fmt.Printf("  data plane : /v1/chat/completions  /v1/messages  /api/chat\n")
 	fmt.Printf("  webui      : http://localhost%s/admin/  (user %q)\n", portOf(*addr), user)
 	if fresh != "" {
-		fmt.Printf("  first run  : generated WebUI password: %s  (change with `cfrproxy passwd`)\n", fresh)
+		// Under systemd stdout is the journal, and a password does not belong
+		// in a log that survives for months. Park it in the data dir instead.
+		pwFile := filepath.Join(*data, "admin-password.txt")
+		if err := os.WriteFile(pwFile, []byte(fresh+"\n"), 0o600); err != nil {
+			fmt.Printf("  first run  : generated WebUI password: %s  (change with `cfrproxy passwd`)\n", fresh)
+		} else {
+			fmt.Printf("  first run  : WebUI password written to %s  (change with `cfrproxy passwd`)\n", pwFile)
+		}
 	}
 	// ReadHeaderTimeout bounds slow-header connections; Read/Write timeouts
 	// stay unset because long generations legitimately stream for minutes.

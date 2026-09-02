@@ -7,6 +7,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -27,7 +28,7 @@ func (p *Proxy) authEndpoint(w http.ResponseWriter, r *http.Request, inbound str
 	if got == "" {
 		got = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	}
-	if ep.APIKey == "" || got != ep.APIKey {
+	if ep.APIKey == "" || subtle.ConstantTimeCompare([]byte(got), []byte(ep.APIKey)) != 1 {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="cfrproxy"`)
 		httpErr(w, inbound, 401, "invalid or missing API key for this endpoint")
 		return ep, false

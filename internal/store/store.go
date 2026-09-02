@@ -173,6 +173,8 @@ type Store struct {
 
 	stopOnce      sync.Once
 	stopRetention chan struct{}
+
+	admin adminCache // verified admin credentials, see admin.go
 }
 
 // reloadProbeEvery bounds how often maybeReload asks SQLite for data_version.

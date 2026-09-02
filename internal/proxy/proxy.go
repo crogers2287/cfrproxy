@@ -12,7 +12,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/crypto/bcrypt"
 	"io"
 	"net"
 	"net/http"
@@ -237,32 +236,72 @@ func (p *Proxy) handleTags(w http.ResponseWriter, r *http.Request, scope string)
 // carry one of those keys as Bearer or x-api-key. Direct LAN traffic is
 // unaffected, so local harnesses keep working keyless.
 func (p *Proxy) publicKeyOK(r *http.Request) bool {
-	if r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("X-Real-IP") == "" {
-		return true // direct connection — not via the public proxy
-	}
-	keys := splitList(p.Store.Setting("public_api_keys"))
-	if len(keys) == 0 {
-		return true // gate not configured
+	// A direct connection from a trusted network is keyless so local harnesses
+	// just work. "Direct" means no reverse proxy is in front of it: a request
+	// that arrives with forwarding headers is judged as external even when the
+	// proxy itself sits on the LAN. Previously the ABSENCE of those headers was
+	// the whole test, so anything that could reach the raw port — a container,
+	// a stray VPN peer, a forgotten port-forward — had every subscription.
+	forwarded := r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Real-IP") != ""
+	if !forwarded && p.peerTrusted(r) {
+		return true
 	}
 	// An authenticated admin is always allowed through. The WebUI's model
 	// scanner calls /p/<provider>/v1/models?all=1 from the browser, which is
 	// NOT under /admin/ and so is subject to this gate; without this bypass,
 	// turning the gate on breaks "Scan models" for anyone using the admin UI
 	// remotely. Same credentials as /admin/ (see api.basicAuth).
-	if u, pw, ok := r.BasicAuth(); ok {
-		wantUser := p.Store.Setting("admin_user")
-		hash := p.Store.Setting("admin_pass_hash")
-		if hash != "" && subtle.ConstantTimeCompare([]byte(u), []byte(wantUser)) == 1 &&
-			bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil {
-			return true
-		}
+	if u, pw, ok := r.BasicAuth(); ok && p.Store.VerifyAdmin(u, pw) {
+		return true
 	}
 	got := r.Header.Get("x-api-key")
 	if got == "" {
 		got = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	}
-	for _, k := range keys {
-		if got == k {
+	if got == "" {
+		return false
+	}
+	for _, k := range splitList(p.Store.Setting("public_api_keys")) {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(k)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultTrustedCIDRs are the networks whose direct peers are keyless when
+// the trusted_cidrs setting is unset: loopback, RFC1918, the Tailscale CGNAT
+// range, and the IPv6 equivalents.
+var defaultTrustedCIDRs = mustCIDRs("127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fe80::/10,fc00::/7")
+
+func mustCIDRs(list string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range splitList(list) {
+		_, n, err := net.ParseCIDR(c)
+		if err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// peerTrusted reports whether the TCP peer is inside trusted_cidrs (or the
+// defaults). An unparseable setting trusts nobody rather than everybody.
+func (p *Proxy) peerTrusted(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	cidrs := defaultTrustedCIDRs
+	if raw := strings.TrimSpace(p.Store.Setting("trusted_cidrs")); raw != "" {
+		cidrs = mustCIDRs(raw)
+	}
+	for _, n := range cidrs {
+		if n.Contains(ip) {
 			return true
 		}
 	}

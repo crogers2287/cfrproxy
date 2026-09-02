@@ -4,13 +4,13 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,7 +45,9 @@ func (a *API) EnsureCredentials() (user, freshPass string, err error) {
 		return user, "", nil
 	}
 	raw := make([]byte, 12)
-	rand.Read(raw)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", fmt.Errorf("generate password: %w", err)
+	}
 	pass := base64.RawURLEncoding.EncodeToString(raw)
 	if err := a.SetPassword(pass); err != nil {
 		return "", "", err
@@ -64,17 +66,45 @@ func (a *API) SetPassword(pass string) error {
 func (a *API) basicAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		wantUser := a.Store.Setting("admin_user")
-		hash := a.Store.Setting("admin_pass_hash")
-		if !ok || hash == "" ||
-			subtle.ConstantTimeCompare([]byte(user), []byte(wantUser)) != 1 ||
-			bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
+		if !ok || !a.Store.VerifyAdmin(user, pass) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="cfrproxy"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if reason := crossSiteWrite(r); reason != "" {
+			http.Error(w, "forbidden: "+reason, http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// crossSiteWrite names the reason a state-changing request must be refused,
+// or "" when it may proceed.
+//
+// Browsers attach cached Basic credentials to any request for this origin,
+// including a cross-site <form enctype="text/plain"> POST, which needs no
+// CORS preflight. Handlers decode JSON regardless of Content-Type, so such a
+// form could, for instance, make scan-models send a stored provider key to
+// an attacker's URL. Two independent checks close that: a browser labels the
+// request Sec-Fetch-Site: cross-site, and a form cannot send
+// application/json. Non-browser clients (the CLI, scripts, curl) send
+// neither header oddity and JSON bodies, so they are unaffected.
+func crossSiteWrite(r *http.Request) string {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return ""
+	}
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		return "cross-site request"
+	}
+	if r.ContentLength != 0 {
+		ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if ct != "application/json" {
+			return "write requests must be application/json"
+		}
+	}
+	return ""
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -568,7 +598,10 @@ func (a *API) hEndpointSave(w http.ResponseWriter, r *http.Request) {
 		e.ID = 0
 		if e.APIKey == "" {
 			raw := make([]byte, 18)
-			rand.Read(raw)
+			if _, err := rand.Read(raw); err != nil {
+				http.Error(w, "could not generate a key: "+err.Error(), 500)
+				return
+			}
 			e.APIKey = "cfr_" + base64.RawURLEncoding.EncodeToString(raw)
 		}
 	}

@@ -35,7 +35,7 @@ func TestPublicKeyOKAdminBypass(t *testing.T) {
 		fwd             bool
 		want            bool
 	}{
-		{name: "direct connection is always allowed", fwd: false, want: true},
+		{name: "direct connection from a trusted peer is keyless", fwd: false, want: true},
 		{name: "via proxy, no creds", fwd: true, want: false},
 		{name: "via proxy, correct api key", key: "cfr_good", fwd: true, want: true},
 		{name: "via proxy, wrong api key", key: "cfr_bad", fwd: true, want: false},
@@ -46,6 +46,7 @@ func TestPublicKeyOKAdminBypass(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+			r.RemoteAddr = "127.0.0.1:4000" // a trusted direct peer; see TestPublicKeyGateTrustModel
 			if c.fwd {
 				r.Header.Set("X-Forwarded-For", "203.0.113.9")
 			}

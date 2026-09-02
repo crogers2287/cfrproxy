@@ -44,7 +44,8 @@ cfrproxy version
   provider, model, status, tokens), `usage_daily` (durable rollup, also `/admin/api/usage`),
   `endpoints` (share endpoints: `force_model`, `models` allow-list, `no_fallback`,
   `context_length`), `providers`, `settings` (JSON blobs: `model_map`, `global_fallback`,
-  `model_pools`, `vision_models`, `auto_router`, `public_api_keys`).
+  `model_pools`, `vision_models`, `auto_router`, `public_api_keys`, `trusted_cidrs`,
+  `provider_fallback`).
 - Sidecars: `cfrproxy-hermes-sync.timer` (every 2 min, `scripts/sync_hermes_cfrproxy.py`),
   `kvwarm.service` (`scripts/kvwarm.py`, prefix-cache warmer for the local llama.cpp/vLLM).
 

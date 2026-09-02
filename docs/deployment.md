@@ -51,13 +51,14 @@ Data lives in `~/.cfrproxy/` (override with `--data`). On first run it prints a 
 ## Binding
 
 - `cfrproxy serve` binds `:8420` on all interfaces by default; use `--addr 127.0.0.1:8420` to keep it loopback-only.
-- The data plane (`/v1/...`, `/api/chat`) is keyless — anything that can reach the port can use it. That's intentional for LAN use so local harnesses just work.
+- The data plane (`/v1/...`, `/api/chat`) is keyless for **direct** connections from a trusted network, so local harnesses just work. Trusted by default: loopback, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), the Tailscale range (`100.64/10`) and their IPv6 equivalents. Override with a comma-separated list: `cfrproxy config set trusted_cidrs "192.168.1.0/24,100.64.0.0/10"`.
+- Any other peer, and any request that arrives with `X-Forwarded-For` / `X-Real-IP` (i.e. through a reverse proxy), must send a public API key or admin credentials. If no keys are configured such requests are refused, not waved through.
 
 ## Exposing it publicly — read this first
 
 **Do not port-forward the raw port to the internet.** A keyless data plane would let anyone burn your subscriptions.
 
-cfrproxy has a built-in gate: when a request arrives through a reverse proxy (identified by `X-Forwarded-For` / `X-Real-IP`), it requires an API key; direct LAN requests stay keyless. Set one or more keys:
+cfrproxy has a built-in gate: a request that arrives through a reverse proxy (identified by `X-Forwarded-For` / `X-Real-IP`) or from a peer outside `trusted_cidrs` requires an API key; direct trusted-network requests stay keyless. Set one or more keys:
 
 ```bash
 cfrproxy config set public_api_keys "$(openssl rand -hex 24)"
@@ -66,7 +67,7 @@ cfrproxy config set public_api_keys "$(openssl rand -hex 24)"
 
 Then callers coming through your reverse proxy must send `Authorization: Bearer <key>` (or `x-api-key: <key>`). Put cfrproxy behind a TLS-terminating reverse proxy (nginx, Caddy, Nginx Proxy Manager, Cloudflare Tunnel). A helper for Nginx Proxy Manager is in [`scripts/publish_via_npm.sh`](../scripts/publish_via_npm.sh).
 
-The WebUI/management API at `/admin/` always requires HTTP basic auth, independently of the data-plane gate.
+The WebUI/management API at `/admin/` always requires HTTP basic auth, independently of the data-plane gate. State-changing admin requests must be `application/json` and are refused when a browser marks them `Sec-Fetch-Site: cross-site`, so cached credentials cannot be replayed by a form on another site. On first run the generated admin password is written to `~/.cfrproxy/admin-password.txt` (mode 0600) rather than printed into the journal.
 
 ## Health check
 

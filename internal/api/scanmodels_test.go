@@ -154,6 +154,7 @@ func TestScanModelsRouteIsWired(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/admin/api/providers/scan-models",
 		strings.NewReader(`{"id":0,"type":"openai","base_url":"`+srv.URL+`","api_key":"k"}`))
+	req.Header.Set("Content-Type", "application/json") // the CSRF guard refuses non-JSON writes
 	req.SetBasicAuth("admin", "pw")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

@@ -52,6 +52,12 @@ func newDiscoveryStore(t *testing.T) *store.Store {
 	if err := s.SetSetting("provider_fallback", `{"enabled":true}`); err != nil {
 		t.Fatal(err)
 	}
+	// httptest.NewRequest peers come from 192.0.2.1 (TEST-NET-1), which the
+	// data-plane trust model refuses by default. Trust it here, on top of the
+	// defaults, so handler tests exercise routing rather than the gate.
+	if err := s.SetSetting("trusted_cidrs", "192.0.2.0/24,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"); err != nil {
+		t.Fatal(err)
+	}
 	return s
 }
 
