@@ -435,6 +435,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		sniff.apply(tr)
 		p.Store.AddTrace(tr)
 		p.Hub.Publish(*tr)
+		logTrace(r, tr)
 		// after AddTrace so a slow/failed log write can never delay the trace
 		writeCacheRecord(tr)
 		recordPrefix(prefixSnap, tr)
@@ -1718,6 +1719,7 @@ func (p *Proxy) recordAttemptFailure(main *store.Trace, c candidate, reason stri
 	}
 	p.Store.AddTrace(&t)
 	p.Hub.Publish(t)
+	logTrace(nil, &t)
 }
 
 // recordRejection writes a trace for a request refused before it reached a
@@ -1738,6 +1740,7 @@ func (p *Proxy) recordRejection(r *http.Request, inbound string, status int, rea
 	}
 	p.Store.AddTrace(&t)
 	p.Hub.Publish(t)
+	logTrace(r, &t)
 }
 
 // clientHint identifies the caller for a rejection trace: the forwarded client

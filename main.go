@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -109,6 +110,8 @@ func main() {
 			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
 		}
 		cmdLaunch(rest[0], rest[1:])
+	case "explain":
+		cmdExplain(rest)
 	case "version", "--version", "-v":
 		fmt.Printf("cfrproxy %s (commit %s, built %s)\n", version, commit, buildDate)
 	case "help", "-h", "--help":
@@ -132,6 +135,8 @@ Usage:
   cfrproxy serve   [--addr :8420] [--data DIR]        run the proxy + WebUI
   cfrproxy tui     [--data DIR]                       full-screen management TUI
   cfrproxy version                                    build version, commit, date
+  cfrproxy explain <model> [--endpoint N] [--scope P] [--image] [--inbound openai|anthropic|ollama] [--json]
+                   dry-run the routing for a model id: policy, resolution, pool, fallback chain
    cfrproxy provider add --name N (--preset P | --type T --base-url U)
                    [--key K] [--model M] [--models a,b] [--fallback P/M] [--pinned m1,m2] [--doc-url U]
                    [--doc-file F.md] [--inject-docs] [--models-filter 'claude-*,!claude-*-thinking']
@@ -668,4 +673,43 @@ func cmdOAuth(args []string) {
 	fmt.Println("\ndone. Next:")
 	fmt.Println("  cfrproxy models              # confirm each provider's catalog")
 	fmt.Println("  python3 scripts/sync_hermes_cfrproxy.py   # expose them in Hermes/Telegram pickers")
+}
+
+// cmdExplain dry-runs routing for a model id against the live config — no
+// request is sent. Answers "why did this land on X" and "why is this 403 on
+// my share endpoint" without reading proxy.go.
+func cmdExplain(args []string) {
+	fs := flag.NewFlagSet("explain", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data directory")
+	endpoint := fs.String("endpoint", "", "share endpoint name (the /e/{name} mount)")
+	scope := fs.String("scope", "", "provider name of a /p/{provider} mount")
+	inbound := fs.String("inbound", "openai", "inbound dialect: openai | anthropic | ollama | responses")
+	image := fs.Bool("image", false, "the request carries an image")
+	asJSON := fs.Bool("json", false, "print JSON instead of text")
+	var model string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		model, args = args[0], args[1:]
+	}
+	fs.Parse(args)
+	if model == "" && fs.NArg() > 0 {
+		model = fs.Arg(0)
+	}
+	if model == "" {
+		fatal("usage: cfrproxy explain <model> [--endpoint N] [--scope P] [--image] [--inbound D] [--json]")
+	}
+	s := openStore(*data)
+	defer s.Close()
+	p := proxy.New(s)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res := p.Explain(ctx, proxy.ExplainRequest{Model: model, Endpoint: *endpoint, Scope: *scope, Inbound: *inbound, Image: *image})
+	if *asJSON {
+		b, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		fmt.Print(res.Text())
+	}
+	if res.Error != "" {
+		os.Exit(1)
+	}
 }

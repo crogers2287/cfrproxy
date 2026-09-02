@@ -158,6 +158,14 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/autoroute", a.hAutoRouteSet)
 	inner.HandleFunc("GET /admin/api/global-fallback", a.hGlobalFBGet)
 	inner.HandleFunc("PUT /admin/api/global-fallback", a.hGlobalFBSet)
+	inner.HandleFunc("GET /admin/api/explain", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		res := a.Proxy.Explain(r.Context(), proxy.ExplainRequest{
+			Model: q.Get("model"), Endpoint: q.Get("endpoint"), Scope: q.Get("scope"),
+			Inbound: q.Get("inbound"), Image: q.Get("image") == "1" || q.Get("image") == "true",
+		})
+		writeJSON(w, 200, res)
+	})
 	inner.HandleFunc("GET /admin/api/provider-fallback", func(w http.ResponseWriter, r *http.Request) {
 		settingJSON(a, w, "provider_fallback", `{"enabled":false}`)
 	})
