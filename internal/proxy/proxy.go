@@ -28,6 +28,15 @@ import (
 	"github.com/crogers2287/cfrproxy/internal/wire"
 )
 
+// Build identity, set from main via -ldflags (see Makefile). Served by
+// GET /api/version so `make deploy` can prove the new binary is the one
+// answering.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 const snippetMax = 2000
 
 // Hub broadcasts trace events to live subscribers (WebUI SSE, TUI tail).
@@ -123,7 +132,7 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /p/{provider}/skills/{name}", func(w http.ResponseWriter, r *http.Request) { p.handleProviderSkill(w, r) })
 
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"version": "0.7.0-cfrproxy"})
+		writeJSON(w, 200, map[string]string{"version": Version, "commit": Commit, "built": BuildDate})
 	})
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok"})

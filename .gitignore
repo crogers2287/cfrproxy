@@ -25,3 +25,9 @@ __pycache__/
 /replace
 /the
 .gstack/
+
+# Runtime/scratch output written into the checkout by sidecars and launchers.
+*.log
+*.pid
+*.bak.*
+*.tmp

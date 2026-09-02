@@ -35,7 +35,7 @@ Everything is managed from the WebUI or CLI; the only state is one SQLite file. 
 ## Quickstart
 
 ```bash
-go build -o cfrproxy .
+make build          # or: go build -o cfrproxy . on a fresh clone (see docs/deployment.md)
 
 # add a provider (any OpenAI-compatible endpoint works)
 ./cfrproxy provider add --name openrouter --preset openrouter --key sk-or-... --model anthropic/claude-sonnet-4

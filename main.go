@@ -55,6 +55,14 @@ func fatal(format string, args ...any) {
 	os.Exit(1)
 }
 
+// Set by the Makefile via -ldflags; `cfrproxy version` and GET /api/version
+// report them so a session can confirm which build is actually serving.
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -99,6 +107,8 @@ func main() {
 			fatal("usage: cfrproxy launch <harness> [--model provider/model] [harness args...]")
 		}
 		cmdLaunch(rest[0], rest[1:])
+	case "version", "--version", "-v":
+		fmt.Printf("cfrproxy %s (commit %s, built %s)\n", version, commit, buildDate)
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -119,6 +129,7 @@ func usage() {
 Usage:
   cfrproxy serve   [--addr :8420] [--data DIR]        run the proxy + WebUI
   cfrproxy tui     [--data DIR]                       full-screen management TUI
+  cfrproxy version                                    build version, commit, date
    cfrproxy provider add --name N (--preset P | --type T --base-url U)
                    [--key K] [--model M] [--models a,b] [--fallback P/M] [--pinned m1,m2] [--doc-url U]
                    [--doc-file F.md] [--inject-docs] [--models-filter 'claude-*,!claude-*-thinking']
@@ -176,6 +187,7 @@ func cmdServe(args []string) {
 
 	s := openStore(*data)
 	defer s.Close()
+	proxy.Version, proxy.Commit, proxy.BuildDate = version, commit, buildDate
 	p := proxy.New(s)
 	a := &api.API{Store: s, Proxy: p}
 	user, fresh, err := a.EnsureCredentials()

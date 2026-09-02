@@ -5,10 +5,15 @@ cfrproxy is one static binary. Build it, run `cfrproxy serve`, done. This doc co
 ## Build
 
 ```bash
-go build -o cfrproxy .
-# optionally put it on PATH
-install -m755 cfrproxy ~/.local/bin/cfrproxy
+make build     # writes cfrproxy.tmp then renames it into place
+make install   # atomic copy to ~/.local/bin/cfrproxy
 ```
+
+Do not run `go build -o cfrproxy .` on a checkout whose binary a running service execs:
+the linker truncates the live executable first (INCIDENT-002 in `timeline.md`). `make build`
+builds to a temp file and renames, which leaves the running process on the old inode. The
+Makefile also stamps the build with the git commit; `cfrproxy version` and `GET /api/version`
+report it.
 
 ## Run as a systemd user service
 
@@ -31,6 +36,14 @@ WantedBy=default.target
 systemctl --user daemon-reload
 systemctl --user enable --now cfrproxy
 loginctl enable-linger "$USER"   # survive logout / reboot
+```
+
+Redeploy with one command:
+
+```bash
+make deploy      # vet + test, keep a dated rollback copy, build, install, restart,
+                 # then wait for /health 200, /admin/ 401 and /api/version == HEAD
+make rollback    # restore the newest cfrproxy.bak-* and restart
 ```
 
 Data lives in `~/.cfrproxy/` (override with `--data`). On first run it prints a generated WebUI password; reset it with `cfrproxy passwd --pass NEW`.
