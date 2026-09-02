@@ -6,6 +6,30 @@
 
 ## 2026-09-02
 
+### REQ-095 — Tier 2 of the audit: data-plane trust model, CSRF guard, credential cache
+
+Source: chat ("do it") after REQ-094 listed Tier 2 as deferred; trust model already decided
+(RFC1918 + Tailscale keyless).
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| 2.1 `/admin/` CSRF guard: state-changing requests refused when `Sec-Fetch-Site: cross-site` or a body is not `application/json` | ✅ done | `crossSiteWrite` in `internal/api/api.go`; `TestBasicAuthRejectsCrossSiteWrites` (text/plain form → 403, same-origin JSON → 204); WebUI always sends JSON, scripts use GET/JSON |
+| 2.2 admin credential cache (`Store.VerifyAdmin`, 5 min, keyed on user+pass+hash so a password change invalidates) shared by `/admin/` and the data-plane gate | ✅ done | `internal/store/admin.go`; `TestVerifyAdminCachesAndInvalidatesOnPasswordChange` |
+| 2.3 data-plane gate: keyless only for direct peers in `trusted_cidrs` (default loopback, RFC1918, 100.64/10, IPv6 equivalents); forwarded or untrusted peers need a key; no keys configured ⇒ refuse, not allow | ✅ done | live after deploy: loopback `/v1/models` 200; `X-Forwarded-For: 8.8.8.8` without key 401, with the real key 200, wrong key 401; Hermes on Tailscale (100.91.28.112) kept getting 200s; `TestPublicKeyGateTrustModel` |
+| 2.4 constant-time compare for public and share keys | ✅ done | `subtle.ConstantTimeCompare` in `publicKeyOK` and `authEndpoint` |
+| 2.5 first-run password to `~/.cfrproxy/admin-password.txt` (0600) instead of the journal; `rand.Read` failures surface | ✅ done | `cmdServe`; `EnsureCredentials` and share-key generation return errors |
+
+#### Deploy + verify
+- `6c44826` via `make deploy`: `running: {"built":"2026-09-02T18:37:33Z","commit":"6c44826"}`, `MainPID=1337004 ActiveState=active`.
+- `go vet && go test ./...` green (new tests in api, store, proxy). Existing handler tests needed
+  `trusted_cidrs` to include 192.0.2.0/24 because `httptest.NewRequest` peers come from TEST-NET-1.
+- Peers observed on :8420 before and after: loopback and 100.91.28.112 only (no IPv6 global, no
+  docker peers), so the default CIDR set covers every current client.
+
+**REQ-095 status: COMPLETE.**
+
 ### REQ-094 — Audit of cfrproxy and how it is worked on; Tier 0/1/3 improvements
 
 Source: chat ("i want you to audit the cfrproxy project. how can we make it better? use aise and
