@@ -22,10 +22,14 @@ cfrproxy is the generic version of what `ollama launch claude --model glm-5.2:cl
 
 - **Speaks every dialect both ways.** Inbound OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`), or Ollama (`/api/chat`) — translated to whatever the target provider wants, including streaming and tool calls. Your Anthropic-only tool can talk to an OpenAI model and vice-versa.
 - **🔀 Auto-router.** Send the model `auto` and a small classifier buckets each request (code / reasoning / quick / long / vision) and delegates to the model *you* mapped for that task. `auto-plan` adds a planning stage that briefs the executor first.
-- **♻️ Failover chains.** Give a provider a fallback; on a timeout or 5xx cfrproxy retries once, then transparently reroutes down the chain — with a visible ⚠️ notice injected into the response so you know the model changed.
+- **♻️ Failover chains.** A global fallback chain catches quota exhaustion, rate limits, outages and context overflow for every model; a provider can also name its own fallback (off by default). cfrproxy retries once, then reroutes — with a visible ⚠️ notice injected into the response so you know the model changed.
+- **🧊 Prompt-cache care.** Sticky routing keeps a conversation on one model, static prefixes are captured for a warmup sidecar, model pools route by KV affinity, and a per-request cache log shows exactly why a prefix hit or missed ([docs/caching.md](docs/caching.md)).
+- **🪢 Model pools.** One logical model served by several upstream instances, balanced by load or by prefix affinity, with sibling failover ([docs/pools.md](docs/pools.md)).
+- **🔍 `cfrproxy explain`.** Dry-run the routing for any model id — share-endpoint policy, aliases, scoped mounts, pools, the full fallback chain — without sending a request.
 - **📊 Live dashboard.** A built-in WebUI (and TUI) shows every request in real time: which model, token burn, **cache-hit %**, latency, and auto-route decisions — per model.
 - **🔑 OAuth subscriptions as providers.** Bring your Claude, Codex, Grok/SuperGrok, Gemini, and Kimi *subscriptions* in as models (via [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) — interactive login right in the WebUI.
-- **🗜️ Context compression** (opt-in): summarize old conversation turns to cut token bills on long chats, cached per prefix, fail-open.
+- **🗜️ Context compression** (opt-in): summarize old conversation turns to cut token bills on long chats, cached per prefix, fail-open. **Caveman** compression (opt-in) abridges old tool results without touching the cached prefix ([docs/caveman.md](docs/caveman.md)).
+- **📚 Skills.** Index SKILL.md folders once, assign skills to a provider or share endpoint, and the model lazy-loads the full skill only when it needs it.
 - **⚗️ Fusion.** Send `fusion` and several models draft in parallel, then a judge synthesizes one best answer (à la OpenRouter Fusion) — returned as a single model would.
 - **🧠 Round-table consensus MCP.** Define agent *profiles* (a persona pinned to a model) and let a panel of different models deliberate a question, cross-critique, and synthesize — exposed as an MCP tool any agent can call.
 - **Declarative transforms, model pinning, docs injection**, and more — all editable in the UI, no code.
@@ -87,6 +91,9 @@ You can also **map** fixed harness names (`cfrproxy map 'claude-sonnet*' openrou
 | [docs/compression.md](docs/compression.md) | Context compression: how it works and when to use it |
 | [docs/deployment.md](docs/deployment.md) | systemd, exposing it publicly (safely), the API-key gate |
 | [docs/share-endpoints.md](docs/share-endpoints.md) | Scoped URL + key to give someone access to only certain models |
+| [docs/caching.md](docs/caching.md) | Sticky routes, prefix capture + warmup, the cache log |
+| [docs/pools.md](docs/pools.md) | One logical model over several instances; affinity routing |
+| [docs/caveman.md](docs/caveman.md) | Deterministic tool-result compression |
 | [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md) | Optional: wiring cfrproxy into the Hermes agent platform |
 
 ## CLI reference

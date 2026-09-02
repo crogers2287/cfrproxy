@@ -47,7 +47,7 @@ cfrproxy provider edit --name codex --filter "gpt-*,!gpt-*-mini"
 
 ## Fallback chains
 
-Give a provider a fallback (`provider/model`). On a transient error — connection failure, timeout, 408/429/5xx — cfrproxy retries once, then reroutes to the fallback. Fallbacks are followed **transitively** (A → B → C, cycle-safe, up to 3 hops):
+Two chains exist. The **global fallback chain** (WebUI → Providers → *Auto fallback chain*, setting `global_fallback`) applies to every request and is the one to configure first. A provider can additionally name its **own** fallback (`provider/model`); that per-provider hop is **off by default** because it is invisible in the chain the UI shows and once quietly billed a paid provider for every local request during an outage. Enable it with the *Also honour each provider's own fallback field* checkbox under the auto fallback chain (setting `provider_fallback`). When on: on a transient error — connection failure, timeout, 408/429/5xx — cfrproxy retries once, then reroutes to the fallback. Fallbacks are followed **transitively** (A → B → C, cycle-safe, up to 3 hops):
 
 ```bash
 cfrproxy provider edit --name openrouter --fallback local/qwen2.5:7b

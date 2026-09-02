@@ -17,7 +17,7 @@ import (
 )
 
 // reqBase returns the public origin the client reached us on (honoring a
-// terminating proxy's X-Forwarded-Proto), e.g. "https://api.skinnyc.pro".
+// terminating proxy's X-Forwarded-Proto), e.g. "https://api.example.com".
 func reqBase(r *http.Request) string {
 	scheme := "http"
 	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {

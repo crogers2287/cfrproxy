@@ -25,7 +25,10 @@ Their tool's model picker (`GET /e/<name>/v1/models`) shows only what you allowe
 ## Enforcement
 
 - **Key required, always** — unlike the LAN data plane, share endpoints demand their key even locally. Wrong/missing key → 401.
-- **Model policy** — a request for a model outside the allow-list → 403. A forced model overrides whatever the caller sends.
+- **Model policy** — a request for a model outside the allow-list → 403. A forced model overrides whatever the caller sends. `cfrproxy explain <model> --endpoint <name>` shows exactly which rule would apply.
+- **Context cap** — `context_length` on the endpoint caps the window advertised to its clients (and what the proxy will fit a request into), so a shared key cannot run 256k-token sessions on a box sized for 64k.
+- **No fallback** — `no_fallback` keeps a request on the model it asked for; the caller gets the real error instead of a silent reroute onto a provider they were never granted.
+- **Caveman** and **skills** — per-endpoint tool-result compression ([caveman.md](caveman.md)) and lazy-loaded skills assigned to the endpoint.
 - Everything else still applies: failover, tracing (their calls show in your Live Traces), token accounting, and — if the forced model is `auto`/`auto-plan` — your auto-router.
 
 ## API
