@@ -145,6 +145,10 @@ func clientLabel(r *http.Request) string {
 		return warmupClient
 	case strings.HasPrefix(ua, "claude-cli"):
 		return "claude-code"
+	case strings.HasPrefix(strings.ToLower(ua), "codex"):
+		return "codex"
+	case strings.HasPrefix(strings.ToLower(ua), "omp"), strings.Contains(strings.ToLower(ua), "oh-my-pi"):
+		return "omp"
 	case strings.HasPrefix(ua, "OpenAI/"), strings.Contains(ua, "openai-python"):
 		// Hermes gateways reach the proxy through the OpenAI SDK; the suffix
 		// varies by language binding ("OpenAI/Python 1.x", "OpenAI/JS ...").

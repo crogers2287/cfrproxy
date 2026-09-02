@@ -116,7 +116,18 @@ func cmdLaunch(harness string, args []string) {
 	switch harness {
 	case "codex":
 		if model != "" {
-			fwd = append([]string{"-m", model}, fwd...)
+			// Codex ignores OPENAI_BASE_URL while its built-in ChatGPT account
+			// provider is selected. Define/select the proxy provider explicitly.
+			// User-supplied -c flags remain later in argv and can override these.
+			fwd = append([]string{
+				"-c", `model_provider="cfrproxy"`,
+				"-c", `model_providers.cfrproxy.name="cfrproxy"`,
+				"-c", fmt.Sprintf(`model_providers.cfrproxy.base_url=%q`, addr+"/v1"),
+				"-c", `model_providers.cfrproxy.wire_api="responses"`,
+				"-c", `model_providers.cfrproxy.env_key="OPENAI_API_KEY"`,
+				"-c", `model_reasoning_effort="medium"`,
+				"-m", model,
+			}, fwd...)
 		}
 	case "opencode":
 		if model != "" {
@@ -130,6 +141,14 @@ func cmdLaunch(harness string, args []string) {
 				fwd = append([]string{"--model", prov + "/" + model}, fwd...)
 				model = prov + "/" + model // so the banner shows what was actually passed
 			}
+		}
+	case "omp":
+		if model != "" {
+			// OMP namespaces discovered models as <its-provider>/<model>.
+			// Its configured cfrproxy provider owns the provider/model id that
+			// resolveLaunchModel returned.
+			fwd = append([]string{"--model", "cfrproxy/" + model}, fwd...)
+			model = "cfrproxy/" + model
 		}
 	}
 

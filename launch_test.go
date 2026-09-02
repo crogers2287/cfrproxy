@@ -1,12 +1,21 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/crogers2287/cfrproxy/internal/proxy"
 )
+
+func TestCodexProxyProviderConfigIsValidTOML(t *testing.T) {
+	addr := "http://127.0.0.1:8420"
+	got := fmt.Sprintf(`model_providers.cfrproxy.base_url=%q`, addr+"/v1")
+	if got != `model_providers.cfrproxy.base_url="http://127.0.0.1:8420/v1"` {
+		t.Fatalf("bad Codex provider override: %s", got)
+	}
+}
 
 func TestFuzzyModel(t *testing.T) {
 	models := []string{"qwen-3.8-max-preview-thinking", "glm-5.2", "agents-a1", "agents-a1-q8"}

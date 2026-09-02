@@ -94,6 +94,8 @@ func TestTimingsSnifferTailIsBounded(t *testing.T) {
 func TestClientLabel(t *testing.T) {
 	for ua, want := range map[string]string{
 		"claude-cli/2.0.1 (external, cli)": "claude-code",
+		"codex_cli_rs/0.99.0":              "codex",
+		"omp/18.0.8":                       "omp",
 		"OpenAI/Python 1.55.0":             "openai-sdk",
 		"":                                 "unknown",
 		"curl/8.5.0":                       "curl",
