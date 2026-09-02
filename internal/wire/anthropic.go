@@ -351,6 +351,7 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -378,6 +379,14 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 			case "text_delta":
 				if ev.Delta.Text != "" {
 					out <- Delta{Text: ev.Delta.Text}
+				}
+			case "thinking_delta":
+				// extended-thinking output rides the normalized Reasoning field, so
+				// an OpenAI-dialect client sees it as reasoning_content instead of
+				// losing it. (Signatures are not carried; thinking is display-only
+				// past the proxy.)
+				if ev.Delta.Thinking != "" {
+					out <- Delta{Reasoning: ev.Delta.Thinking}
 				}
 			case "input_json_delta":
 				if ev.Delta.PartialJSON != "" && tcIndex >= 0 {
@@ -409,13 +418,16 @@ func ReadAnthropicStream(body io.Reader, out chan<- Delta) {
 
 // WriteAnthropicStream frames normalized deltas as Anthropic SSE events.
 func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) error {
+	var werr error // first failed write to the client; the stream stops there
 	fl, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	id := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	send := func(event string, payload map[string]any) {
 		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil && werr == nil {
+			werr = err
+		}
 		if fl != nil {
 			fl.Flush()
 		}
@@ -427,42 +439,77 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 	blockIdx := -1    // current anthropic content block index
 	textOpen := false // is a text block open
 	curTC := -1       // normalized tool-call index currently open as a block
+	// Tool-call identity by normalized index. A tool call's argument
+	// fragments are streamed into ONE tool_use block; text that arrives while
+	// that block is open is held back and emitted after the block closes,
+	// because Anthropic blocks are sequential and a text block in the middle
+	// would split the call in two (the second half with a fresh id and no
+	// name — a malformed tool call to a Claude-Code-style client).
+	type tcIdent struct{ id, name string }
+	idents := map[int]tcIdent{}
+	var heldText strings.Builder
 	closeBlock := func() {
 		if blockIdx >= 0 && (textOpen || curTC >= 0) {
 			send("content_block_stop", map[string]any{"type": "content_block_stop", "index": blockIdx})
 			textOpen, curTC = false, -1
 		}
 	}
+	emitText := func(text string) {
+		if text == "" {
+			return
+		}
+		if !textOpen {
+			closeBlock()
+			blockIdx++
+			textOpen = true
+			send("content_block_start", map[string]any{"type": "content_block_start", "index": blockIdx,
+				"content_block": map[string]any{"type": "text", "text": ""}})
+		}
+		send("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIdx,
+			"delta": map[string]any{"type": "text_delta", "text": text}})
+	}
 	finish := "stop"
 	var pt, ct int
 	for d := range in {
+		if werr != nil {
+			return werr
+		}
 		if d.Err != nil {
 			send("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": d.Err.Error()}})
 			return d.Err
 		}
 		if d.Text != "" {
-			if !textOpen {
-				closeBlock()
-				blockIdx++
-				textOpen = true
-				send("content_block_start", map[string]any{"type": "content_block_start", "index": blockIdx,
-					"content_block": map[string]any{"type": "text", "text": ""}})
+			if curTC >= 0 {
+				heldText.WriteString(d.Text)
+			} else {
+				emitText(d.Text)
 			}
-			send("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIdx,
-				"delta": map[string]any{"type": "text_delta", "text": d.Text}})
 		}
 		if d.TC != nil {
+			id := idents[d.TC.Index]
+			if d.TC.ID != "" {
+				id.id = d.TC.ID
+			}
+			if d.TC.Name != "" {
+				id.name = d.TC.Name
+			}
+			if id.id == "" {
+				id.id = fmt.Sprintf("toolu_%d_%d", time.Now().UnixNano(), d.TC.Index)
+			}
+			idents[d.TC.Index] = id
 			if d.TC.Index != curTC {
 				closeBlock()
+				if heldText.Len() > 0 {
+					emitText(heldText.String())
+					heldText.Reset()
+					closeBlock()
+				}
 				blockIdx++
 				curTC = d.TC.Index
-				name := d.TC.Name
-				tcid := d.TC.ID
-				if tcid == "" {
-					tcid = fmt.Sprintf("toolu_%d_%d", time.Now().UnixNano(), d.TC.Index)
-				}
+				// A fragment for an index whose block already closed reopens it
+				// under the SAME id and name rather than inventing a nameless call.
 				send("content_block_start", map[string]any{"type": "content_block_start", "index": blockIdx,
-					"content_block": map[string]any{"type": "tool_use", "id": tcid, "name": name, "input": map[string]any{}}})
+					"content_block": map[string]any{"type": "tool_use", "id": id.id, "name": id.name, "input": map[string]any{}}})
 			}
 			if d.TC.Args != "" {
 				send("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIdx,
@@ -475,6 +522,10 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 		}
 	}
 	closeBlock()
+	if heldText.Len() > 0 {
+		emitText(heldText.String())
+		closeBlock()
+	}
 	send("message_delta", map[string]any{"type": "message_delta",
 		"delta": map[string]any{"stop_reason": FinishToAnthropic(finish), "stop_sequence": nil},
 		"usage": map[string]any{"input_tokens": pt, "output_tokens": ct}})

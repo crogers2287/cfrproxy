@@ -87,6 +87,7 @@ func applyCacheTimings(tr *store.Trace, body []byte) {
 // translation code.
 type timingsSniffer struct {
 	r    io.ReadCloser
+	mu   sync.Mutex // Read runs on the stream-reader goroutine; apply on the handler's
 	tail []byte
 }
 
@@ -99,10 +100,12 @@ func newTimingsSniffer(r io.ReadCloser) *timingsSniffer {
 func (s *timingsSniffer) Read(p []byte) (int, error) {
 	n, err := s.r.Read(p)
 	if n > 0 {
+		s.mu.Lock()
 		s.tail = append(s.tail, p[:n]...)
 		if len(s.tail) > sniffTailBytes {
 			s.tail = s.tail[len(s.tail)-sniffTailBytes:]
 		}
+		s.mu.Unlock()
 	}
 	return n, err
 }
@@ -111,10 +114,16 @@ func (s *timingsSniffer) Close() error { return s.r.Close() }
 
 // apply parses the last SSE/NDJSON line in the tail that carries `timings`.
 func (s *timingsSniffer) apply(tr *store.Trace) {
-	if s == nil || len(s.tail) == 0 {
+	if s == nil {
 		return
 	}
-	for _, line := range bytes.Split(s.tail, []byte("\n")) {
+	s.mu.Lock()
+	tail := append([]byte(nil), s.tail...)
+	s.mu.Unlock()
+	if len(tail) == 0 {
+		return
+	}
+	for _, line := range bytes.Split(tail, []byte("\n")) {
 		if !bytes.Contains(line, []byte("\"timings\"")) {
 			continue
 		}

@@ -471,6 +471,7 @@ func ReadResponsesStream(body io.Reader, out chan<- Delta) {
 // WriteResponsesStream frames normalized deltas as Responses API SSE events for
 // clients that called the proxy's inbound /v1/responses endpoint with stream.
 func WriteResponsesStream(w http.ResponseWriter, model string, in <-chan Delta) error {
+	var werr error // first failed write to the client; the stream stops there
 	fl, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -481,7 +482,9 @@ func WriteResponsesStream(w http.ResponseWriter, model string, in <-chan Delta) 
 		payload["sequence_number"] = seq
 		seq++
 		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typ, b)
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typ, b); err != nil && werr == nil {
+			werr = err
+		}
 		if fl != nil {
 			fl.Flush()
 		}
@@ -542,6 +545,9 @@ func WriteResponsesStream(w http.ResponseWriter, model string, in <-chan Delta) 
 	}
 
 	for d := range in {
+		if werr != nil {
+			return werr
+		}
 		if d.Err != nil {
 			return d.Err
 		}

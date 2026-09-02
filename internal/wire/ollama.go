@@ -220,12 +220,14 @@ func ReadOllamaStream(body io.Reader, out chan<- Delta) {
 
 // WriteOllamaStream frames normalized deltas as Ollama NDJSON lines.
 func WriteOllamaStream(w http.ResponseWriter, model string, in <-chan Delta) error {
+	var werr error // first failed write to the client; the stream stops there
 	fl, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	send := func(payload map[string]any) {
 		b, _ := json.Marshal(payload)
-		w.Write(b)
-		w.Write([]byte("\n"))
+		if _, err := w.Write(append(b, '\n')); err != nil && werr == nil {
+			werr = err
+		}
 		if fl != nil {
 			fl.Flush()
 		}
@@ -238,6 +240,9 @@ func WriteOllamaStream(w http.ResponseWriter, model string, in <-chan Delta) err
 	finish := "stop"
 	var pt, ct int
 	for d := range in {
+		if werr != nil {
+			return werr
+		}
 		if d.Err != nil {
 			send(map[string]any{"error": d.Err.Error()})
 			return d.Err
@@ -267,7 +272,7 @@ func WriteOllamaStream(w http.ResponseWriter, model string, in <-chan Delta) err
 		}
 	}
 	final := map[string]any{"model": model, "created_at": now(), "done": true,
-		"done_reason": map[string]string{"length": "length"}[finish],
+		"done_reason":       map[string]string{"length": "length"}[finish],
 		"prompt_eval_count": pt, "eval_count": ct}
 	if final["done_reason"] == "" {
 		final["done_reason"] = "stop"

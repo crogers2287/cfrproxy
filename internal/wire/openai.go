@@ -370,6 +370,7 @@ func ReadOpenAIStream(body io.Reader, out chan<- Delta) {
 
 // WriteOpenAIStream frames normalized deltas as OpenAI SSE chunks.
 func WriteOpenAIStream(w http.ResponseWriter, model string, in <-chan Delta) error {
+	var werr error // first failed write to the client; the stream stops there
 	fl, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -380,13 +381,18 @@ func WriteOpenAIStream(w http.ResponseWriter, model string, in <-chan Delta) err
 			"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
 			"choices": []map[string]any{payload},
 		})
-		fmt.Fprintf(w, "data: %s\n\n", b)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil && werr == nil {
+			werr = err
+		}
 		if fl != nil {
 			fl.Flush()
 		}
 	}
 	send(map[string]any{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil})
 	for d := range in {
+		if werr != nil {
+			return werr
+		}
 		if d.Err != nil {
 			return d.Err
 		}
