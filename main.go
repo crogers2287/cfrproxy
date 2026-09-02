@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/api"
@@ -205,8 +207,21 @@ func cmdServe(args []string) {
 	if fresh != "" {
 		fmt.Printf("  first run  : generated WebUI password: %s  (change with `cfrproxy passwd`)\n", fresh)
 	}
-	srv := &http.Server{Addr: *addr, Handler: mux}
-	if err := srv.ListenAndServe(); err != nil {
+	// ReadHeaderTimeout bounds slow-header connections; Read/Write timeouts
+	// stay unset because long generations legitimately stream for minutes.
+	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 15 * time.Second}
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		// Let in-flight requests (streams included) finish before the process
+		// exits; systemd's default stop timeout is 90s, so 25s leaves room.
+		fmt.Fprintln(os.Stderr, "cfrproxy: shutting down, draining in-flight requests (up to 25s)")
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fatal("%v", err)
 	}
 }

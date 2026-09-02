@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"sync"
 	"time"
 
@@ -54,13 +55,25 @@ func (s *stickyRoutes) put(fp, model, bucket string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// crude bound: a proxy that has seen thousands of conversations drops the
-	// whole table rather than growing without limit. Losing stickiness just
-	// means the next turn re-classifies.
 	if len(s.m) >= stickyMaxEntries {
-		s.m = map[string]stickyEntry{}
+		s.evictOldestLocked()
 	}
 	s.m[fp] = stickyEntry{model: model, bucket: bucket, at: time.Now()}
+}
+
+// evictOldestLocked drops the least recently pinned quarter of the table.
+// It used to wipe the whole map, which for poolAffinity meant every live
+// conversation lost its KV-cache binding at once — a synchronized re-prefill
+// storm, the exact cost that table exists to avoid.
+func (s *stickyRoutes) evictOldestLocked() {
+	keys := make([]string, 0, len(s.m))
+	for k := range s.m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return s.m[keys[i]].at.Before(s.m[keys[j]].at) })
+	for _, k := range keys[:len(keys)/4] {
+		delete(s.m, k)
+	}
 }
 
 // conversationFingerprint identifies a conversation by its STABLE head — the
