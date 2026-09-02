@@ -165,8 +165,30 @@ type Store struct {
 
 	mu          sync.RWMutex
 	cache       []Provider // decrypted, sorted by priority — the hot-path registry
-	dataVersion int64      // SQLite data_version at last reload; detects writes from other processes
+	settings    map[string]string
+	transforms  []Transform
+	endpoints   []Endpoint
+	dataVersion int64     // SQLite data_version at last reload; detects writes from other processes
+	lastProbe   time.Time // last PRAGMA data_version probe; maybeReload is throttled to reloadProbeEvery
+
+	stopOnce      sync.Once
+	stopRetention chan struct{}
 }
+
+// reloadProbeEvery bounds how often maybeReload asks SQLite for data_version.
+// Every settings/provider/transform/endpoint read used to be its own query on
+// the single connection — 15-25 serialized round-trips per proxied request.
+// Now they are served from memory and a change made by another process (the
+// CLI) is picked up within this window; our own writes refresh immediately.
+const reloadProbeEvery = 200 * time.Millisecond
+
+// Retention caps. Pruning runs on a timer (see retentionLoop) rather than on
+// every insert, which used to add a subquery+DELETE to each request.
+var (
+	KeepTraces         = 5000
+	KeepRoundtableLogs = 500
+	retentionEvery     = time.Minute
+)
 
 var ValidTypes = map[string]bool{"openai": true, "anthropic": true, "ollama": true, "commandcode": true}
 
@@ -192,10 +214,34 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	s.stopRetention = make(chan struct{})
+	go s.retentionLoop()
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.stopOnce.Do(func() { close(s.stopRetention) })
+	return s.db.Close()
+}
+
+func (s *Store) retentionLoop() {
+	t := time.NewTicker(retentionEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopRetention:
+			return
+		case <-t.C:
+			s.PruneRetention()
+		}
+	}
+}
+
+// PruneRetention drops traces and round-table logs beyond the retention caps.
+func (s *Store) PruneRetention() {
+	s.db.Exec(`DELETE FROM traces WHERE id <= (SELECT MAX(id) FROM traces) - ?`, KeepTraces)
+	s.db.Exec(`DELETE FROM roundtable_logs WHERE id <= (SELECT MAX(id) FROM roundtable_logs) - ?`, KeepRoundtableLogs)
+}
 
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
@@ -501,10 +547,43 @@ func (s *Store) reload() error {
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Priority < out[j].Priority })
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	settings, err := s.loadSettings()
+	if err != nil {
+		return err
+	}
+	transforms, err := s.loadTransforms()
+	if err != nil {
+		return err
+	}
+	endpoints, err := s.loadEndpoints()
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
-	s.cache = out
+	s.cache, s.settings, s.transforms, s.endpoints = out, settings, transforms, endpoints
 	s.mu.Unlock()
-	return rows.Err()
+	return nil
+}
+
+func (s *Store) loadSettings() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT k,v FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, rows.Err()
 }
 
 // Providers returns the cached registry sorted by priority. Copies are cheap;
@@ -523,13 +602,20 @@ func (s *Store) Providers() []Provider {
 // other connections, so this is a no-op for our own writes (which call
 // reload() directly).
 func (s *Store) maybeReload() {
+	s.mu.RLock()
+	recent := time.Since(s.lastProbe) < reloadProbeEvery
+	s.mu.RUnlock()
+	if recent {
+		return
+	}
 	var v int64
 	if err := s.db.QueryRow(`PRAGMA data_version`).Scan(&v); err != nil {
 		return
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	stale := v != s.dataVersion
-	s.mu.RUnlock()
+	s.lastProbe = time.Now()
+	s.mu.Unlock()
 	if stale {
 		s.reload()
 		s.mu.Lock()
@@ -678,7 +764,17 @@ func (s *Store) Reorder(ids []int64) error {
 
 // ---- transforms ----
 
+// Transforms returns the cached transform list (see maybeReload).
 func (s *Store) Transforms() ([]Transform, error) {
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Transform, len(s.transforms))
+	copy(out, s.transforms)
+	return out, nil
+}
+
+func (s *Store) loadTransforms() ([]Transform, error) {
 	rows, err := s.db.Query(`SELECT id,name,provider_id,target,phase,rules,enabled FROM transforms ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -699,7 +795,15 @@ func (s *Store) Transforms() ([]Transform, error) {
 	return out, rows.Err()
 }
 
+// SaveTransform persists t and refreshes the in-memory caches.
 func (s *Store) SaveTransform(t *Transform) error {
+	if err := s.saveTransform(t); err != nil {
+		return err
+	}
+	return s.reload()
+}
+
+func (s *Store) saveTransform(t *Transform) error {
 	if t.Phase != "request" && t.Phase != "response" {
 		return errors.New("phase must be request or response")
 	}
@@ -723,7 +827,10 @@ func (s *Store) SaveTransform(t *Transform) error {
 
 func (s *Store) DeleteTransform(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM transforms WHERE id=?`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.reload()
 }
 
 func (s *Store) SetTransformEnabled(id int64, enabled bool) error {
@@ -740,8 +847,6 @@ func (s *Store) AddTrace(t *Trace) {
 		t.ID, _ = res.LastInsertId()
 	}
 	s.rollupUsage(t)
-	// retention: keep newest 5000
-	s.db.Exec(`DELETE FROM traces WHERE id <= (SELECT MAX(id) FROM traces) - 5000`)
 }
 
 // rollupUsage folds a trace into the durable usage_daily table. Best-effort:
@@ -951,15 +1056,26 @@ func (s *Store) Stats() ([]ModelStat, error) {
 
 // ---- settings ----
 
+// Setting returns a settings value from the in-memory cache (see maybeReload).
 func (s *Store) Setting(k string) string {
-	var v string
-	s.db.QueryRow(`SELECT v FROM settings WHERE k=?`, k).Scan(&v)
-	return v
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings[k]
 }
 
 func (s *Store) SetSetting(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
-	return err
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.settings == nil {
+		s.settings = map[string]string{}
+	}
+	s.settings[k] = v
+	s.mu.Unlock()
+	return nil
 }
 
 // ---- named auto-routers ----
@@ -1153,7 +1269,18 @@ type Endpoint struct {
 	ContextLength int `json:"context_length"`
 }
 
+// Endpoints returns the cached share-endpoint list (see maybeReload). Keys
+// are decrypted once per reload rather than on every /e/ request.
 func (s *Store) Endpoints() ([]Endpoint, error) {
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Endpoint, len(s.endpoints))
+	copy(out, s.endpoints)
+	return out, nil
+}
+
+func (s *Store) loadEndpoints() ([]Endpoint, error) {
 	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1184,7 +1311,15 @@ func (s *Store) EndpointByName(name string) (Endpoint, bool) {
 	return Endpoint{}, false
 }
 
+// SaveEndpoint persists e and refreshes the in-memory caches.
 func (s *Store) SaveEndpoint(e *Endpoint) error {
+	if err := s.saveEndpoint(e); err != nil {
+		return err
+	}
+	return s.reload()
+}
+
+func (s *Store) saveEndpoint(e *Endpoint) error {
 	e.Name = strings.TrimSpace(e.Name)
 	if e.Name == "" {
 		return errors.New("endpoint name is required")
@@ -1217,7 +1352,10 @@ func (s *Store) SaveEndpoint(e *Endpoint) error {
 
 func (s *Store) DeleteEndpoint(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM endpoints WHERE id=?`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.reload()
 }
 
 // ---- round table logs ----
@@ -1241,7 +1379,6 @@ func (s *Store) AddRoundtableLog(l *RoundtableLog) error {
 		l.TS, l.Question, l.Profiles, l.Rounds, b2i(l.Compressed), l.Moderator, l.LatencyMS, l.PromptTokens, l.CompletionTokens, l.Output)
 	if err == nil {
 		l.ID, _ = res.LastInsertId()
-		s.db.Exec(`DELETE FROM roundtable_logs WHERE id <= (SELECT MAX(id) FROM roundtable_logs) - 500`)
 	}
 	return err
 }
