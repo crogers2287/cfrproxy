@@ -47,7 +47,7 @@ unpooled (tiel-kvx-w6800, qwen38-flash-next-kvx, qwen38-27b-3090-agg).
 
 **REQ-099 status: COMPLETE (proxy side).**
 
-### REQ-098 — Skill usage across all agents; skill groups + a more capable Skills tab
+### REQ-100 — Skill usage across all agents; skill groups + a more capable Skills tab
 
 Source: chat ("use aise, see if you can figure out, across all my agents what my most used skills
 are, hermes/claude/codex etc. then lets build out skill groups and things for the skills tab. lets
@@ -100,7 +100,66 @@ the groups are ready to assign from the Assignments view or `cfrproxy skills ass
 #### Deploy + verify
 - `504a126` + `57530b7` via `make deploy`; `go vet && go test ./...` green (store 3 new tests, api 1, proxy 1).
 
-**REQ-098 status: COMPLETE.**
+**REQ-100 status: COMPLETE.** (Logged as REQ-098 at first; renumbered because a concurrent session had already taken REQ-098 for kvx_restore — that entry is restored below.)
+
+### REQ-098 — KV-Rosetta request-time restore before a cold prefill (`kvx_restore`)
+
+Source: agent handoff (KV-Rosetta session) — kvxd only restores an attachment into a slot that is
+idle AND empty; after a model's first request no slot is ever empty again, so on a busy fleet a NEW
+conversation never gets a restore and llama.cpp prefills the whole prompt cold (haxor's 30,335- and
+7,399-token first requests both `cached: —`). Fix at request time: ask kvxd to restore into the
+slot llama.cpp is about to evict anyway, then forward.
+
+**Contract (kvxd side built in parallel).** `POST {url}/v1/restore-for-prompt`
+`{"model","messages","tools"}` → `{"restored":true,"covers_tokens","slot",…}` or
+`{"restored":false,"reason"}`.
+
+#### What changed
+- `internal/proxy/kvxrestore.go` — the `kvx_restore` setting (`enabled` default **false**, `url`
+  default `http://127.0.0.1:8431`, `timeout_ms` default 3000, `provider` default `fred`), the gate
+  `kvxRestoreWanted`, and the synchronous call `kvxRestore` that never returns an error, only a
+  trace note: `kvx→restored 29,601 (slot 1)` / `kvx→miss: <reason>` / `kvx→timeout` /
+  `kvx→error: <transport or non-200>`.
+- `internal/proxy/proxy.go` — hook in the candidate loop right after `outBody` is final (after
+  passthrough/translate + transform rules), so kvxd gets the messages and tools byte-for-byte as
+  forwarded. Fires only when ALL hold: setting enabled; candidate is the primary (not failover, not
+  a pool sibling) and its provider name is the configured local one (`fred`); outbound dialect is
+  `openai`; the affinity pool routed the request with `why` ∈ {`cold/slots`, `cold/inflight`,
+  `prefix`} (never `conversation`, never an unpooled model); the request has a system prompt and/or
+  tools.
+- `internal/api/api.go` — `GET/PUT /admin/api/kvx-restore` mirrors `provider-fallback` so the
+  operator can flip it without sqlite.
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| called for new conversations only (cold/*, prefix), not for `conversation` | ✅ | `TestKVXRestoreOnlyForNewConversations` (1 call cold, 0 on turn 2, 1 more on a prefix-routed new conversation; kvxd body == upstream body) |
+| not called for non-local providers | ✅ | `TestKVXRestoreSkipsNonLocalProvider` |
+| nothing to restore → no call | ✅ | `TestKVXRestoreSkipsWithoutPrefix` |
+| timeout / refused never fails or delays past the timeout | ✅ | `TestKVXRestoreTimeoutDoesNotFailRequest` (80 ms budget, 82 ms request), `TestKVXRestoreUnreachableDoesNotFailRequest` |
+| trace note for restored / miss / timeout | ✅ | same tests + `TestKVXRestoreMissNote` |
+| off by default = zero calls | ✅ | `TestKVXRestoreDisabledByDefault` (unset, and url-only without `enabled`) |
+
+#### Enable (operator)
+```
+curl -s -u admin:… -X PUT localhost:8420/admin/api/kvx-restore -d '{"enabled":true}'
+# or: sqlite3 ~/.cfrproxy/cfrproxy.db "insert or replace into settings(k,v) values('kvx_restore','{\"enabled\":true}')"
+```
+Then watch `note` on traces for `kvx→…`.
+
+#### Deploy + verify
+- `go vet ./... && go test ./...` green (proxy package 33.7 s); the 8 `TestKVXRestore*` tests pass
+  in 0.37 s.
+- `4fcdfe2` via `make deploy`: rollback copy `cfrproxy.bak-20260903-163600`, `/api/version` →
+  `{"built":"2026-09-03T20:36:36Z","commit":"4fcdfe2","version":"4fcdfe2"}`, MainPID 1140471 active.
+- Live DB: `select count(*) from settings where k='kvx_restore'` → 0 (off); `/admin/api/kvx-restore`
+  → 401 without auth; latest traces `fred/tiel-kvx-w6800 200` with an empty note — no kvxd call is
+  made until the operator enables the setting. llama-swap untouched.
+
+**REQ-098 status: COMPLETE (proxy side; live restore effect depends on kvxd shipping the endpoint).**
+
+## 2026-09-02
 
 ### REQ-097 — Skill lazy-load 401 from a harness that cannot send the endpoint key
 
