@@ -218,6 +218,23 @@ tr.err td{color:var(--err)}
 tr.warn td{color:var(--warn)}
 tr[style*="cursor"]{cursor:pointer}
 
+/* the skill index has 2500 rows with long paths: fixed columns keep the
+   actions on screen and let descriptions wrap instead of dictating width */
+#skilltable{table-layout:fixed}
+#skilltable th:nth-child(1){width:30px} #skilltable th:nth-child(2){width:19%} #skilltable th:nth-child(4){width:11%} #skilltable th:nth-child(5){width:19%} #skilltable th:nth-child(6){width:150px}
+#skilltable td{overflow-wrap:anywhere}
+/* phones: each skill becomes a stacked row — name, description, actions */
+@media (max-width:900px){
+  #skilltable,#skilltable tbody,#skilltable tr,#skilltable td{display:block;width:100%}
+  #skilltable thead{display:none}
+  #skilltable tr{padding:10px 12px;border-bottom:1px solid var(--line)}
+  #skilltable td{padding:2px 0;border:none;white-space:normal!important}
+  #skilltable td:nth-child(1){display:inline-block;width:auto;margin-right:6px;vertical-align:middle}
+  #skilltable td:nth-child(1):empty{display:none}
+  #skilltable td:nth-child(2){display:inline-block;width:auto;vertical-align:middle}
+  #skilltable td:nth-child(6){padding-top:8px}
+  #skilltable td:nth-child(6) button.b{min-height:36px;padding:6px 12px;font-size:13px}
+}
 /* ---- section specifics ---- */
 #launch-cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
 .cmd{background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px}
@@ -1949,7 +1966,7 @@ function skillRow(rep, extra){ // extra: {badge, loc, ids} for deduped groups
     `<td style="font-weight:600;white-space:nowrap">${esc(rep.name)}${extra?extra.badge:''}${link}</td>`+
     `<td style="color:var(--dim);font-size:12px">${esc(rep.description||'')}</td>`+
     `<td class="sec" style="font-size:11px;color:var(--dim);white-space:nowrap">${esc(rootLabel(rep.root_id))}</td>`+
-    `<td class="sec" style="font-family:ui-monospace,monospace;font-size:10.5px;color:var(--dim)" title="${esc(rep.path)}"><span style="display:block;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left">${extra?extra.loc:esc(rep.path)}</span></td>`+
+    `<td class="sec" style="font-family:ui-monospace,monospace;font-size:10.5px;color:var(--dim)" title="${esc(rep.path)}"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left">${extra?extra.loc:esc(rep.path)}</span></td>`+
     `<td style="white-space:nowrap"><button class="b" onclick="openSkill(${rep.id})">Edit</button> <button class="b" onclick="distSkill(${rep.id})">Send→</button></td>`;
   return tr;
 }
