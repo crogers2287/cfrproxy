@@ -38,7 +38,12 @@ unpooled (tiel-kvx-w6800, qwen38-flash-next-kvx, qwen38-27b-3090-agg).
 | pooled behaviour unchanged | ✅ | all REQ-098 `TestKVXRestore*` and `TestPool*`/`TestAffinity*` green |
 
 #### Deploy + verify
-- (stamp below)
+- `go vet ./... && go test ./...` green (proxy 33.7 s); the 11 `TestKVX*` tests pass in 0.4 s.
+- `cab9a09` via `make deploy`: rollback copy `cfrproxy.bak-20260903-164307`, `/api/version` →
+  `{"built":"2026-09-03T20:43:43Z","commit":"cab9a09","version":"cab9a09"}`, MainPID 1250275 active.
+- Live setting (written by the coordinator): `kvx_restore` =
+  `{"enabled":true,"url":"http://127.0.0.1:8431","timeout_ms":3000,"provider":"fred"}` — read per
+  request, no restart needed. Coordinator re-runs the `fred/tiel-kvx-w6800` live check.
 
 **REQ-099 status: COMPLETE (proxy side).**
 
