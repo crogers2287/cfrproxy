@@ -7,6 +7,7 @@ package proxy
 // living in every context.
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,13 +31,26 @@ func reqBase(r *http.Request) string {
 
 // skillCatalog builds the system-prompt block advertising an endpoint's skills.
 // Returns "" when there are none.
-func skillCatalog(skills []store.Skill, epBase string) string {
+// skill load URLs carry a capability token (?t=) so an agent whose only HTTP
+// tool is a plain GET — no headers, no way to attach the endpoint key — can
+// still fetch the SKILL.md the catalog points at. Header auth keeps working
+// for agents that have it. See store.SkillToken for what the token grants.
+func (p *Proxy) skillToken(scope, skill string) string {
+	return p.Store.SkillToken(scope, skillURLName(skill))
+}
+
+func (p *Proxy) skillTokenOK(r *http.Request, scope, skill string) bool {
+	t := r.URL.Query().Get("t")
+	return t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(p.skillToken(scope, skill))) == 1
+}
+
+func skillCatalog(skills []store.Skill, epBase string, tok func(name string) string) string {
 	if len(skills) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("# Available skills\n\n")
-	b.WriteString("You have access to the skills below. Each is a packaged set of instructions for a specific kind of task. Only the name and a short description are shown here to save context. When the current task matches a skill, load its full instructions FIRST by fetching the URL shown (an HTTP GET that returns the skill's SKILL.md), then follow them. Do not guess a skill's contents.\n\n")
+	b.WriteString("You have access to the skills below. Each is a packaged set of instructions for a specific kind of task. Only the name and a short description are shown here to save context. When the current task matches a skill, load its full instructions FIRST by fetching the URL shown (a plain HTTP GET, no authentication needed — the URL carries its own token — returns the skill's SKILL.md), then follow them. Do not guess a skill's contents.\n\n")
 	seen := map[string]bool{} // one line per skill name, even if several copies are assigned
 	for _, s := range skills {
 		key := strings.ToLower(skillURLName(s.Name))
@@ -49,7 +63,7 @@ func skillCatalog(skills []store.Skill, epBase string) string {
 			desc = "(no description)"
 		}
 		b.WriteString("- **" + s.Name + "**: " + desc + "\n")
-		b.WriteString("  load: GET " + epBase + "/skills/" + skillURLName(s.Name) + "\n")
+		b.WriteString("  load: GET " + skillLoadURL(epBase, s.Name, tok) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -58,14 +72,24 @@ func skillURLName(name string) string {
 	return strings.ReplaceAll(strings.TrimSpace(name), " ", "-")
 }
 
+func skillLoadURL(base, name string, tok func(string) string) string {
+	u := base + "/skills/" + skillURLName(name)
+	if tok != nil {
+		if t := tok(name); t != "" {
+			u += "?t=" + t
+		}
+	}
+	return u
+}
+
 // serveSkillList writes the assigned-skills catalog (name + description + load
 // URL) as an OpenAI-style list.
-func serveSkillList(w http.ResponseWriter, skills []store.Skill, base string) {
+func serveSkillList(w http.ResponseWriter, skills []store.Skill, base string, tok func(string) string) {
 	data := make([]map[string]any, 0, len(skills))
 	for _, s := range skills {
 		data = append(data, map[string]any{
 			"name": s.Name, "description": s.Description,
-			"load": base + "/skills/" + skillURLName(s.Name),
+			"load": skillLoadURL(base, s.Name, tok),
 		})
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
@@ -102,10 +126,17 @@ func (p *Proxy) handleEndpointSkills(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	serveSkillList(w, p.Store.SkillsForEndpoint(ep.ID, ""), reqBase(r)+"/e/"+ep.Name)
+	scope := "e:" + ep.Name
+	serveSkillList(w, p.Store.SkillsForEndpoint(ep.ID, ""), reqBase(r)+"/e/"+ep.Name, func(n string) string { return p.skillToken(scope, n) })
 }
 
 func (p *Proxy) handleEndpointSkill(w http.ResponseWriter, r *http.Request) {
+	// a load URL from the catalog authorizes itself; otherwise the endpoint key
+	if ep, found := p.Store.EndpointByName(r.PathValue("endpoint")); found && ep.Enabled &&
+		p.skillTokenOK(r, "e:"+ep.Name, r.PathValue("name")) {
+		serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
+		return
+	}
 	ep, ok := p.authEndpoint(w, r, "openai")
 	if !ok {
 		return
@@ -125,17 +156,18 @@ func (p *Proxy) handleProviderSkills(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, "openai", 404, "unknown provider")
 		return
 	}
-	serveSkillList(w, p.Store.SkillsForProvider(prov.ID, ""), reqBase(r)+"/p/"+prov.Name)
+	scope := "p:" + prov.Name
+	serveSkillList(w, p.Store.SkillsForProvider(prov.ID, ""), reqBase(r)+"/p/"+prov.Name, func(n string) string { return p.skillToken(scope, n) })
 }
 
 func (p *Proxy) handleProviderSkill(w http.ResponseWriter, r *http.Request) {
-	if !p.publicKeyOK(r) {
-		httpErr(w, "openai", 401, "public access requires a valid API key")
-		return
-	}
 	prov, ok := p.Store.ProviderByName(r.PathValue("provider"))
 	if !ok {
 		httpErr(w, "openai", 404, "unknown provider")
+		return
+	}
+	if !p.skillTokenOK(r, "p:"+prov.Name, r.PathValue("name")) && !p.publicKeyOK(r) {
+		httpErr(w, "openai", 401, "public access requires a valid API key")
 		return
 	}
 	serveSkillOne(w, p.Store.SkillsForProvider(prov.ID, ""), r.PathValue("name"))

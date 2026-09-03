@@ -5,8 +5,11 @@ package store
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1479,4 +1482,15 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// SkillToken derives a read capability for one skill within one scope
+// ("e:<endpoint>" or "p:<provider>") from the data-dir secret. It grants
+// exactly that one GET, reveals neither the endpoint key nor the public key,
+// and is deterministic so the catalog that carries it stays byte-stable in
+// the cached prompt prefix.
+func (s *Store) SkillToken(scope, skill string) string {
+	mac := hmac.New(sha256.New, s.key)
+	mac.Write([]byte("skill\x00" + strings.ToLower(scope) + "\x00" + strings.ToLower(skill)))
+	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
