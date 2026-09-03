@@ -97,10 +97,60 @@ func serveSkillList(w http.ResponseWriter, skills []store.Skill, base string, to
 
 // serveSkillOne writes one skill's full SKILL.md (+ a listing of the other files
 // bundled in its folder), if it is among the given assigned skills.
+// effective lists the skills a target actually carries: direct assignments
+// plus every member of its assigned groups, resolved to readable copies.
+func (p *Proxy) effective(kind string, id int64, model string) []store.Skill {
+	var out []store.Skill
+	for _, e := range p.Store.EffectiveSkillsFor(kind, id, model) {
+		if !e.Missing {
+			out = append(out, e.Skill)
+		}
+	}
+	return out
+}
+
+// CatalogPreview renders the catalog block a target's requests receive, for
+// the admin UI's assignment view.
+func (p *Proxy) CatalogPreview(kind string, id int64, base string) string {
+	kind = strings.ToLower(kind)
+	scope := "e:"
+	if kind == "provider" {
+		scope = "p:"
+	}
+	name := ""
+	if kind == "provider" {
+		if prov, ok := p.Store.ProviderByID(id); ok {
+			name = prov.Name
+		}
+	} else {
+		eps, _ := p.Store.Endpoints()
+		for _, e := range eps {
+			if e.ID == id {
+				name = e.Name
+			}
+		}
+	}
+	if name == "" {
+		return ""
+	}
+	mount := "/e/"
+	if kind == "provider" {
+		mount = "/p/"
+	}
+	return skillCatalog(p.effective(kind, id, ""), base+mount+name, func(n string) string { return p.skillToken(scope+name, n) })
+}
+
 func (p *Proxy) serveSkillOne(w http.ResponseWriter, skills []store.Skill, want string) {
+	p.serveSkillOneFor(w, skills, want, "", 0)
+}
+
+func (p *Proxy) serveSkillOneFor(w http.ResponseWriter, skills []store.Skill, want, kind string, targetID int64) {
 	want = skillURLName(want)
 	for _, s := range skills {
 		if strings.EqualFold(skillURLName(s.Name), want) {
+			if kind != "" {
+				p.Store.RecordSkillLoad(s.Name, kind, targetID)
+			}
 			body, err := os.ReadFile(s.Path)
 			if err != nil {
 				// The assigned copy moved since the last rescan (skills get
@@ -170,21 +220,21 @@ func (p *Proxy) handleEndpointSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := "e:" + ep.Name
-	serveSkillList(w, p.Store.SkillsForEndpoint(ep.ID, ""), reqBase(r)+"/e/"+ep.Name, func(n string) string { return p.skillToken(scope, n) })
+	serveSkillList(w, p.effective("endpoint", ep.ID, ""), reqBase(r)+"/e/"+ep.Name, func(n string) string { return p.skillToken(scope, n) })
 }
 
 func (p *Proxy) handleEndpointSkill(w http.ResponseWriter, r *http.Request) {
 	// a load URL from the catalog authorizes itself; otherwise the endpoint key
 	if ep, found := p.Store.EndpointByName(r.PathValue("endpoint")); found && ep.Enabled &&
 		p.skillTokenOK(r, "e:"+ep.Name, r.PathValue("name")) {
-		p.serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
+		p.serveSkillOneFor(w, p.effective("endpoint", ep.ID, ""), r.PathValue("name"), "endpoint", ep.ID)
 		return
 	}
 	ep, ok := p.authEndpoint(w, r, "openai")
 	if !ok {
 		return
 	}
-	p.serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
+	p.serveSkillOneFor(w, p.effective("endpoint", ep.ID, ""), r.PathValue("name"), "endpoint", ep.ID)
 }
 
 // --- provider-mount fetch (public-key authed) ---
@@ -200,7 +250,7 @@ func (p *Proxy) handleProviderSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := "p:" + prov.Name
-	serveSkillList(w, p.Store.SkillsForProvider(prov.ID, ""), reqBase(r)+"/p/"+prov.Name, func(n string) string { return p.skillToken(scope, n) })
+	serveSkillList(w, p.effective("provider", prov.ID, ""), reqBase(r)+"/p/"+prov.Name, func(n string) string { return p.skillToken(scope, n) })
 }
 
 func (p *Proxy) handleProviderSkill(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +263,7 @@ func (p *Proxy) handleProviderSkill(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, "openai", 401, "public access requires a valid API key")
 		return
 	}
-	p.serveSkillOne(w, p.Store.SkillsForProvider(prov.ID, ""), r.PathValue("name"))
+	p.serveSkillOneFor(w, p.effective("provider", prov.ID, ""), r.PathValue("name"), "provider", prov.ID)
 }
 
 // siblingFiles lists the non-SKILL.md files that live alongside a skill, so the

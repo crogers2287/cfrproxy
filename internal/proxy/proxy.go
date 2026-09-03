@@ -393,7 +393,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// requested model), prepend a compact catalog to the system prompt. The
 		// model pulls a skill's full instructions from /e/{ep}/skills/{name} only
 		// when it needs one. Mirrors the InjectDocs path below.
-		if skills := p.Store.SkillsForEndpoint(ep.ID, reqModel); len(skills) > 0 {
+		if skills := p.effective("endpoint", ep.ID, reqModel); len(skills) > 0 {
 			if cat := skillCatalog(skills, reqBase(r)+"/e/"+ep.Name, func(n string) string { return p.skillToken("e:"+ep.Name, n) }); cat != "" {
 				if req.System != "" {
 					req.System = cat + "\n\n" + req.System
@@ -625,7 +625,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// InjectDocs path above and, like it, forces the translated send path
 		// (skillsInjected feeds rawOK below).
 		skillsInjected := false
-		if skills := p.Store.SkillsForProvider(c.prov.ID, c.model); len(skills) > 0 {
+		if skills := p.effective("provider", c.prov.ID, c.model); len(skills) > 0 {
 			if cat := skillCatalog(skills, reqBase(r)+"/p/"+c.prov.Name, func(n string) string { return p.skillToken("p:"+c.prov.Name, n) }); cat != "" {
 				if creq.System != "" {
 					creq.System = cat + "\n\n" + creq.System

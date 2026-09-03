@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -112,6 +113,8 @@ func main() {
 		cmdLaunch(rest[0], rest[1:])
 	case "explain":
 		cmdExplain(rest)
+	case "skills":
+		cmdSkills(rest)
 	case "version", "--version", "-v":
 		fmt.Printf("cfrproxy %s (commit %s, built %s)\n", version, commit, buildDate)
 	case "help", "-h", "--help":
@@ -137,6 +140,8 @@ Usage:
   cfrproxy version                                    build version, commit, date
   cfrproxy explain <model> [--endpoint N] [--scope P] [--image] [--inbound openai|anthropic|ollama] [--json]
                    dry-run the routing for a model id: policy, resolution, pool, fallback chain
+  cfrproxy skills  list [--used] | groups | group set NAME [--desc D] [--members a,b,c]
+                   | group rm NAME | rescan | import-usage FILE.json | assign provider|endpoint NAME [--groups g1,g2] [--skills s1,s2]
    cfrproxy provider add --name N (--preset P | --type T --base-url U)
                    [--key K] [--model M] [--models a,b] [--fallback P/M] [--pinned m1,m2] [--doc-url U]
                    [--doc-file F.md] [--inject-docs] [--models-filter 'claude-*,!claude-*-thinking']
@@ -718,5 +723,192 @@ func cmdExplain(args []string) {
 	}
 	if res.Error != "" {
 		os.Exit(1)
+	}
+}
+
+// cmdSkills manages the skill index from the shell: the same store the WebUI
+// edits, so cron jobs (usage import from aise) and scripts need no admin
+// password.
+func cmdSkills(args []string) {
+	if len(args) < 1 {
+		fatal("usage: cfrproxy skills list|groups|group|rescan|import-usage|assign ...")
+	}
+	fs := flag.NewFlagSet("skills", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data directory")
+	desc := fs.String("desc", "", "group description")
+	members := fs.String("members", "", "comma-separated skill names (group set)")
+	groups := fs.String("groups", "", "comma-separated group names (assign)")
+	skillsFlag := fs.String("skills", "", "comma-separated skill names (assign)")
+	used := fs.Bool("used", false, "list only skills with recorded usage")
+	// positional words first, flags after
+	var pos []string
+	for len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		pos, args = append(pos, args[0]), args[1:]
+	}
+	fs.Parse(args)
+	s := openStore(*data)
+	defer s.Close()
+	split := func(v string) []string {
+		var out []string
+		for _, x := range strings.Split(v, ",") {
+			if x = strings.TrimSpace(x); x != "" {
+				out = append(out, x)
+			}
+		}
+		return out
+	}
+	switch pos[0] {
+	case "list":
+		all, _ := s.Skills()
+		loads, ext := s.SkillLoads(), s.SkillUsageExternal()
+		type row struct {
+			name  string
+			score int64
+			path  string
+		}
+		var rows []row
+		seen := map[string]bool{}
+		for _, sk := range all {
+			k := strings.ToLower(strings.ReplaceAll(sk.Name, " ", "-"))
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			sc := loads[k].Count
+			for _, u := range ext[k] {
+				sc += u.Calls
+			}
+			if *used && sc == 0 {
+				continue
+			}
+			rows = append(rows, row{sk.Name, sc, sk.Path})
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			return rows[i].score > rows[j].score || (rows[i].score == rows[j].score && rows[i].name < rows[j].name)
+		})
+		for _, r := range rows {
+			fmt.Printf("%6d  %-36s %s\n", r.score, r.name, r.path)
+		}
+	case "groups":
+		gs, _ := s.SkillGroups()
+		for _, g := range gs {
+			fmt.Printf("%-24s %3d members  %s\n    %s\n", g.Name, len(g.Members), g.Description, strings.Join(g.Members, ", "))
+		}
+	case "group":
+		if len(pos) < 3 {
+			fatal("usage: cfrproxy skills group set|rm NAME [--desc D] [--members a,b,c]")
+		}
+		switch pos[1] {
+		case "set":
+			g, ok := s.SkillGroupByName(pos[2])
+			if !ok {
+				g = store.SkillGroup{Name: pos[2]}
+			}
+			if *desc != "" {
+				g.Description = *desc
+			}
+			if *members != "" {
+				g.Members = split(*members)
+			}
+			if err := s.SaveSkillGroup(&g); err != nil {
+				fatal("%v", err)
+			}
+			fmt.Printf("group %q: %d members\n", g.Name, len(g.Members))
+		case "rm":
+			g, ok := s.SkillGroupByName(pos[2])
+			if !ok {
+				fatal("no such group")
+			}
+			if err := s.DeleteSkillGroup(g.ID); err != nil {
+				fatal("%v", err)
+			}
+			fmt.Println("deleted", g.Name)
+		default:
+			fatal("group: set or rm")
+		}
+	case "rescan":
+		n, err := s.ScanSkills(8)
+		if err != nil {
+			fatal("%v", err)
+		}
+		fmt.Println("indexed", n, "skills")
+	case "import-usage":
+		if len(pos) < 2 {
+			fatal("usage: cfrproxy skills import-usage FILE.json  (shape: {\"source\":\"hermes\",\"entries\":{\"name\":{\"calls\":N,\"sessions\":M}}} or a list of such objects)")
+		}
+		b, err := os.ReadFile(pos[1])
+		if err != nil {
+			fatal("%v", err)
+		}
+		type payload struct {
+			Source  string                      `json:"source"`
+			Entries map[string]store.SkillUsage `json:"entries"`
+		}
+		var many []payload
+		if err := json.Unmarshal(b, &many); err != nil {
+			var one payload
+			if err2 := json.Unmarshal(b, &one); err2 != nil {
+				fatal("bad file: %v", err)
+			}
+			many = []payload{one}
+		}
+		for _, p := range many {
+			if err := s.ImportSkillUsage(p.Source, p.Entries); err != nil {
+				fatal("%s: %v", p.Source, err)
+			}
+			fmt.Printf("imported %d entries for %s\n", len(p.Entries), p.Source)
+		}
+	case "assign":
+		if len(pos) < 3 {
+			fatal("usage: cfrproxy skills assign provider|endpoint NAME [--groups g1,g2] [--skills s1,s2]")
+		}
+		kind := pos[1]
+		var id int64
+		if kind == "provider" {
+			p, ok := s.ProviderByName(pos[2])
+			if !ok {
+				fatal("no such provider")
+			}
+			id = p.ID
+		} else {
+			e, ok := s.EndpointByName(pos[2])
+			if !ok {
+				fatal("no such endpoint")
+			}
+			id = e.ID
+		}
+		var gids []int64
+		for _, n := range split(*groups) {
+			g, ok := s.SkillGroupByName(n)
+			if !ok {
+				fatal("no such group %q", n)
+			}
+			gids = append(gids, g.ID)
+		}
+		var sids []int64
+		for _, n := range split(*skillsFlag) {
+			sk, ok := s.BestSkillCopy(n)
+			if !ok {
+				fatal("no readable indexed skill named %q", n)
+			}
+			sids = append(sids, sk.ID)
+		}
+		if err := s.SetTargetGroups(kind, id, gids); err != nil {
+			fatal("%v", err)
+		}
+		if err := s.SetTargetSkills(kind, id, sids); err != nil {
+			fatal("%v", err)
+		}
+		eff := s.EffectiveSkillsFor(kind, id, "")
+		fmt.Printf("%s %s now carries %d skill(s):\n", kind, pos[2], len(eff))
+		for _, e := range eff {
+			flag := ""
+			if e.Missing {
+				flag = "  (MISSING — no readable copy indexed)"
+			}
+			fmt.Printf("  %-32s via %s%s\n", e.Name, e.Via, flag)
+		}
+	default:
+		fatal("unknown skills subcommand %q", pos[0])
 	}
 }

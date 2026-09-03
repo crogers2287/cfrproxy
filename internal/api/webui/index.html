@@ -147,6 +147,7 @@ button.b:active{transform:translateY(1px)}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid var(--line-2);color:var(--muted);line-height:1.5;white-space:nowrap}
 .pill.on{color:var(--ok);border-color:rgba(66,211,146,.4);background:var(--ok-soft)}
 .pill.on::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.pill:empty{display:none}
 .tag{display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:5px;background:var(--surface);border:1px solid var(--line);color:var(--muted)}
 .switch{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
 .switch input{position:absolute;opacity:0;width:0;height:0}
@@ -221,7 +222,7 @@ tr[style*="cursor"]{cursor:pointer}
 /* the skill index has 2500 rows with long paths: fixed columns keep the
    actions on screen and let descriptions wrap instead of dictating width */
 #skilltable{table-layout:fixed}
-#skilltable th:nth-child(1){width:30px} #skilltable th:nth-child(2){width:19%} #skilltable th:nth-child(4){width:11%} #skilltable th:nth-child(5){width:19%} #skilltable th:nth-child(6){width:150px}
+#skilltable th:nth-child(1){width:30px} #skilltable th:nth-child(2){width:18%} #skilltable th:nth-child(4){width:15%} #skilltable th:nth-child(5){width:13%} #skilltable th:nth-child(6){width:9%} #skilltable th:nth-child(7){width:140px}
 #skilltable td{overflow-wrap:anywhere}
 /* phones: each skill becomes a stacked row — name, description, actions */
 @media (max-width:900px){
@@ -232,9 +233,37 @@ tr[style*="cursor"]{cursor:pointer}
   #skilltable td:nth-child(1){display:inline-block;width:auto;margin-right:6px;vertical-align:middle}
   #skilltable td:nth-child(1):empty{display:none}
   #skilltable td:nth-child(2){display:inline-block;width:auto;vertical-align:middle}
-  #skilltable td:nth-child(6){padding-top:8px}
-  #skilltable td:nth-child(6) button.b{min-height:36px;padding:6px 12px;font-size:13px}
+  #skilltable td:nth-child(7){padding-top:8px}
+  #skilltable td:nth-child(7) button.b{min-height:36px;padding:6px 12px;font-size:13px}
+  .seg{width:100%} .seg button{flex:1}
+  #skilltable .nogroup{display:none}
 }
+
+/* ---- skills tab ---- */
+.seg{display:inline-flex;background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
+.seg button{background:none;border:none;color:var(--text-2);padding:6px 12px;border-radius:7px;cursor:pointer;font:inherit;font-size:13px;font-weight:500}
+.seg button.on{background:var(--raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;padding:3px 9px;border-radius:999px;background:var(--raised);border:1px solid var(--line-2);color:var(--text);max-width:100%}
+.chip.small{font-size:11px;padding:2px 8px}
+.chip small{color:var(--muted);font-family:var(--font)}
+.chip.dim{color:var(--muted)}
+.chip.err{border-color:rgba(251,111,133,.5);color:var(--err)}
+.chip.toggle{cursor:pointer;color:var(--muted);user-select:none}
+.chip.toggle.on{color:var(--text);background:var(--brand-soft);border-color:var(--brand)}
+.chip .x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0 0 0 2px}
+.chip .x:hover{color:var(--err)}
+.chip[onclick]{cursor:pointer}
+.swatch{width:22px;height:22px;border-radius:50%;display:inline-block;cursor:pointer;border:2px solid transparent}
+.swatch.on{border-color:#fff;box-shadow:0 0 0 2px var(--ink)}
+.use{display:inline-block;font-size:11px;color:var(--muted);margin-right:8px;white-space:nowrap}
+.use b{color:var(--text-2);font-weight:600}
+.use.dim{color:var(--line-2)}
+.skillname{font-weight:600;white-space:nowrap}
+.tag.err{color:var(--err);border-color:rgba(251,111,133,.5)}
+.pill.warn{color:var(--warn);border-color:rgba(242,181,68,.5)}
+td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
+.bulkbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--brand);background:var(--brand-soft);border-radius:10px}
 /* ---- section specifics ---- */
 #launch-cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
 .cmd{background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px}
@@ -610,21 +639,64 @@ tr[style*="cursor"]{cursor:pointer}
 </section>
 
 <section id="tab-skills" class="hidden">
-  <div class="page-title"><h1>Skills</h1><p>Every SKILL.md under your scan roots, assignable to providers and share endpoints.</p></div>
+  <div class="page-title"><h1>Skills</h1><p>Every SKILL.md on this machine, ranked by how much your agents actually use it, bundled into groups, assigned to providers and share endpoints.</p></div>
   <div class="panel">
-    <div class="panel-head"><h2>Skill index</h2><span id="skill-count" class="pill"></span><div class="spacer"></div><button class="b" onclick="openSkillRoots()">Manage roots</button><button class="b primary" onclick="rescanSkills()">Rescan</button></div>
-    <div class="panel-body">
-      <details class="help"><summary>Lazy-loaded skills</summary><p>Assigned skills inject only their name and description into the target's system prompt; the model fetches the full instructions from <code>/p/{provider}/skills/{name}</code> (or <code>/e/{endpoint}/skills/{name}</code>) only when it needs one. Edit skills in place, or symlink one into another root.</p></details>
-      <div class="toolbar">
-        <input type="text" id="skill-q" placeholder="Search name, description or path" oninput="renderSkills()" style="flex:1;min-width:200px">
-        <label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap">Assign to <select id="skill-ep" onchange="loadAssignment()" style="min-width:180px;width:auto"></select></label>
-        <button class="b primary" id="skill-assign-save" onclick="saveAssignment()" disabled>Save assignment</button>
-        <label class="switch" style="margin:0"><input type="checkbox" id="skill-dedupe" checked onchange="renderSkills()"><i></i>dedupe</label>
+    <div class="panel-head">
+      <div class="seg" role="tablist">
+        <button class="on" data-sv="index" onclick="showSkillView('index')">Index</button>
+        <button data-sv="groups" onclick="showSkillView('groups')">Groups</button>
+        <button data-sv="targets" onclick="showSkillView('targets')">Assignments</button>
       </div>
-      <div class="table-wrap"><table id="skilltable">
-        <thead><tr><th style="width:26px"></th><th>Skill</th><th>Description</th><th class="sec">Root</th><th class="sec">Location</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table></div>
+      <span id="skill-count" class="pill"></span>
+      <div class="spacer"></div>
+      <button class="b" onclick="openSkillRoots()">Manage roots</button>
+      <button class="b primary" onclick="rescanSkills()">Rescan</button>
+    </div>
+    <div class="panel-body">
+      <div id="sv-index">
+        <details class="help"><summary>How usage is counted</summary><p><b>Loads</b> are fetches of a skill through cfrproxy's lazy-load URL. <b>Hermes</b>, <b>Claude</b>, <b>Codex</b> and <b>Prime</b> counts come from your agents' own session logs (imported with <code>cfrproxy skills import-usage</code>). A skill can exist as several copies; "one per name" shows the copy cfrproxy would serve.</p></details>
+        <div class="toolbar">
+          <input type="text" id="skill-q" placeholder="Search name, description, path or tag" oninput="renderSkills()" style="flex:2;min-width:200px">
+          <select id="skill-root" onchange="renderSkills()" style="width:auto;min-width:150px"><option value="">all roots</option></select>
+          <select id="skill-sort" onchange="renderSkills()" style="width:auto"><option value="usage">most used</option><option value="name">name</option><option value="recent">recently loaded</option></select>
+          <label class="switch" style="margin:0"><input type="checkbox" id="skill-dedupe" checked onchange="renderSkills()"><i></i>one per name</label>
+          <label class="switch" style="margin:0"><input type="checkbox" id="skill-onlyused" onchange="renderSkills()"><i></i>used only</label>
+          <label class="switch" style="margin:0"><input type="checkbox" id="skill-onlymissing" onchange="renderSkills()"><i></i>missing only</label>
+        </div>
+        <div id="skill-bulk" class="bulkbar hidden">
+          <b><span id="skill-selcount">0</span> selected</b>
+          <select id="bulk-group" style="width:auto;min-width:160px"></select>
+          <button class="b" onclick="bulkAddToGroup()">Add to group</button>
+          <button class="b" onclick="bulkNewGroup()">New group from selection</button>
+          <button class="b ghost" onclick="clearSel()">Clear</button>
+        </div>
+        <div class="table-wrap"><table id="skilltable">
+          <thead><tr><th style="width:30px"><input type="checkbox" id="skill-selall" onchange="selAll(this.checked)" title="select all shown"></th><th>Skill</th><th>Description</th><th class="sec">Used</th><th class="sec">Groups</th><th class="sec">Root</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <div id="skill-more" class="hint" style="margin-top:8px"></div>
+      </div>
+      <div id="sv-groups" class="hidden">
+        <div class="toolbar"><button class="b primary" onclick="openGroupDialog()">+ New group</button><span class="hint">A group is a named bundle of skills by <i>name</i>, so it survives moves and rescans. Assign it to a provider or share endpoint as one unit.</span></div>
+        <div id="groupcards" class="grid"></div>
+      </div>
+      <div id="sv-targets" class="hidden">
+        <div class="toolbar">
+          <label style="margin:0;display:flex;align-items:center;gap:8px;white-space:nowrap">Target <select id="skill-ep" onchange="loadAssignment()" style="min-width:200px;width:auto"></select></label>
+          <button class="b primary" id="skill-assign-save" onclick="saveAssignment()" disabled>Save assignment</button>
+          <span id="assign-state" class="hint"></span>
+        </div>
+        <div id="target-summary" class="grid"></div>
+        <div id="assign-editor" class="hidden">
+          <div class="field"><label>Groups <span class="sub">— tap to toggle</span></label><div id="assign-groups" class="chips"></div></div>
+          <div class="field"><label>Individual skills <span class="sub">— search the index to add one</span></label>
+            <input type="text" id="assign-q" placeholder="add a skill by name…" oninput="renderAssignPicker()" onfocus="renderAssignPicker()" autocomplete="off">
+            <div id="assign-picker" class="combo-list hidden"></div>
+            <div id="assign-direct" class="chips" style="margin-top:8px"></div></div>
+          <div class="field"><label>What this target carries <span class="sub">— groups expanded, one copy per name</span></label><div id="assign-effective" class="chips"></div></div>
+          <details class="help"><summary>Catalog text injected into this target's system prompt</summary><pre id="assign-catalog" class="mono" style="white-space:pre-wrap;margin-top:8px;padding:12px;background:var(--ink);border:1px solid var(--line);border-radius:10px;max-height:320px;overflow:auto"></pre></details>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -781,6 +853,27 @@ tr[style*="cursor"]{cursor:pointer}
 </dialog>
 
 <div id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="gdlg">
+  <h3 id="gdlg-title">New skill group</h3>
+  <form method="dialog" onsubmit="return saveGroup(event)">
+    <input type="hidden" id="g-id">
+    <div class="field"><label>Name</label><input type="text" id="g-name" required placeholder="homelab-ops"></div>
+    <div class="field"><label>Description <span class="sub">— optional</span></label><input type="text" id="g-desc" placeholder="What this bundle is for"></div>
+    <div class="field"><label>Colour</label>
+      <div id="g-colors" class="chips"></div></div>
+    <div class="field"><label>Members <span class="sub">— by skill name; search the index to add</span></label>
+      <input type="text" id="g-q" placeholder="type to search skills…" oninput="renderGroupPicker()" onfocus="renderGroupPicker()" autocomplete="off">
+      <div id="g-picker" class="combo-list hidden"></div>
+      <div id="g-members" class="chips" style="margin-top:8px"></div></div>
+    <div class="dlg-actions">
+      <button class="b danger ghost" type="button" id="g-delete" onclick="deleteGroupFromDialog()">Delete</button>
+      <span style="flex:1"></span>
+      <button class="b" type="button" onclick="gdlg.close()">Cancel</button>
+      <button class="b primary" type="submit">Save group</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="sdlg" style="width:860px;max-width:min(94vw,900px)">
   <h3 id="sdlg-title">Edit skill</h3>
@@ -1912,90 +2005,259 @@ async function boot(){
     $('#status-text').innerHTML='<b>'+st.enabled+'</b> of '+st.providers+' providers enabled';
   }catch(err){toast(err.message,true)}
 }
-// ---- skill index ----
-let SKILLS=[], SKILL_ROOTS=[], ASSIGN_TARGET='';
-const ASSIGN_SET=new Set();
+// ---- skill index: index / groups / assignments ----
+let SKILLS=[], SKILL_ROOTS=[], SKILL_GROUPS=[], SKILL_TARGETS=[], ASSIGN_TARGET='';
+const ASSIGN_SET=new Set();      // direct skill ids for the current target
+const ASSIGN_GROUPS=new Set();   // group ids for the current target
+const SEL=new Set();             // bulk selection in the index (skill ids)
+const SRC_LABEL={loads:'Loads',hermes:'Hermes',claude:'Claude',codex:'Codex','prime-agent':'Prime'};
+const GROUP_COLORS=['#ec7cbd','#79c7f6','#42d392','#f2b544','#a78bfa','#fb6f85','#7b8397'];
+const skillKey=s=>String(s.name||'').trim().replace(/ /g,'-').toLowerCase();
+let SKILL_VIEW='index';
+function showSkillView(v){
+  SKILL_VIEW=v;
+  $$('#tab-skills .seg button').forEach(b=>b.classList.toggle('on',b.dataset.sv===v));
+  ['index','groups','targets'].forEach(x=>$('#sv-'+x).classList.toggle('hidden',x!==v));
+  if(v==='groups')renderGroups();
+  if(v==='targets'){renderTargetSummary();}
+}
 async function loadSkills(){
   try{
     await refreshRoots();
-    SKILLS=await api('skills')||[];
-    const provs=await api('providers')||[], eps=await api('endpoints')||[];
+    const [skills,groups,targets]=await Promise.all([api('skills'),api('skill-groups'),api('skill-targets')]);
+    SKILLS=skills||[];SKILL_GROUPS=groups||[];SKILL_TARGETS=targets||[];
+    const rs=$('#skill-root');const cur=rs.value;
+    rs.innerHTML='<option value="">all roots</option>'+SKILL_ROOTS.map(r=>`<option value="${r.id}">${esc(r.label||r.path.split('/').slice(-2).join('/'))}</option>`).join('');
+    rs.value=cur;
     const sel=$('#skill-ep');
-    sel.innerHTML='<option value="">— none —</option>'+
-      '<optgroup label="Providers">'+provs.map(p=>`<option value="provider:${p.id}">${esc(p.name)}</option>`).join('')+'</optgroup>'+
-      '<optgroup label="Share endpoints">'+eps.map(e=>`<option value="endpoint:${e.id}">${esc(e.name)}</option>`).join('')+'</optgroup>';
+    sel.innerHTML='<option value="">— pick a provider or share endpoint —</option>'+
+      '<optgroup label="Share endpoints">'+SKILL_TARGETS.filter(t=>t.kind==='endpoint').map(t=>`<option value="endpoint:${t.id}">${esc(t.name)}</option>`).join('')+'</optgroup>'+
+      '<optgroup label="Providers">'+SKILL_TARGETS.filter(t=>t.kind==='provider').map(t=>`<option value="provider:${t.id}">${esc(t.name)}</option>`).join('')+'</optgroup>';
     sel.value=ASSIGN_TARGET;
-    await loadAssignment();
+    SEL.clear();
+    renderSkills();renderGroups();renderTargetSummary();
+    if(ASSIGN_TARGET)await loadAssignment();
   }catch(err){toast(err.message,true)}
 }
 async function rescanSkills(){
   try{const r=await api('skills/rescan',{method:'POST'});toast('indexed '+r.count+' skills');await loadSkills();}
   catch(err){toast(err.message,true)}
 }
+function rootLabel(id){const r=SKILL_ROOTS.find(x=>x.id===id);return r?(r.label||r.path.split('/').slice(-2).join('/')):'';}
+function usageChips(s){
+  const parts=[];
+  if(s.loads&&s.loads.count)parts.push(`<span class="use" title="fetched through cfrproxy${s.loads.last_ts?' · last '+new Date(s.loads.last_ts*1000).toLocaleDateString():''}">here <b>${s.loads.count}</b></span>`);
+  for(const [src,u] of Object.entries(s.usage||{}).sort((a,b)=>b[1].calls-a[1].calls)){
+    if(u.calls)parts.push(`<span class="use" title="${u.calls} calls in ${u.sessions} sessions">${SRC_LABEL[src]||src} <b>${u.calls}</b></span>`);
+  }
+  return parts.length?parts.join(''):'<span class="use dim">unused</span>';
+}
+// index rows, grouped one-per-name when dedupe is on (the representative is the copy cfrproxy would serve)
+function indexRows(){
+  const q=($('#skill-q').value||'').toLowerCase().trim();
+  const root=$('#skill-root').value;
+  const onlyUsed=$('#skill-onlyused').checked, onlyMissing=$('#skill-onlymissing').checked, dedupe=$('#skill-dedupe').checked, sort=$('#skill-sort').value;
+  let list=SKILLS.filter(s=>(!q||(s.name+' '+s.description+' '+s.path+' '+(s.tags||'')).toLowerCase().includes(q))
+    &&(!root||String(s.root_id)===root)&&(!onlyUsed||s.score>0)&&(!onlyMissing||!s.exists));
+  let rows;
+  if(dedupe){
+    const groups=new Map();
+    list.forEach(s=>{const k=skillKey(s);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(s);});
+    rows=[...groups.values()].map(g=>{
+      // prefer an existing, non-archived copy as the representative
+      const rep=g.find(x=>x.exists&&!/\/_archive/.test(x.path))||g.find(x=>x.exists)||g[0];
+      return {rep,copies:g,differ:g.some(x=>x.sha!==rep.sha)};
+    });
+  }else rows=list.map(s=>({rep:s,copies:[s],differ:false}));
+  const cmp={usage:(a,b)=>(b.rep.score-a.rep.score)||a.rep.name.localeCompare(b.rep.name),
+             name:(a,b)=>a.rep.name.localeCompare(b.rep.name),
+             recent:(a,b)=>((b.rep.loads&&b.rep.loads.last_ts)||0)-((a.rep.loads&&a.rep.loads.last_ts)||0)||a.rep.name.localeCompare(b.rep.name)}[sort];
+  rows.sort(cmp);
+  return {rows,total:list.length};
+}
+let SKILL_LIMIT=150;
+function renderSkills(){
+  const {rows,total}=indexRows();
+  const tb=$('#skilltable tbody');tb.innerHTML='';
+  const dedupe=$('#skill-dedupe').checked;
+  rows.slice(0,SKILL_LIMIT).forEach(r=>tb.appendChild(skillRow(r)));
+  $('#skill-more').innerHTML=rows.length>SKILL_LIMIT?`Showing ${SKILL_LIMIT} of ${rows.length} — <a href="#" onclick="SKILL_LIMIT+=300;renderSkills();return false">show more</a> or narrow the search.`:'';
+  const used=SKILLS.filter(s=>s.score>0).length, missing=SKILLS.filter(s=>!s.exists).length;
+  $('#skill-count').textContent=(dedupe?`${rows.length} names`:`${rows.length} rows`)+` · ${SKILLS.length} indexed · ${used} used`+(missing?` · ${missing} missing`:'');
+  $('#skill-count').classList.toggle('warn',missing>0);
+  renderBulk();
+}
+function skillRow({rep,copies,differ}){
+  const n=copies.length;
+  const badges=[
+    n>1?`<span class="tag" title="${esc(copies.map(x=>x.path).join('\n'))}">×${n}${differ?' ⚠':''}</span>`:'',
+    rep.is_symlink?'<span class="tag" title="symlink">↗</span>':'',
+    rep.exists?'':'<span class="tag err" title="the indexed file is gone — rescan, or the assignment will fall back to another copy">missing</span>',
+  ].join(' ');
+  const gchips=(rep.groups||[]).map(g=>`<span class="chip small" style="border-color:${esc(groupColor(g))}" onclick="openGroupByName('${esc(g)}')">${esc(g)}</span>`).join('');
+  const tr=document.createElement('tr');
+  if(!rep.exists)tr.classList.add('warn');
+  const checked=SEL.has(rep.id)?' checked':'';
+  tr.innerHTML=`<td><input type="checkbox" ${checked} onchange="toggleSel(${rep.id},this.checked)"></td>`+
+    `<td><div class="skillname">${esc(rep.name)} ${badges}</div></td>`+
+    `<td class="desc">${esc(rep.description||'')}</td>`+
+    `<td class="sec usage">${usageChips(rep)}</td>`+
+    `<td class="sec">${gchips||'<span class="dim nogroup">—</span>'}</td>`+
+    `<td class="sec dim" style="font-size:11.5px;white-space:nowrap">${esc(rootLabel(rep.root_id))}</td>`+
+    `<td style="white-space:nowrap"><button class="b" onclick="openSkill(${rep.id})">View</button> <button class="b ghost" onclick="distSkill(${rep.id})" title="symlink or copy this skill into another root">Send→</button></td>`;
+  return tr;
+}
+function groupColor(name){const g=SKILL_GROUPS.find(x=>x.name===name);return (g&&g.color)||'var(--line-2)';}
+// bulk selection
+function toggleSel(id,on){on?SEL.add(id):SEL.delete(id);renderBulk()}
+function selAll(on){const {rows}=indexRows();rows.slice(0,SKILL_LIMIT).forEach(r=>on?SEL.add(r.rep.id):SEL.delete(r.rep.id));renderSkills()}
+function clearSel(){SEL.clear();$('#skill-selall').checked=false;renderSkills()}
+function renderBulk(){
+  const bar=$('#skill-bulk');bar.classList.toggle('hidden',SEL.size===0);
+  $('#skill-selcount').textContent=SEL.size;
+  const bg=$('#bulk-group');const cur=bg.value;
+  bg.innerHTML='<option value="">— pick a group —</option>'+SKILL_GROUPS.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('');
+  bg.value=cur;
+}
+function selNames(){return [...SEL].map(id=>SKILLS.find(s=>s.id===id)).filter(Boolean).map(s=>s.name)}
+async function bulkAddToGroup(){
+  const gid=+$('#bulk-group').value;if(!gid){toast('pick a group first',true);return}
+  try{const g=await api('skill-groups/'+gid+'/members',{method:'POST',body:JSON.stringify({add:selNames()})});
+    toast(`${g.name}: ${g.members.length} members`);clearSel();await loadSkills();}
+  catch(err){toast(err.message,true)}
+}
+function bulkNewGroup(){openGroupDialog(null,selNames())}
+// ---- groups ----
+function renderGroups(){
+  const grid=$('#groupcards');if(!grid)return;grid.innerHTML='';
+  if(!SKILL_GROUPS.length){grid.innerHTML='<div class="empty">No groups yet. Select skills in the index and use "New group from selection", or create one here.</div>';return}
+  SKILL_GROUPS.forEach(g=>{
+    const card=document.createElement('div');card.className='card';card.style.borderTopColor=g.color||'';if(g.color)card.style.borderTop='3px solid '+g.color;
+    const targets=(g.targets||[]).map(t=>`<span class="chip small" onclick="jumpToTarget('${t.kind}',${t.id})">${esc(t.name)}</span>`).join('')||'<span class="dim">not assigned</span>';
+    const missing=(g.missing||[]);
+    card.innerHTML=`<div class="head"><h3>${esc(g.name)}</h3><span class="type">${g.members.length} skill${g.members.length===1?'':'s'}</span></div>
+      ${g.description?`<div class="meta">${esc(g.description)}</div>`:''}
+      <div class="chips">${g.members.slice(0,14).map(m=>`<span class="chip small${missing.includes(m)?' err':''}" title="${missing.includes(m)?'no readable copy indexed':''}">${esc(m)}</span>`).join('')}${g.members.length>14?`<span class="chip small dim">+${g.members.length-14}</span>`:''}</div>
+      <div class="kv">Assigned to</div><div class="chips">${targets}</div>
+      ${missing.length?`<div class="hint" style="color:var(--warn)">${missing.length} member${missing.length===1?'':'s'} missing from the index</div>`:''}
+      <div class="row"><button class="b" onclick="openGroupDialog(${g.id})">Edit</button><button class="b" onclick="assignGroupQuick(${g.id})">Assign to…</button></div>`;
+    grid.appendChild(card);
+  });
+}
+const gdlg=document.getElementById('gdlg');
+let G_MEMBERS=[], G_COLOR='';
+function openGroupByName(name){const g=SKILL_GROUPS.find(x=>x.name===name);if(g)openGroupDialog(g.id)}
+function openGroupDialog(id,seedMembers){
+  const g=SKILL_GROUPS.find(x=>x.id===id)||{};
+  $('#gdlg-title').textContent=id?'Edit group: '+g.name:'New skill group';
+  $('#g-id').value=id||'';$('#g-name').value=g.name||'';$('#g-desc').value=g.description||'';$('#g-q').value='';
+  G_MEMBERS=(seedMembers&&seedMembers.length?seedMembers:(g.members||[])).slice();
+  G_COLOR=g.color||GROUP_COLORS[SKILL_GROUPS.length%GROUP_COLORS.length];
+  $('#g-delete').classList.toggle('hidden',!id);
+  renderGroupColors();renderGroupMembers();$('#g-picker').classList.add('hidden');
+  gdlg.showModal();
+}
+function renderGroupColors(){
+  $('#g-colors').innerHTML=GROUP_COLORS.map(c=>`<span class="swatch${c===G_COLOR?' on':''}" style="background:${c}" onclick="G_COLOR='${c}';renderGroupColors()"></span>`).join('');
+}
+function renderGroupMembers(){
+  $('#g-members').innerHTML=G_MEMBERS.map(m=>{const ok=SKILLS.some(s=>skillKey(s)===m.toLowerCase()&&s.exists);
+    return `<span class="chip${ok?'':' err'}" title="${ok?'':'no readable copy indexed'}">${esc(m)}<button type="button" class="x" onclick="G_MEMBERS=G_MEMBERS.filter(x=>x!=='${esc(m)}');renderGroupMembers()">×</button></span>`}).join('')||'<span class="dim">no members yet</span>';
+}
+function namePicker(inputId, boxId, exclude, onpick){
+  const q=($('#'+inputId).value||'').trim().toLowerCase(), box=$('#'+boxId);
+  if(!q){box.classList.add('hidden');return}
+  const seen=new Set(), hits=[];
+  for(const s of [...SKILLS].sort((a,b)=>b.score-a.score)){
+    const k=skillKey(s);if(seen.has(k)||exclude.has(k))continue;
+    if((s.name+' '+s.description).toLowerCase().includes(q)){seen.add(k);hits.push(s);if(hits.length>=12)break}
+  }
+  box.classList.remove('hidden');
+  box.innerHTML=hits.length?hits.map(s=>`<div class="opt${s.exists?'':' outside'}" data-n="${esc(s.name)}"><span class="id">${esc(s.name)}</span><span class="dim" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:50%">${esc(s.description||'')}</span>${s.score?`<span class="tag">${s.score}</span>`:''}</div>`).join(''):'<div class="empty" style="border:none">No skill matches.</div>';
+  box.querySelectorAll('.opt').forEach(el=>el.onmousedown=e=>{e.preventDefault();onpick(el.dataset.n);$('#'+inputId).value='';box.classList.add('hidden')});
+}
+function renderGroupPicker(){namePicker('g-q','g-picker',new Set(G_MEMBERS.map(x=>x.toLowerCase())),n=>{G_MEMBERS.push(n);renderGroupMembers()})}
+async function saveGroup(ev){
+  ev.preventDefault();
+  const id=$('#g-id').value;
+  const body={name:$('#g-name').value,description:$('#g-desc').value,color:G_COLOR,members:G_MEMBERS};
+  try{await api(id?'skill-groups/'+id:'skill-groups',{method:id?'PUT':'POST',body:JSON.stringify(body)});
+    gdlg.close();toast('group saved');await loadSkills();showSkillView('groups');}
+  catch(err){toast(err.message,true)}
+  return false;
+}
+async function deleteGroupFromDialog(){
+  const id=$('#g-id').value;if(!id)return;
+  const g=SKILL_GROUPS.find(x=>x.id===+id)||{};
+  if(!confirm(`Delete group "${g.name}"? Targets that use it lose its skills.`))return;
+  try{await api('skill-groups/'+id,{method:'DELETE'});gdlg.close();toast('group deleted');await loadSkills();showSkillView('groups');}
+  catch(err){toast(err.message,true)}
+}
+async function assignGroupQuick(gid){
+  const g=SKILL_GROUPS.find(x=>x.id===gid);if(!g)return;
+  const opts=SKILL_TARGETS.map((t,i)=>`${i+1}) ${t.kind} ${t.name}${(g.targets||[]).some(x=>x.kind===t.kind&&x.id===t.id)?'  (already)':''}`).join('\n');
+  const pick=prompt(`Assign "${g.name}" to which target?\n\n${opts}\n\nnumber:`);
+  const t=SKILL_TARGETS[parseInt(pick,10)-1];if(!t)return;
+  try{
+    const cur=await api('skill-assign?kind='+t.kind+'&id='+t.id);
+    const gids=new Set(cur.group_ids||[]);gids.add(gid);
+    await api('skill-assign',{method:'POST',body:JSON.stringify({kind:t.kind,id:t.id,skill_ids:cur.skill_ids||[],group_ids:[...gids]})});
+    toast(`${g.name} → ${t.name}`);await loadSkills();showSkillView('groups');
+  }catch(err){toast(err.message,true)}
+}
+// ---- assignments ----
+function jumpToTarget(kind,id){ASSIGN_TARGET=kind+':'+id;$('#skill-ep').value=ASSIGN_TARGET;showSkillView('targets');loadAssignment()}
+function renderTargetSummary(){
+  const grid=$('#target-summary');if(!grid)return;
+  if(ASSIGN_TARGET){grid.classList.add('hidden');return}
+  grid.classList.remove('hidden');grid.innerHTML='';
+  SKILL_TARGETS.forEach(t=>{
+    const card=document.createElement('div');card.className='card'+(t.enabled?'':' off');card.style.cursor='pointer';
+    card.onclick=()=>jumpToTarget(t.kind,t.id);
+    card.innerHTML=`<div class="head"><h3>${esc(t.name)}</h3><span class="type">${t.kind}</span></div>
+      <div class="meta">${t.skills?`<b>${t.skills}</b> skill${t.skills===1?'':'s'}`:'<span class="dim">no skills</span>'}${t.groups?` · ${t.groups} group${t.groups===1?'':'s'}`:''}${t.missing?` · <span style="color:var(--warn)">${t.missing} missing</span>`:''}</div>`;
+    grid.appendChild(card);
+  });
+}
 async function loadAssignment(){
   ASSIGN_TARGET=$('#skill-ep').value||'';
-  ASSIGN_SET.clear();
+  ASSIGN_SET.clear();ASSIGN_GROUPS.clear();
   $('#skill-assign-save').disabled=!ASSIGN_TARGET;
-  if(ASSIGN_TARGET){
-    const [kind,id]=ASSIGN_TARGET.split(':');
-    try{const r=await api('skill-assign?kind='+kind+'&id='+id);(r.skill_ids||[]).forEach(x=>ASSIGN_SET.add(x));}catch(err){}
-  }
-  renderSkills();
+  $('#assign-editor').classList.toggle('hidden',!ASSIGN_TARGET);
+  renderTargetSummary();
+  if(!ASSIGN_TARGET){$('#assign-state').textContent='';return}
+  const [kind,id]=ASSIGN_TARGET.split(':');
+  try{const r=await api('skill-assign?kind='+kind+'&id='+id);
+    (r.skill_ids||[]).forEach(x=>ASSIGN_SET.add(x));(r.group_ids||[]).forEach(x=>ASSIGN_GROUPS.add(x));
+    renderAssignEditor(r);
+  }catch(err){toast(err.message,true)}
+}
+function renderAssignEditor(r){
+  $('#assign-groups').innerHTML=SKILL_GROUPS.length?SKILL_GROUPS.map(g=>`<span class="chip toggle${ASSIGN_GROUPS.has(g.id)?' on':''}" style="${ASSIGN_GROUPS.has(g.id)&&g.color?'border-color:'+g.color:''}" onclick="ASSIGN_GROUPS.has(${g.id})?ASSIGN_GROUPS.delete(${g.id}):ASSIGN_GROUPS.add(${g.id});renderAssignEditor()">${esc(g.name)} <small>${g.members.length}</small></span>`).join(''):'<span class="dim">no groups yet</span>';
+  $('#assign-direct').innerHTML=[...ASSIGN_SET].map(id=>{const s=SKILLS.find(x=>x.id===id);if(!s)return '';
+    return `<span class="chip${s.exists?'':' err'}">${esc(s.name)}<button type="button" class="x" onclick="ASSIGN_SET.delete(${id});renderAssignEditor()">×</button></span>`}).join('')||'<span class="dim">none — groups only</span>';
+  if(r){
+    const eff=r.effective||[];
+    $('#assign-effective').innerHTML=eff.length?eff.map(e=>`<span class="chip small${e.missing?' err':''}" title="${e.missing?'no readable copy indexed':esc(e.path)}">${esc(e.name)} <small>${esc(e.via)}</small></span>`).join(''):'<span class="dim">nothing yet — this target injects no catalog</span>';
+    $('#assign-catalog').textContent=r.catalog||'(empty)';
+    $('#assign-state').textContent=`${eff.filter(e=>!e.missing).length} skill${eff.length===1?'':'s'} in the catalog`;
+  }else{$('#assign-state').textContent='unsaved changes';}
+}
+function renderAssignPicker(){
+  const ex=new Set([...ASSIGN_SET].map(id=>{const s=SKILLS.find(x=>x.id===id);return s?skillKey(s):''}));
+  namePicker('assign-q','assign-picker',ex,n=>{
+    const s=SKILLS.filter(x=>skillKey(x)===n.toLowerCase()).sort((a,b)=>(b.exists-a.exists))[0];
+    if(s){ASSIGN_SET.add(s.id);renderAssignEditor()}
+  });
 }
 async function saveAssignment(){
   if(!ASSIGN_TARGET)return;
   const [kind,id]=ASSIGN_TARGET.split(':');
-  try{await api('skill-assign',{method:'POST',body:JSON.stringify({kind,id:parseInt(id,10),skill_ids:[...ASSIGN_SET]})});toast('assigned '+ASSIGN_SET.size+' skills');}
+  try{await api('skill-assign',{method:'POST',body:JSON.stringify({kind,id:parseInt(id,10),skill_ids:[...ASSIGN_SET],group_ids:[...ASSIGN_GROUPS]})});
+    toast('assignment saved');const t=await api('skill-targets');SKILL_TARGETS=t||[];await loadAssignment();}
   catch(err){toast(err.message,true)}
 }
-function toggleAssign(id,on){on?ASSIGN_SET.add(id):ASSIGN_SET.delete(id);}
-function rootLabel(id){const r=SKILL_ROOTS.find(x=>x.id===id);return r?(r.label||r.path.split('/').pop()):'';}
-function skillRow(rep, extra){ // extra: {badge, loc, ids} for deduped groups
-  const link=rep.is_symlink?' <span title="symlink" style="color:var(--dim)">↗</span>':'';
-  let chk='';
-  if(ASSIGN_TARGET){
-    if(extra){ // deduped group: checked if any copy assigned; assigns the representative
-      const on=extra.ids.some(id=>ASSIGN_SET.has(id));
-      chk=`<input type="checkbox" ${on?'checked':''} onchange="toggleGroup('${extra.ids.join(',')}',${rep.id},this.checked)">`;
-    }else{
-      chk=`<input type="checkbox" ${ASSIGN_SET.has(rep.id)?'checked':''} onchange="toggleAssign(${rep.id},this.checked)">`;
-    }
-  }
-  const tr=document.createElement('tr');
-  tr.innerHTML=`<td>${chk}</td>`+
-    `<td style="font-weight:600;white-space:nowrap">${esc(rep.name)}${extra?extra.badge:''}${link}</td>`+
-    `<td style="color:var(--dim);font-size:12px">${esc(rep.description||'')}</td>`+
-    `<td class="sec" style="font-size:11px;color:var(--dim);white-space:nowrap">${esc(rootLabel(rep.root_id))}</td>`+
-    `<td class="sec" style="font-family:ui-monospace,monospace;font-size:10.5px;color:var(--dim)" title="${esc(rep.path)}"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left">${extra?extra.loc:esc(rep.path)}</span></td>`+
-    `<td style="white-space:nowrap"><button class="b" onclick="openSkill(${rep.id})">Edit</button> <button class="b" onclick="distSkill(${rep.id})">Send→</button></td>`;
-  return tr;
-}
-function renderSkills(){
-  const q=($('#skill-q').value||'').toLowerCase().trim();
-  const dedupe=$('#skill-dedupe').checked;
-  const filtered=SKILLS.filter(s=>!q||(s.name+' '+s.description+' '+s.path).toLowerCase().includes(q));
-  const tb=$('#skilltable tbody');tb.innerHTML='';
-  if(dedupe){
-    const groups=new Map();
-    filtered.forEach(s=>{const k=(s.name||'').toLowerCase();if(!groups.has(k))groups.set(k,[]);groups.get(k).push(s);});
-    const list=[...groups.values()].sort((a,b)=>(a[0].name||'').localeCompare(b[0].name||''));
-    list.forEach(g=>{
-      const rep=g[0], n=g.length, differ=g.some(x=>x.sha!==rep.sha);
-      const badge=n>1?` <span title="${esc(g.map(x=>x.path).join('\n'))}" style="color:var(--dim);font-size:11px">×${n}${differ?' <span title="copies differ" style="color:var(--err)">⚠</span>':''}</span>`:'';
-      const loc=n>1?`${esc(rep.path)} <span style="color:var(--dim)">(+${n-1})</span>`:esc(rep.path);
-      tb.appendChild(skillRow(rep,{badge,loc,ids:g.map(x=>x.id)}));
-    });
-    $('#skill-count').textContent=list.length+' unique · '+SKILLS.length+' total';
-  }else{
-    filtered.forEach(s=>tb.appendChild(skillRow(s,null)));
-    $('#skill-count').textContent=filtered.length+' / '+SKILLS.length+' skills';
-  }
-}
-function toggleGroup(idsCsv,repId,on){
-  idsCsv.split(',').map(Number).forEach(id=>ASSIGN_SET.delete(id)); // one copy per name
-  if(on)ASSIGN_SET.add(repId);
-  renderSkills();
-}
+// ---- view / edit / distribute ----
 async function openSkill(id){
   try{const r=await api('skills/'+id);
     $('#s-id').value=id;$('#s-content').value=r.content||'';
@@ -2028,9 +2290,9 @@ function renderRoots(){
   const tb=$('#srtable tbody');tb.innerHTML='';
   SKILL_ROOTS.forEach(r=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td style="font-family:ui-monospace,monospace;font-size:11px;word-break:break-all">${esc(r.path)}</td>`+
+    tr.innerHTML=`<td style="font-family:var(--mono);font-size:11px;word-break:break-all">${esc(r.path)}</td>`+
       `<td><input type="checkbox" ${r.enabled?'checked':''} onchange="toggleRoot(${r.id},this.checked)"></td>`+
-      `<td><button class="b" onclick="delRoot(${r.id})">✕</button></td>`;
+      `<td><button class="b ghost" onclick="delRoot(${r.id})">✕</button></td>`;
     tb.appendChild(tr);
   });
 }

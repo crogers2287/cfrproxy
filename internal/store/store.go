@@ -465,6 +465,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
   enabled INTEGER NOT NULL DEFAULT 1,
   UNIQUE(target_kind, target_id, model_glob, skill_id)
 )`)
+	s.migrateSkillGroups()
 	return nil
 }
 
