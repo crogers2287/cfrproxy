@@ -486,11 +486,18 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// A pooled logical model fans out to whichever instance is least busy;
 	// llama.cpp queues it there if every member is full.
 	var pooled poolChoice
+	// kvxWhy is the "is this a new conversation" verdict the KV-Rosetta
+	// restore hook (kvxrestore.go) keys on: the pool's own `why` for a pooled
+	// model, or kvxUnpooledWhy's for an unpooled one. Read the setting once
+	// here; the hook in the candidate loop reuses it.
+	kcfg := p.KVXRestoreConfig()
+	kvxWhy := ""
 	if spec := p.poolSpecFor(model); spec != nil {
 		pooled = p.routePool(spec, prov, req)
 		p.inflight.add(pooled.member, 1)
 		defer p.inflight.add(pooled.member, -1)
 		model = pooled.member
+		kvxWhy = pooled.why
 		if spec.Affinity {
 			// Only annotated for affinity pools: a plain least-busy pool keeps
 			// the trace it has always written. Appended to tr.Note rather than
@@ -498,6 +505,8 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			// pooled request has no reason to lose it.
 			tr.Note = strings.TrimSpace(tr.Note + " pool→" + pooled.member + " (" + pooled.why + ")")
 		}
+	} else if kcfg.Enabled && prov.Name == kcfg.provider() {
+		kvxWhy = kvxUnpooledWhy(model, req)
 	}
 	cands := []candidate{{prov: prov, model: model}}
 	// Sibling instances of the same pool come first in the chain: they are the
@@ -743,8 +752,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// final, so kvxd sees the messages and tools byte-for-byte as they
 		// are forwarded (passthrough or translated, docs/skills injected,
 		// caveman applied, transform rules run). Only the OpenAI dialect is
-		// parsed — llama-swap speaks nothing else.
-		if kcfg := p.KVXRestoreConfig(); otype == "openai" && kvxRestoreWanted(kcfg, prov, c, pooled, creq.System, len(creq.Tools)) {
+		// parsed — llama-swap speaks nothing else. kvxWhy (set with the pool
+		// decision above) says whether this is a new conversation.
+		if otype == "openai" && kvxRestoreWanted(kcfg, prov, c, kvxWhy, creq.System, len(creq.Tools)) {
 			tr.Note = strings.TrimSpace(tr.Note + " " + kvxRestore(r.Context(), kcfg, c.model, outBody))
 		}
 		// maxAttempts is 2 (one transient retry). Dropping a provider-rejected

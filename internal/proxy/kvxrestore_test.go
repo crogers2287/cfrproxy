@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
+	"github.com/crogers2287/cfrproxy/internal/wire"
 )
 
 // kvxStub is an httptest double for kvxd's POST /v1/restore-for-prompt. It
@@ -105,6 +106,12 @@ func kvxUpstream(t *testing.T) *kvxUpstreamStub {
 // ("" = unset, the production default).
 func kvxProxy(t *testing.T, provName, upstream, setting string) (*store.Store, *http.ServeMux) {
 	t.Helper()
+	return kvxProxyPools(t, provName, upstream, setting, twoInstance)
+}
+
+// kvxProxyPools is kvxProxy with an explicit model_pools value ("" = none).
+func kvxProxyPools(t *testing.T, provName, upstream, setting, pools string) (*store.Store, *http.ServeMux) {
+	t.Helper()
 	poolAffinity.reset()
 	resetFailoverNotices()
 	s := newDiscoveryStore(t)
@@ -112,8 +119,10 @@ func kvxProxy(t *testing.T, provName, upstream, setting string) (*store.Store, *
 		DefaultModel: "ornith", Models: "ornith", Priority: 10, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetSetting("model_pools", twoInstance); err != nil {
-		t.Fatal(err)
+	if pools != "" {
+		if err := s.SetSetting("model_pools", pools); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if setting != "" {
 		if err := s.SetSetting("kvx_restore", setting); err != nil {
@@ -335,5 +344,98 @@ func TestKVXRestoreConfigDefaults(t *testing.T) {
 		if got := commaInt(n); got != want {
 			t.Errorf("commaInt(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// kvxUnpooledBody addresses a model that is in no pool, the way the live
+// fleet mostly is (fred/tiel-kvx-w6800 etc.).
+func kvxUnpooledBody(first string) string {
+	return strings.Replace(strings.Replace(kvxAgentBody, `"model":"ornith"`, `"model":"fred/tiel-kvx-w6800"`, 1), "%s", first, 1)
+}
+
+// An UNPOOLED local model: a new conversation restores, its next turn does
+// not, another new conversation restores again.
+func TestKVXRestoreUnpooledNewConversation(t *testing.T) {
+	kvx := newKVXStub(t, kvxHit)
+	up := kvxUpstream(t)
+	s, mux := kvxProxyPools(t, "fred", up.URL, kvxSetting(kvx.URL, ""), "")
+
+	kvxSend(t, mux, kvxUnpooledBody("fix the parser"))
+	if n := kvx.count(); n != 1 {
+		t.Fatalf("new unpooled conversation: kvxd called %d times, want 1", n)
+	}
+	note := kvxLastNote(t, s)
+	if !strings.Contains(note, "kvx→restored 29,601 (slot 1)") || strings.Contains(note, "pool→") {
+		t.Fatalf("note=%q: want the restore note and no pool note", note)
+	}
+	var sent struct {
+		Model    string            `json:"model"`
+		Messages []json.RawMessage `json:"messages"`
+		Tools    []json.RawMessage `json:"tools"`
+	}
+	json.Unmarshal(kvx.last(), &sent)
+	if sent.Model != "tiel-kvx-w6800" || len(sent.Messages) != 2 || len(sent.Tools) != 1 {
+		t.Fatalf("kvxd body: %s", kvx.last())
+	}
+	traces, _ := s.Traces(0, 1)
+	if traces[0].Model != "tiel-kvx-w6800" || traces[0].Provider != "fred" {
+		t.Fatalf("trace attributed to %s/%s", traces[0].Provider, traces[0].Model)
+	}
+
+	// Turn 2: same system + first user message, longer tail — bound, no call.
+	turn2 := strings.Replace(kvxUnpooledBody("fix the parser"), `}],"tools"`, `},{"role":"assistant","content":"on it"},{"role":"user","content":"now run the tests"}],"tools"`, 1)
+	kvxSend(t, mux, turn2)
+	if n := kvx.count(); n != 1 {
+		t.Fatalf("turn 2 of a bound unpooled conversation: kvxd called %d times, want still 1", n)
+	}
+	if note := kvxLastNote(t, s); strings.Contains(note, "kvx→") {
+		t.Fatalf("turn 2 must not carry a kvx note: %q", note)
+	}
+
+	// A different conversation on the same model is new again.
+	kvxSend(t, mux, kvxUnpooledBody("add a --verbose flag"))
+	if n := kvx.count(); n != 2 {
+		t.Fatalf("second unpooled conversation: kvxd called %d times, want 2", n)
+	}
+	if note := kvxLastNote(t, s); !strings.Contains(note, "kvx→restored") {
+		t.Fatalf("note=%q", note)
+	}
+}
+
+// Unpooled on a cloud provider: no call, and the affinity table is untouched.
+func TestKVXRestoreUnpooledSkipsNonLocalAndDisabled(t *testing.T) {
+	kvx := newKVXStub(t, kvxHit)
+	_, mux := kvxProxyPools(t, "cloud", kvxUpstream(t).URL, kvxSetting(kvx.URL, ""), "")
+	body := strings.Replace(kvxUnpooledBody("fix the parser"), "fred/", "cloud/", 1)
+	kvxSend(t, mux, body)
+	if n := kvx.count(); n != 0 {
+		t.Fatalf("kvxd called %d times for an unpooled cloud model", n)
+	}
+	// Setting off: no call, and no binding is written (behaviour-neutral).
+	_, mux = kvxProxyPools(t, "fred", kvxUpstream(t).URL, "", "")
+	kvxSend(t, mux, kvxUnpooledBody("fix the parser"))
+	if n := kvx.count(); n != 0 {
+		t.Fatalf("kvxd called %d times with the setting unset", n)
+	}
+	if _, _, ok := poolAffinity.get("conv:"+conversationFingerprint(agentReq("You are a coding agent.\nWorking directory: /srv/app", "fix the parser")), poolAffinityTTL); ok {
+		t.Fatal("a disabled hook must not write conversation bindings")
+	}
+}
+
+// A conversation that moves to another unpooled model is new on that model.
+func TestKVXUnpooledWhyIsPerModel(t *testing.T) {
+	poolAffinity.reset()
+	req := agentReq("sys", "hello")
+	if w := kvxUnpooledWhy("a", req); w != "new" {
+		t.Fatalf("first sighting = %q", w)
+	}
+	if w := kvxUnpooledWhy("a", req); w != "conversation" {
+		t.Fatalf("second sighting = %q", w)
+	}
+	if w := kvxUnpooledWhy("b", req); w != "new" {
+		t.Fatalf("same conversation on another model = %q", w)
+	}
+	if w := kvxUnpooledWhy("a", &wire.Request{}); w != "" {
+		t.Fatalf("unfingerprintable request = %q", w)
 	}
 }

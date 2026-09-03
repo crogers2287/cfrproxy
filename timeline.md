@@ -6,6 +6,42 @@
 
 ## 2026-09-03
 
+### REQ-099 — kvx_restore fires for unpooled local models too (new conversation by fingerprint)
+
+Source: coordinator follow-up after the live check of REQ-098: `POST /v1/chat/completions
+model=fred/tiel-kvx-w6800`, fresh system+user → trace 166517 status 200, EMPTY note, kvxd received
+zero calls. `tiel-kvx-w6800` is in no affinity pool (model_pools only has the legacy
+tiel-coder-q5/tiel-b array), so `pooled.why == ""` and the gate refused. Most of the fleet is
+unpooled (tiel-kvx-w6800, qwen38-flash-next-kvx, qwen38-27b-3090-agg).
+
+#### What changed
+- `internal/proxy/kvxrestore.go` — `kvxUnpooledWhy(model, req)`: "conversation" when the request's
+  `conversationFingerprint` (system + first user turn, via `poolConvKey`) is already bound to this
+  model in the `poolAffinity` table (pool TTL, 2 h), else "new" and binds it. No new key or table.
+  `kvxRestoreWanted` now takes `why` and accepts `cold/slots`, `cold/inflight`, `prefix`, `new`.
+- `internal/proxy/proxy.go` — the setting is read once per request (`kcfg`); `kvxWhy` = the pool's
+  `why` for a pooled model, or `kvxUnpooledWhy` for an unpooled model on the configured local
+  provider **only while the setting is enabled** (off → no binding is written, table untouched).
+  Everything else unchanged: primary candidate only, `otype == "openai"`, system prompt and/or
+  tools, synchronous with `timeout_ms`, note `kvx→restored/miss/timeout/error`, never fails the
+  request.
+- Legacy least-busy pools (`why == "least-busy"`) still never fire — the coordinator asked to keep
+  the pooled rule exactly.
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| unpooled `fred` model, new conversation → exactly one call + note; turn 2 → no call; another conversation → call | ✅ | `TestKVXRestoreUnpooledNewConversation` (kvxd body model `tiel-kvx-w6800`, 2 msgs / 1 tool; trace `fred/tiel-kvx-w6800`) |
+| unpooled cloud model → no call; setting off → no call and no binding written | ✅ | `TestKVXRestoreUnpooledSkipsNonLocalAndDisabled` |
+| binding is per model; unfingerprintable request yields "" | ✅ | `TestKVXUnpooledWhyIsPerModel` |
+| pooled behaviour unchanged | ✅ | all REQ-098 `TestKVXRestore*` and `TestPool*`/`TestAffinity*` green |
+
+#### Deploy + verify
+- (stamp below)
+
+**REQ-099 status: COMPLETE (proxy side).**
+
 ### REQ-098 — KV-Rosetta request-time restore before a cold prefill (`kvx_restore`)
 
 Source: agent handoff (KV-Rosetta session) — kvxd only restores an attachment into a slot that is

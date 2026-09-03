@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
+	"github.com/crogers2287/cfrproxy/internal/wire"
 )
 
 // KV-Rosetta request-time restore.
@@ -89,22 +90,43 @@ func (p *Proxy) KVXRestoreConfig() KVXRestore {
 	return c
 }
 
+// kvxUnpooledWhy classifies a request to an UNPOOLED model the way routePool
+// classifies a pooled one, so the restore gate has one notion of "a
+// conversation this proxy already sent": "conversation" when the request's
+// fingerprint (system prompt + first user turn, conversationFingerprint) is
+// already bound to this model, "new" otherwise — and binds it, so the next
+// turn is recognised. The binding lives in the pool affinity table under the
+// pool's own conv key (poolConvKey), with the pool's TTL; a request with no
+// fingerprint (nothing to pin) yields "".
+func kvxUnpooledWhy(model string, req *wire.Request) string {
+	key := poolConvKey(req)
+	if key == "" {
+		return ""
+	}
+	if m, _, ok := poolAffinity.get(key, poolAffinityTTL); ok && m == model {
+		return "conversation"
+	}
+	poolAffinity.put(key, model, "kvx")
+	return "new"
+}
+
 // kvxRestoreWanted decides whether this candidate send should be preceded by
 // a restore call. All of these must hold:
 //   - the setting is on,
 //   - the candidate is the primary (not a failover hop, not a pool sibling)
 //     and its provider is the local llama-swap one,
-//   - the pool routed a NEW conversation (`cold/*` or `prefix`): a bound
-//     conversation already has its slot warm, and there is no pool decision
-//     at all for an unpooled model,
+//   - the request starts a NEW conversation: `why` is the pool's `cold/*` or
+//     `prefix` for a pooled model, or kvxUnpooledWhy's `new` for an unpooled
+//     one. Never `conversation` (its slot is already warm), never a plain
+//     least-busy pool's `least-busy` (no conversation notion there),
 //   - the request carries a system prompt and/or tools — otherwise there is
 //     nothing an attachment could cover.
-func kvxRestoreWanted(cfg KVXRestore, primary store.Provider, c candidate, pooled poolChoice, system string, tools int) bool {
+func kvxRestoreWanted(cfg KVXRestore, primary store.Provider, c candidate, why string, system string, tools int) bool {
 	if !cfg.Enabled || c.failover || c.sibling || c.prov.ID != primary.ID || c.prov.Name != cfg.provider() {
 		return false
 	}
-	switch pooled.why {
-	case "cold/slots", "cold/inflight", "prefix":
+	switch why {
+	case "cold/slots", "cold/inflight", "prefix", "new":
 	default:
 		return false
 	}
