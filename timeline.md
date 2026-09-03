@@ -6,6 +6,33 @@
 
 ## 2026-09-02
 
+### REQ-097 — Skill lazy-load 401 from a harness that cannot send the endpoint key
+
+Source: chat + screenshot (pi on Windows via `/e/w6800-test`): "im using the skill injection and its
+failing. it sees it, but fails to lazy load it, think we broke it with our changes."
+
+**Finding.** Not a regression: `GET /e/{ep}/skills/{name}` has required the endpoint key since
+REQ-075 ("endpoint-key authed", which assumed the agent has a `bash`/`curl` tool). The NPM access
+log for `api.skinnyc.pro` shows every skill fetch ever made was a 401 — the harness's URL `Read`
+tool sends no headers. Today's changes only swapped the key compare for a constant-time one.
+
+**Fix.** Each load URL in the catalog (and in `GET …/skills`) now carries a per-skill capability
+token: `?t=` = HMAC-SHA256(secret.key, scope + skill)[:32], scope `e:<endpoint>` or `p:<provider>`.
+The handlers accept the token or the key; the token grants exactly that one read and reveals no
+key. Deterministic, so the catalog stays byte-stable in the cached prefix. Catalog text now says the
+GET needs no authentication.
+
+| Item | Status | Evidence |
+|---|---|---|
+| tokenized load URLs on `/e/` and `/p/` mounts | ✅ | `TestSkillLoadURLAuthorizesItself` (bare 401, token 200, wrong token 401, token bound to its skill, key still works, list carries tokens, public peer + token on `/p/` 200) |
+
+#### Deploy + verify
+- `0a2073c` via `make deploy`. Live through the public proxy: `GET /e/w6800-test/skills/ha-mcp` → 401
+  without a token, 200 with the token the catalog now embeds, 401 with a wrong token. The harness in
+  the screenshot will get the SKILL.md on its next turn (the catalog URL is rebuilt per request).
+
+**REQ-097 status: COMPLETE.**
+
 ### REQ-096 — WebUI redesign: fluid, mobile-first, and a model picker that shows every model
 
 Source: chat + screenshot (phone, `api.skinnyc.pro/admin/#`, Edit ccbudget-pro dialog): "doesn't show
