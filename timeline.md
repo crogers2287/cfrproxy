@@ -26,10 +26,22 @@ GET needs no authentication.
 |---|---|---|
 | tokenized load URLs on `/e/` and `/p/` mounts | ✅ | `TestSkillLoadURLAuthorizesItself` (bare 401, token 200, wrong token 401, token bound to its skill, key still works, list carries tokens, public peer + token on `/p/` 200) |
 
+**Second finding, surfaced by the token.** With auth passing, the fetch answered 404 "skill file
+unavailable": the assigned `ha-mcp` row still pointed at
+`vault/Skills/hermes-haxor/home-assistant/ha-mcp/SKILL.md`, which moved under
+`vault/Skills/_archive-2026-08-22/` on Aug 22 (no rescan since). A rescan would have pruned the row
+and orphaned the assignment — the catalog would have silently lost the skill.
+
+**Fix 2.** `ScanSkills` re-points assignments at another indexed copy of the same name (preferring a
+non-archived one) before pruning a vanished row; the fetch handlers fall back to any readable indexed
+copy of the same name. `TestRescanRepointsAssignmentsWhenSkillMoves`. Live index rescanned: ha-mcp is
+row 2864 (the archived copy) and the w6800-test assignment followed it.
+
 #### Deploy + verify
-- `0a2073c` via `make deploy`. Live through the public proxy: `GET /e/w6800-test/skills/ha-mcp` → 401
-  without a token, 200 with the token the catalog now embeds, 401 with a wrong token. The harness in
-  the screenshot will get the SKILL.md on its next turn (the catalog URL is rebuilt per request).
+- `0a2073c` (tokens) then `f92b53b` (re-pointing + fallback) via `make deploy`.
+- Through the public proxy: `GET /e/w6800-test/skills/ha-mcp` → 401 without a token, 401 with a wrong
+  token, **200** with the token the catalog embeds — the full SKILL.md body. The harness in the
+  screenshot gets it on its next turn (the catalog URL is rebuilt per request).
 
 **REQ-097 status: COMPLETE.**
 
