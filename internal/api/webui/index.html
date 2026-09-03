@@ -2,454 +2,614 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0c11">
 <title>cfrproxy</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128268;</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230a0c11'/><path d='M8 16h6M18 16h6M14 16l3-5M14 16l3 5' stroke='%23ec7cbd' stroke-width='2.4' stroke-linecap='round' fill='none'/></svg>">
 <style>
+/* ------------------------------------------------------------------
+   cfrproxy admin — design tokens
+   Ink surfaces, one brand accent (the pink from the wordmark), and a
+   route chip `provider / model` as the recurring visual unit: every
+   place a model is named, it is named the same way.
+   ------------------------------------------------------------------ */
 :root{
-  --bg:#0d1117;--panel:#161b22;--panel2:#1c2129;--border:#30363d;--text:#e6edf3;
-  --dim:#8b949e;--accent:#d16ba5;--ok:#3fb950;--err:#f85149;--warn:#d29922;
+  --ink:#0a0c11;      --ink-2:#0e1118;
+  --surface:#12151d;  --raised:#191d28;
+  --line:#242a38;     --line-2:#303748;
+  --text:#eceef4;     --text-2:#a9b0c1;  --muted:#7b8397;
+  --brand:#ec7cbd;    --brand-2:#f6a8d4; --brand-ink:#22101b; --brand-soft:rgba(236,124,189,.13);
+  --ok:#42d392;  --ok-soft:rgba(66,211,146,.14);
+  --warn:#f2b544;--warn-soft:rgba(242,181,68,.14);
+  --err:#fb6f85; --err-soft:rgba(251,111,133,.14);
+  --info:#79c7f6;--info-soft:rgba(121,199,246,.14);
+  --r-s:8px; --r-m:12px; --r-l:16px;
+  --nav-w:232px;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",Menlo,Consolas,monospace;
+  --shadow:0 12px 40px rgba(0,0,0,.45);
+  --ease:cubic-bezier(.2,.7,.2,1);
+  /* legacy names still referenced by inline styles in script templates */
+  --bg:var(--ink);--panel:var(--surface);--panel2:var(--raised);--border:var(--line);--dim:var(--muted);--accent:var(--brand);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;min-height:100dvh;-webkit-text-size-adjust:100%}
-header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--panel)}
-header h1{font-size:17px;letter-spacing:.5px}
-header h1 span{color:var(--accent)}
-nav{display:flex;gap:4px;margin-left:24px}
-nav button{background:none;border:none;color:var(--dim);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:14px}
-nav button.on{background:var(--panel2);color:var(--text);font-weight:600}
-#status{margin-left:auto;color:var(--dim);font-size:12px}
-main{padding:24px;max-width:1200px;margin:0 auto}
+html{background:var(--ink)}
+body{background:var(--ink);color:var(--text);font:14px/1.5 var(--font);min-height:100dvh;-webkit-text-size-adjust:100%;
+  display:grid;grid-template-columns:var(--nav-w) minmax(0,1fr)}
+a{color:var(--brand-2)}
+::selection{background:var(--brand-soft)}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:6px}
 .hidden{display:none!important}
-h2{font-size:15px;margin-bottom:14px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:1px}
-/* provider cards */
-#cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;cursor:grab;position:relative;transition:border-color .15s}
-/* hover only where a pointer can actually hover — on touch these stick after a tap */
-@media (hover:hover){.card:hover{border-color:var(--accent)}}
-.card .reorder{display:none;gap:6px;position:absolute;top:8px;right:8px}
-.card.dragging{opacity:.4}
-.card.dragover{border-color:var(--accent);border-style:dashed}
-.card.off{opacity:.45}
-.card .prio{position:absolute;top:10px;right:12px;color:var(--dim);font-size:11px}
-.card h3{font-size:16px;margin-bottom:2px}
-.card .type{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim);margin-bottom:8px}
-.card .url{color:var(--dim);font-size:12px;word-break:break-all}
-.card .meta{margin-top:8px;font-size:12px;color:var(--dim)}
-.card .meta b{color:var(--text);font-weight:500}
-.card .row{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
-button.b{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;touch-action:manipulation}
-button.b.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+.mono,code{font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---- navigation: sidebar on wide screens, brand bar + chip rail on phones ---- */
+#nav{position:sticky;top:0;height:100dvh;background:var(--ink-2);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:18px 14px;gap:6px}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px;font-weight:700;font-size:18px;letter-spacing:-.01em}
+.brand .mark{width:26px;height:26px;border-radius:8px;background:var(--brand-soft);display:grid;place-items:center;flex:none}
+.brand .mark svg{width:16px;height:16px}
+.brand span{color:var(--brand)}
+nav{display:flex;flex-direction:column;gap:2px}
+nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:var(--text-2);
+  padding:9px 10px;border-radius:10px;cursor:pointer;font:inherit;font-size:13.5px;font-weight:500;transition:background .15s,color .15s}
+nav button svg{width:16px;height:16px;flex:none;opacity:.75}
+nav button.on{background:var(--raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
+nav button.on svg{opacity:1;color:var(--brand)}
+@media (hover:hover){nav button:hover{background:var(--surface);color:var(--text)}}
+#status{margin-top:auto;padding:12px 10px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;line-height:1.6}
+#status b{color:var(--text-2);font-weight:600}
+.pulse{display:inline-flex;align-items:center;gap:6px;color:var(--text-2)}
+.pulse i{width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block}
+.pulse.live i{background:var(--ok);box-shadow:0 0 0 0 rgba(66,211,146,.6);animation:pulse 1.8s var(--ease) infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(66,211,146,.55)}70%{box-shadow:0 0 0 7px rgba(66,211,146,0)}100%{box-shadow:0 0 0 0 rgba(66,211,146,0)}}
+
+/* ---- page ---- */
+main{padding:28px 32px 64px;max-width:1160px;width:100%;margin:0 auto;min-width:0}
+main>section{display:flex;flex-direction:column;gap:18px;animation:rise .28s var(--ease)}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.page-title{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:2px}
+.page-title h1{font-size:22px;font-weight:700;letter-spacing:-.02em}
+.page-title p{color:var(--muted);font-size:13px}
+
+/* panels: one card per concern, a head row and a body */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-l);overflow:clip}
+.panel-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.panel-head h2{font-size:15px;font-weight:650;letter-spacing:-.01em;color:var(--text);margin:0}
+.panel-head .spacer{flex:1}
+.panel-body{padding:16px 18px}
+.panel-body>*+*{margin-top:12px}
+.panel.quiet{background:transparent;border-style:dashed}
+h2{font-size:15px;font-weight:650;letter-spacing:-.01em;color:var(--text)}
+h3{font-size:15px;font-weight:650;letter-spacing:-.01em}
+
+/* explanatory copy folds away; the first sentence is enough at a glance */
+details.help{color:var(--text-2);font-size:13px}
+details.help summary{cursor:pointer;color:var(--muted);font-size:12.5px;list-style:none;display:inline-flex;align-items:center;gap:6px;user-select:none}
+details.help summary::-webkit-details-marker{display:none}
+details.help summary::before{content:"";width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);transition:transform .15s;margin-left:2px}
+details.help[open] summary::before{transform:rotate(45deg)}
+details.help p{margin-top:8px;line-height:1.55;max-width:72ch}
+details.help p+p{margin-top:6px}
+.hint{color:var(--muted);font-size:12.5px;line-height:1.5}
+.hint b{color:var(--text-2)}
+
+/* ---- the route chip: provider / model, everywhere a model is named ---- */
+.route{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12.5px;padding:3px 9px 3px 7px;border-radius:999px;
+  background:var(--raised);border:1px solid var(--line);color:var(--text);max-width:100%;vertical-align:middle}
+.route .dot{width:7px;height:7px;border-radius:50%;background:var(--info);flex:none}
+.route .dot.anthropic{background:var(--warn)} .route .dot.ollama{background:var(--ok)} .route .dot.commandcode{background:var(--brand)} .route .dot.virtual{background:var(--brand-2)}
+.route .prov{color:var(--muted)}
+.route .sep{color:var(--line-2)}
+.route .model{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---- cards (providers, agents, routers, fusions, endpoints) ---- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.grid>*{min-width:0}
+.card{background:var(--raised);border:1px solid var(--line);border-radius:var(--r-m);padding:14px 16px;position:relative;
+  display:flex;flex-direction:column;gap:8px;min-width:0;transition:border-color .15s,transform .15s}
+.card.provider{cursor:grab}
+@media (hover:hover){.card:hover{border-color:var(--line-2)} .card.provider:hover{border-color:var(--brand)}}
+.card.dragging{opacity:.4} .card.dragover{border-color:var(--brand);border-style:dashed}
+.card.off{opacity:.5}
+.card .head{display:flex;align-items:center;gap:8px}
+.card .head h3{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .rank{font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+.card .type{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.card .url{color:var(--muted);font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.card .meta{font-size:12.5px;color:var(--muted);line-height:1.6}
+.card .meta b{color:var(--text-2);font-weight:500}
+.card .facts{display:flex;flex-wrap:wrap;gap:6px 10px;font-size:12px;color:var(--muted)}
+.card .facts b{color:var(--text-2);font-weight:500}
+.card .row{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:center}
+.card .row .spacer{flex:1}
+.card .reorder{display:none;gap:4px}
+.card .test-out{font-size:12px;color:var(--muted);min-height:0}
+.card .test-out:empty{display:none}
+
+/* ---- controls ---- */
+button.b,.b{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--raised);border:1px solid var(--line-2);color:var(--text);
+  padding:6px 12px;border-radius:9px;cursor:pointer;font:inherit;font-size:12.5px;font-weight:500;line-height:1.3;touch-action:manipulation;
+  transition:background .15s,border-color .15s,transform .05s;text-decoration:none;white-space:nowrap}
+button.b.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:650}
+button.b.danger{color:var(--err)}
+button.b.ghost{background:transparent;border-color:transparent;color:var(--text-2)}
+button.b:disabled{opacity:.45;cursor:not-allowed}
 @media (hover:hover){
-  button.b:hover{border-color:var(--accent)}
-  button.b.danger:hover{border-color:var(--err);color:var(--err)}
+  button.b:hover{border-color:var(--brand);background:var(--surface)}
+  button.b.primary:hover{background:var(--brand-2);border-color:var(--brand-2)}
+  button.b.danger:hover{border-color:var(--err);background:var(--err-soft)}
+  button.b.ghost:hover{background:var(--raised)}
 }
-button.b:active{border-color:var(--accent)}
-button.b.danger:active{border-color:var(--err);color:var(--err)}
+button.b:active{transform:translateY(1px)}
 .badge-ok{color:var(--ok)} .badge-err{color:var(--err)}
-/* forms */
-/* --dlg-pad is reused by the sticky action bar so it can sit flush to the edge */
-dialog{--dlg-pad:24px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:12px;
-  padding:var(--dlg-pad);width:560px;max-width:92vw;max-height:88dvh;overflow:auto;overscroll-behavior:contain;
-  margin:auto} /* the * reset zeroes the UA's margin:auto, which is what centres a modal dialog */
-dialog::backdrop{background:rgba(0,0,0,.6)}
-dialog h3{margin-bottom:16px;position:sticky;top:calc(-1 * var(--dlg-pad));background:var(--panel);
-  padding:var(--dlg-pad) 0 10px;margin-top:calc(-1 * var(--dlg-pad));border-bottom:1px solid var(--border);z-index:1}
-label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px}
-input[type=text],input[type=password],select,textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit}
-textarea{font-family:ui-monospace,monospace;min-height:110px}
-.check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--dim)}
-/* Save/Cancel stay reachable on a long form in a short viewport */
-.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;position:sticky;
-  bottom:calc(-1 * var(--dlg-pad));background:var(--panel);border-top:1px solid var(--border);padding:12px 0 var(--dlg-pad)}
-/* tables */
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid var(--line-2);color:var(--muted);line-height:1.5;white-space:nowrap}
+.pill.on{color:var(--ok);border-color:rgba(66,211,146,.4);background:var(--ok-soft)}
+.pill.on::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.tag{display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:5px;background:var(--surface);border:1px solid var(--line);color:var(--muted)}
+.switch{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch i{width:36px;height:20px;border-radius:999px;background:var(--line-2);position:relative;transition:background .2s;flex:none}
+.switch i::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .2s var(--ease)}
+.switch input:checked+i{background:var(--ok)} .switch input:checked+i::after{transform:translateX(16px)}
+.switch input:focus-visible+i{outline:2px solid var(--brand);outline-offset:2px}
+
+/* ---- forms ---- */
+label{display:block;font-size:12.5px;color:var(--text-2);font-weight:500;margin:0 0 5px}
+label .sub{color:var(--muted);font-weight:400}
+.field{margin-top:14px}
+.field:first-child{margin-top:0}
+.field .help{margin-top:5px;font-size:12px;color:var(--muted);line-height:1.45}
+input[type=text],input[type=password],input[type=number],select,textarea{width:100%;background:var(--ink);border:1px solid var(--line-2);color:var(--text);
+  padding:9px 11px;border-radius:9px;font:inherit;font-size:13.5px;transition:border-color .15s,box-shadow .15s;min-width:0}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:.8}
+select{appearance:none;-webkit-appearance:none;padding-right:34px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%237b8397' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+select[multiple]{background-image:none;padding:6px}
+select[multiple] option{padding:6px 8px;border-radius:6px}
+textarea{font-family:var(--mono);font-size:12.5px;min-height:110px;line-height:1.5}
+.pair{display:flex;gap:8px}
+.pair>select:first-child{flex:1} .pair>select:last-child{flex:2}
+.pair>input{flex:1}
+.check{display:flex;align-items:flex-start;gap:10px;margin-top:12px;font-size:13px;color:var(--text-2);line-height:1.45}
+.check input[type=checkbox]{width:18px;height:18px;flex:0 0 18px;margin-top:1px;accent-color:var(--brand)}
+.check .sub,.check span span{color:var(--muted)}
+fieldset.group{border:1px solid var(--line);border-radius:var(--r-m);padding:14px 16px 16px;margin-top:16px;min-width:0}
+fieldset.group legend{padding:0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-family:var(--mono)}
+fieldset.group>.field:first-of-type{margin-top:0}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.toolbar .spacer{flex:1}
+
+/* searchable model list under the default-model input */
+.combo{display:flex;gap:8px}
+.combo>input{flex:1}
+.combo-list{margin-top:8px;border:1px solid var(--line);border-radius:10px;background:var(--ink);max-height:280px;overflow:auto;overscroll-behavior:contain}
+.combo-list .opt{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;font-family:var(--mono);font-size:12.5px;border-top:1px solid var(--line)}
+.combo-list .opt:first-child{border-top:none}
+.combo-list .opt .id{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.combo-list .opt.outside .id{color:var(--text-2)}
+.combo-list .opt.sel{background:var(--brand-soft)}
+.combo-list .opt.sel .id{color:var(--brand-2)}
+@media (hover:hover){.combo-list .opt:hover{background:var(--raised)}}
+.combo-list .more{padding:8px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--line)}
+.combo-list .empty{padding:14px 12px;font-size:12.5px;color:var(--muted)}
+
+/* ---- dialogs: centred on wide screens, a bottom sheet on phones ---- */
+dialog{--dlg-pad:22px;background:var(--surface);color:var(--text);border:1px solid var(--line-2);border-radius:var(--r-l);
+  padding:0 var(--dlg-pad) var(--dlg-pad);width:600px;max-width:min(92vw,720px);max-height:88dvh;overflow:auto;overscroll-behavior:contain;margin:auto;box-shadow:var(--shadow)}
+dialog[open]{animation:dlg-in .22s var(--ease)}
+@keyframes dlg-in{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+dialog::backdrop{background:rgba(6,8,12,.7);backdrop-filter:blur(2px)}
+dialog>*{max-width:100%}
+dialog h3{position:sticky;top:0;z-index:2;background:var(--surface);padding:var(--dlg-pad) 0 12px;margin:0 0 4px;border-bottom:1px solid var(--line);font-size:16px}
+dialog .sub-title{font-size:12px;color:var(--muted);margin-top:-2px}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;position:sticky;bottom:calc(-1 * var(--dlg-pad));
+  background:var(--surface);border-top:1px solid var(--line);padding:12px 0 var(--dlg-pad);z-index:2}
+
+/* ---- tables ---- */
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:var(--r-m);background:var(--ink-2)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{color:var(--dim);text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
-td{padding:6px 10px;border-bottom:1px solid #21262d;vertical-align:top}
+th{color:var(--muted);text-align:left;font-weight:500;padding:9px 12px;border-bottom:1px solid var(--line);font-size:11.5px;letter-spacing:.02em;white-space:nowrap;background:var(--surface);position:sticky;top:0}
+td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top;font-variant-numeric:tabular-nums}
+tbody tr:last-child td{border-bottom:none}
+@media (hover:hover){tbody tr:hover td{background:rgba(255,255,255,.02)}}
 tr.err td{color:var(--err)}
 tr.warn td{color:var(--warn)}
-code,.mono{font-family:ui-monospace,monospace;font-size:12px}
-.pill{display:inline-block;font-size:11px;padding:0 8px;border-radius:10px;border:1px solid var(--border);color:var(--dim)}
-.pill.on{color:var(--ok);border-color:var(--ok)}
-/* docs viewer */
-#docsview{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px;margin-top:16px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;max-height:480px;overflow:auto}
-.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
-.toolbar .spacer{flex:1}
-#tracedetail{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;max-height:320px;overflow:auto}
-#toast{position:fixed;bottom:24px;right:24px;background:var(--panel2);border:1px solid var(--border);padding:10px 18px;border-radius:8px;opacity:0;transition:opacity .3s;pointer-events:none}
-#toast.show{opacity:1}
-.hint{color:var(--dim);font-size:12px;margin-bottom:12px}
+tr[style*="cursor"]{cursor:pointer}
 
-/* ---- mobile ---- */
-@media (max-width: 680px){
-  header{flex-wrap:wrap;gap:8px;padding:10px 14px;position:sticky;top:0;z-index:20}
-  header h1{font-size:16px}
-  nav{margin-left:0;width:100%;order:3;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;gap:2px;scrollbar-width:none}
+/* ---- section specifics ---- */
+#launch-cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
+.cmd{background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px}
+.cmd .name{font-weight:600;margin-bottom:6px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.cmd .name small{color:var(--muted);font-weight:400;font-size:11.5px}
+.cmd .line{display:flex;gap:8px;align-items:center}
+.cmd code{flex:1;min-width:0;background:var(--raised);padding:7px 9px;border-radius:7px;overflow-x:auto;white-space:nowrap;font-size:12px}
+#launch-env{font-family:var(--mono);font-size:12px;color:var(--text-2);white-space:pre-wrap;background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px}
+#docsview{background:var(--ink);border:1px solid var(--line);border-radius:var(--r-m);padding:18px;white-space:pre-wrap;font-family:var(--mono);font-size:12px;max-height:520px;overflow:auto;color:var(--text-2)}
+#tracedetail,#rtlog-detail{background:var(--ink);border:1px solid var(--line);border-radius:var(--r-m);padding:14px 16px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;max-height:360px;overflow:auto;color:var(--text-2)}
+#errpanel{border:1px solid rgba(251,111,133,.35);border-radius:var(--r-m);overflow:hidden;background:var(--ink-2)}
+#errpanel .ehead{display:flex;align-items:center;gap:10px;background:var(--err-soft);padding:10px 14px;flex-wrap:wrap}
+#errpanel .ehead strong{color:var(--err)}
+#errlist{max-height:280px;overflow:auto}
+#errlist:empty::after{content:"No failures in the last 100 requests.";display:block;padding:14px;color:var(--muted);font-size:12.5px}
+#oauth-flow{border:1px solid var(--brand);background:var(--brand-soft)}
+#of-code{font:700 30px var(--mono);letter-spacing:5px;color:var(--brand-2);margin:10px 0}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.steps div{background:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:12.5px;color:var(--muted)}
+.steps b{color:var(--text);display:block;margin-bottom:3px}
+.copyline{display:flex;gap:8px;align-items:center}
+.copyline code{flex:1;min-width:0;background:var(--ink);border:1px solid var(--line);padding:7px 9px;border-radius:7px;overflow-x:auto;white-space:nowrap}
+.kv{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-top:8px}
+.empty{color:var(--muted);font-size:13px;padding:18px;text-align:center;border:1px dashed var(--line);border-radius:var(--r-m)}
+
+/* ---- toast ---- */
+#toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,12px);background:var(--raised);border:1px solid var(--line-2);color:var(--text);
+  padding:10px 16px;border-radius:12px;opacity:0;transition:opacity .25s,transform .25s var(--ease);pointer-events:none;z-index:50;font-size:13px;box-shadow:var(--shadow);max-width:min(92vw,520px);text-align:center}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* ---- phones and narrow windows ---- */
+@media (max-width:900px){
+  body{display:block}
+  #nav{position:sticky;top:0;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;padding:10px 12px 0;gap:0 10px;z-index:20;
+    border-right:none;border-bottom:1px solid var(--line);background:rgba(14,17,24,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+  .brand{padding:2px 4px 8px;font-size:17px}
+  #status{margin:0 0 0 auto;padding:0 4px 8px;border:none;font-size:11.5px;text-align:right}
+  #status .pulse{display:none}
+  nav{flex-direction:row;width:100%;order:3;overflow-x:auto;gap:4px;padding:0 0 10px;scrollbar-width:none;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
   nav::-webkit-scrollbar{display:none}
-  nav button{flex:0 0 auto;white-space:nowrap;padding:8px 12px}
-  #status{margin-left:auto;font-size:11px;text-align:right}
-  main{padding:16px 12px}
-  /* wide tables scroll instead of clipping */
-  table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;max-width:100%}
-  /* stack side-by-side select/input pairs (auto router, agent model, oauth paste) */
-  main div[style*="display:flex"]{flex-wrap:wrap}
-  main div[style*="display:flex"]>select,
-  main div[style*="display:flex"]>input[type=text]{flex:1 1 100%!important;min-width:0}
-  main div[style*="display:flex"]>button{flex:0 0 auto}
-  #cards,#agentcards{grid-template-columns:1fr!important}
-  .toolbar{gap:6px}
-  .toolbar h2{font-size:14px}
-  dialog{--dlg-pad:16px;width:96vw;max-height:92dvh}
-  #toast{left:12px;right:12px;bottom:12px;text-align:center}
-
+  nav button{flex:0 0 auto;width:auto;padding:8px 12px;font-size:13px;border-radius:999px;border:1px solid transparent;scroll-snap-align:start}
+  nav button.on{border-color:var(--line-2);box-shadow:none}
+  main{padding:14px 12px 48px}
+  .panel-head{padding:12px 14px}
+  .panel-body{padding:14px}
+  .grid{grid-template-columns:1fr}
+  .card.provider{cursor:default}
+  .card .reorder{display:flex}
+  .card .reorder button.b{min-height:36px;padding:2px 12px;font-size:15px}
+  .card .row>button.b{flex:1 1 auto}
   /* 16px is the threshold below which iOS Safari zooms the page on focus */
-  input[type=text],input[type=password],select,textarea{font-size:16px;padding:11px 12px}
+  input[type=text],input[type=password],input[type=number],select,textarea{font-size:16px;padding:11px 12px}
   label{font-size:13px}
-  /* honest tap targets — 44px is the Apple/Android floor */
   button.b{font-size:14px;padding:10px 14px;min-height:44px}
-  .card .row{gap:8px}
-  .card .row>button.b{flex:1 1 calc(50% - 4px)}
-  .dlg-actions>button.b{flex:1}
+  label>button.b,.panel-head button.b.ghost{min-height:36px;padding:6px 10px;font-size:12.5px}
   .check{margin-top:14px;font-size:14px}
   .check input[type=checkbox]{width:20px;height:20px;flex:0 0 20px}
-  /* drag-to-reorder never fires on touch — give the cards real buttons */
-  .card{cursor:default}
-  .card .reorder{display:flex}
-  .card .reorder button.b{min-height:40px;padding:4px 13px;font-size:16px;line-height:1}
-  /* #N moves inline so the reorder buttons can own the top-right corner */
-  .card .prio{position:static;display:block;margin-bottom:2px;padding-right:100px}
-  /* small utility buttons that live inline with a label stay compact */
-  label>button.b{min-height:32px;padding:4px 10px;font-size:12px}
-  /* the scan result gets its own line instead of wrapping around the button */
-  #scan-count{display:block;margin-top:6px}
+  .pair{flex-wrap:wrap} .pair>select,.pair>input{flex:1 1 100%!important}
+  /* script-built pairs inside tables keep their inline flex; let them wrap */
+  main div[style*="display:flex"]{flex-wrap:wrap}
+  main div[style*="display:flex"]>select,main div[style*="display:flex"]>input[type=text]{flex:1 1 100%!important;min-width:0}
+  /* secondary trace columns hide; tap a row for the full record */
+  .sec{display:none}
+  dialog{--dlg-pad:16px;width:100%;max-width:100%;max-height:92dvh;margin:auto 0 0;border-radius:18px 18px 0 0;border-bottom:none;
+    padding-bottom:calc(var(--dlg-pad) + env(safe-area-inset-bottom))}
+  dialog[open]{animation:sheet-in .28s var(--ease)}
+  @keyframes sheet-in{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+  dialog h3::before{content:"";display:block;width:40px;height:4px;border-radius:2px;background:var(--line-2);margin:0 auto 12px}
+  .dlg-actions>button.b{flex:1}
+  #toast{left:12px;right:12px;transform:translateY(12px);max-width:none}
+  #toast.show{transform:none}
+  .steps{grid-template-columns:1fr}
+  .cmd{padding:10px}
+  #launch-cmds{gap:8px}
+  nav{mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent);-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent)}
 }
 </style>
 </head>
 <body>
-<header>
-  <h1>cfr<span>proxy</span></h1>
+<aside id="nav">
+  <div class="brand"><span class="mark"><svg viewBox="0 0 32 32" fill="none" stroke="#ec7cbd" stroke-width="2.6" stroke-linecap="round"><path d="M6 16h7M19 16h7M13 16l4-6M13 16l4 6"/></svg></span>cfr<span>proxy</span></div>
   <nav>
-    <button data-tab="providers" class="on">Providers</button>
-    <button data-tab="transforms">Transforms</button>
-    <button data-tab="traces">Live Traces</button>
-    <button data-tab="docs">Docs</button>
-    <button data-tab="accounts">Accounts</button>
-    <button data-tab="agents">Agents</button>
-    <button data-tab="share">Share</button>
-    <button data-tab="skills">Skills</button>
+    <button data-tab="providers" class="on"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 5h12M2 8h12M2 11h12"/><circle cx="5" cy="5" r="1.2" fill="currentColor"/><circle cx="10" cy="8" r="1.2" fill="currentColor"/><circle cx="6" cy="11" r="1.2" fill="currentColor"/></svg>Routing</button>
+    <button data-tab="traces"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 9l3-4 3 6 3-7 2 5h2"/></svg>Live traces</button>
+    <button data-tab="share"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="5" cy="8" r="2.2"/><path d="M7.2 8h5.3M11 6.3v3.4M9 6.3v3.4"/></svg>Share</button>
+    <button data-tab="accounts"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c.8-2.6 2.5-3.8 5-3.8s4.2 1.2 5 3.8"/></svg>Accounts</button>
+    <button data-tab="transforms"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h8l-2-2M13 12H5l2 2"/></svg>Transforms</button>
+    <button data-tab="docs"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 2h5l3 3v9H4z"/><path d="M6 8h4M6 11h4"/></svg>Docs</button>
+    <button data-tab="agents"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="2"/><circle cx="3" cy="4" r="1.3"/><circle cx="13" cy="4" r="1.3"/><circle cx="3" cy="12" r="1.3"/><circle cx="13" cy="12" r="1.3"/><path d="M4.2 5l2.3 1.8M11.8 5L9.5 6.8M4.2 11l2.3-1.8M11.8 11L9.5 9.2"/></svg>Agents</button>
+    <button data-tab="skills"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l1.8 3.6 4 .6-2.9 2.8.7 4L8 11.1 4.4 13l.7-4L2.2 6.2l4-.6z"/></svg>Skills</button>
   </nav>
-  <div id="status"></div>
-</header>
+  <div id="status"><span class="pulse" id="pulse"><i></i><span>connecting…</span></span><div id="status-text">loading…</div></div>
+</aside>
 <main>
 
 <section id="tab-providers">
-  <div class="toolbar">
-    <h2 style="margin:0">Launch a harness through the proxy</h2>
-  </div>
-  <p class="hint">Pick a model, then copy the command to launch a coding agent pointed at cfrproxy. The agent will use that model — and can switch to any other model mid-session from its own picker.</p>
-  <div id="launchpanel" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:8px">
-    <label style="margin-top:0">Model to launch with</label>
-    <select id="launch-model" onchange="renderLaunch()" style="max-width:520px"></select>
-    <div id="launch-cmds" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:14px"></div>
-    <details style="margin-top:14px">
-      <summary style="cursor:pointer;color:var(--dim);font-size:12px">Manual setup (env vars, no launcher)</summary>
-      <div id="launch-env" style="margin-top:10px;font-family:ui-monospace,monospace;font-size:12px;color:var(--dim);white-space:pre-wrap"></div>
-    </details>
-  </div>
+  <div class="page-title"><h1>Routing</h1><p>Where each model name goes, and what happens when it can't.</p></div>
 
-  <div class="toolbar" style="margin-top:26px">
-    <h2 style="margin:0">Provider registry</h2>
-    <div class="spacer"></div>
-    <button class="b primary" onclick="openProviderDialog()">+ Add provider</button>
-  </div>
-  <p class="hint">Drag cards — or tap ↑/↓ on touch — to set routing priority. The first enabled card handles bare model names. Address a provider directly with <code>provider-name/model</code>.</p>
-  <div id="cards"></div>
-
-  <div class="toolbar" style="margin-top:32px">
-    <h2 style="margin:0">Model map</h2>
-  </div>
-  <p class="hint">Rewrite fixed harness model names to any provider/model — e.g. map <code>claude-opus*</code>, <code>claude-sonnet*</code>, <code>claude-haiku*</code> so Claude Code's built-in /model presets become switchable cfrproxy slots. Patterns: exact name or trailing <code>*</code>. Unmapped unknown names route to the top provider's default model.</p>
-  <table id="maptable" style="max-width:760px">
-    <thead><tr><th>Harness name / pattern</th><th>→ provider/model</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <div style="display:flex;gap:8px;margin-top:10px;max-width:760px">
-    <input type="text" id="map-pattern" placeholder="claude-sonnet*" style="flex:1">
-    <select id="map-target" style="flex:1"></select>
-    <datalist id="allmodels"></datalist>
-    <button class="b primary" onclick="addMapEntry()">Add</button>
-  </div>
-  <div class="toolbar" style="margin-top:32px">
-    <h2 style="margin:0">Auto fallback chain</h2>
-    <span id="gf-state" class="pill"></span>
-  </div>
-  <p class="hint">The catch-all safety net for <b>every</b> model. If the model a harness asked for can't serve — subscription/quota exhausted, rate limited, provider overloaded or unreachable, or the prompt overflows its context — the request continues down this list instead of failing. Runs <i>after</i> a provider's own <code>fallback</code> field, so you don't have to wire each provider by hand. Order matters; the first target that answers wins, and the reply is tagged with a ⚠️ notice saying what was skipped. Up to 5 targets are tried per request.</p>
-  <div style="max-width:760px">
-    <div class="check"><input type="checkbox" id="gf-enabled" onchange="renderGF()"><span>Enabled</span></div>
-    <div class="check"><input type="checkbox" id="pf-enabled"><span title="Each provider can name its own fallback (provider/model) in its settings. That per-provider hop runs BEFORE this chain and is invisible here, so it is off by default: a local provider going down otherwise quietly bills whatever its own fallback names.">Also honour each provider's own <code>fallback</code> field <span style="color:var(--dim)">(off by default; runs before this chain)</span></span></div>
-    <div id="gf-list" style="margin-top:8px"></div>
-    <div style="margin-top:10px;display:flex;gap:8px">
-      <button class="b" onclick="gfAdd()">+ Add target</button>
-      <button class="b primary" onclick="saveGlobalFallback()">Save fallback chain</button>
+  <div class="panel">
+    <div class="panel-head"><h2>Launch a harness</h2><div class="spacer"></div><select id="launch-model" onchange="renderLaunch()" style="width:auto;min-width:200px;max-width:100%"></select></div>
+    <div class="panel-body">
+      <p class="hint">Copy a command to start a coding agent pointed at cfrproxy with this model. The agent can switch models later from its own picker.</p>
+      <div id="launch-cmds"></div>
+      <details class="help"><summary>Manual setup (env vars, no launcher)</summary><div id="launch-env" style="margin-top:10px"></div></details>
     </div>
   </div>
 
-  <div class="toolbar" style="margin-top:32px">
-    <h2 style="margin:0">Auto router</h2>
-    <span id="ar-state" class="pill"></span>
-  </div>
-  <p class="hint">Send model <code>auto</code> from any harness and a small classifier model buckets the request, then delegates to the model you map per task. The chosen route shows in Live Traces.</p>
-  <div style="max-width:760px">
-    <div class="check"><input type="checkbox" id="ar-enabled"><span>Enabled</span></div>
-    <label>Classifier model (small + fast)</label>
-    <div style="display:flex;gap:8px"><select id="ar-classifier-p" style="flex:1" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m" style="flex:2"></select></div>
-    <label>Planner model (strong reasoner — enables the <code>auto-plan</code> virtual model: plan first, then route + execute with the briefing)</label>
-    <div style="display:flex;gap:8px"><select id="ar-planner-p" style="flex:1" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m" style="flex:2"></select></div>
-    <div class="check" style="margin-top:10px"><input type="checkbox" id="ar-sticky"><span>Sticky routing <span style="color:var(--dim)">— keep a conversation on the model it was first routed to</span></span></div>
-    <p class="hint" style="margin:2px 0 0">Strongly recommended. Prompt caches are per model, so re-classifying every turn can land turn 2 on a different model with a <b>cold</b> prefix — you pay full price for the whole context again. Sticky routing decides once per conversation, keeps the cache warm, and skips the classifier call on later turns (cheaper + faster). Turn it off only if you want every single turn re-classified. Sticky reuse shows as <code>·sticky</code> in Live Traces.</p>
-    <label>Sticky window (minutes — how long a conversation stays pinned; blank = 30)</label>
-    <input type="number" id="ar-sticky-ttl" min="1" max="1440" placeholder="30" style="max-width:160px">
-    <table id="artable" style="margin-top:10px">
-      <thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div style="margin-top:10px"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Providers</h2><span class="pill" id="prov-count"></span><div class="spacer"></div><button class="b primary" onclick="openProviderDialog()">+ Add provider</button></div>
+    <div class="panel-body">
+      <details class="help"><summary>How priority works</summary><p>Drag cards (or use ↑ ↓ on a phone) to set routing priority. The first enabled provider handles bare model names; address one directly with <code>provider-name/model</code>. Use <code>cfrproxy explain &lt;model&gt;</code> to see exactly where a name would land.</p></details>
+      <div id="cards" class="grid"></div>
+    </div>
   </div>
 
-  <div class="toolbar" style="margin-top:32px">
-    <h2 style="margin:0">Custom routers</h2>
-    <div class="spacer"></div>
-    <button class="b primary" onclick="openRouterDialog()">+ New router</button>
+  <div class="panel">
+    <div class="panel-head"><h2>Model map</h2></div>
+    <div class="panel-body">
+      <details class="help"><summary>Rewrite the names harnesses insist on</summary><p>Map fixed harness model names to any provider/model — e.g. <code>claude-opus*</code>, <code>claude-sonnet*</code>, <code>claude-haiku*</code> so Claude Code's built-in presets become switchable cfrproxy slots. Patterns are an exact name or a trailing <code>*</code>. Unmapped unknown names route to the top provider's default model.</p></details>
+      <div class="table-wrap"><table id="maptable">
+        <thead><tr><th>Harness name / pattern</th><th>→ provider/model</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="pair">
+        <input type="text" id="map-pattern" placeholder="claude-sonnet*">
+        <select id="map-target"></select>
+        <datalist id="allmodels"></datalist>
+        <button class="b primary" onclick="addMapEntry()">Add</button>
+      </div>
+    </div>
   </div>
-  <p class="hint">Named routers, each with its own classifier and per-task models. Address them as <code>auto:NAME</code> (or <code>auto-plan:NAME</code> if it has a planner) — e.g. one router for coding agents, one for cheap/bulk work. Assign a router to a share endpoint's "force model" to give someone a specific setup.</p>
-  <div id="routercards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px"></div>
 
-  <div class="toolbar" style="margin-top:32px">
-    <h2 style="margin:0">Custom fusions</h2>
-    <div class="spacer"></div>
-    <button class="b primary" onclick="openFusionDialog()">+ New fusion</button>
+  <div class="panel">
+    <div class="panel-head"><h2>Auto fallback chain</h2><span id="gf-state" class="pill"></span></div>
+    <div class="panel-body">
+      <details class="help"><summary>The safety net for every model</summary><p>If the model a harness asked for can't serve — quota exhausted, rate limited, overloaded, unreachable, or the prompt overflows its context — the request continues down this list instead of failing. Order matters: the first target that answers wins, and the reply carries a ⚠️ notice saying what was skipped. Up to 5 targets are tried per request.</p></details>
+      <div class="check"><input type="checkbox" id="gf-enabled" onchange="renderGF()"><span>Enabled</span></div>
+      <div class="check"><input type="checkbox" id="pf-enabled"><span title="Each provider can name its own fallback in its settings. That hop runs BEFORE this chain and is invisible here, so it is off by default: a local provider going down would otherwise quietly bill whatever its own fallback names.">Also honour each provider's own <code>fallback</code> field <span>(off by default; runs before this chain)</span></span></div>
+      <div id="gf-list"></div>
+      <div class="toolbar">
+        <button class="b" onclick="gfAdd()">+ Add target</button>
+        <button class="b primary" onclick="saveGlobalFallback()">Save fallback chain</button>
+      </div>
+    </div>
   </div>
-  <p class="hint">Named fusion panels, each with its own participants and judge. Address them as <code>fusion:NAME</code> — and because they show up as models, you can drop one into a custom router bucket, a share endpoint's force-model, or a provider's default. Point a harness at <code>/p/cfrproxy-fusion/v1</code> to get a provider whose whole catalogue is your fusions.</p>
-  <div id="fusioncards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px"></div>
 
-  <div class="toolbar" style="margin-top:32px">
-    <h2 style="margin:0">Fusion</h2>
-    <span id="fusion-state" class="pill"></span>
+  <div class="panel">
+    <div class="panel-head"><h2>Auto router</h2><span id="ar-state" class="pill"></span></div>
+    <div class="panel-body">
+      <details class="help"><summary>Send <code>auto</code> and let a classifier pick</summary><p>A small classifier model buckets each request (code, reasoning, quick, long, vision) and delegates to the model you map per task. The chosen route shows in Live traces. <b>Sticky routing</b> keeps a conversation on the model it was first routed to: prompt caches are per model, so re-classifying every turn can land turn 2 on a different model with a cold prefix. Sticky reuse shows as <code>·sticky</code>.</p></details>
+      <div class="check"><input type="checkbox" id="ar-enabled"><span>Enabled</span></div>
+      <div class="field"><label>Classifier model <span class="sub">— small and fast</span></label>
+        <div class="pair"><select id="ar-classifier-p" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m"></select></div></div>
+      <div class="field"><label>Planner model <span class="sub">— a strong reasoner; enables <code>auto-plan</code></span></label>
+        <div class="pair"><select id="ar-planner-p" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m"></select></div></div>
+      <div class="check"><input type="checkbox" id="ar-sticky"><span>Sticky routing <span>— keep a conversation on the model it was first routed to (recommended)</span></span></div>
+      <div class="field"><label>Sticky window <span class="sub">— minutes a conversation stays pinned; blank = 30</span></label>
+        <input type="number" id="ar-sticky-ttl" min="1" max="1440" placeholder="30" style="max-width:160px"></div>
+      <div class="field"><label>Routes per task bucket</label>
+        <div class="table-wrap"><table id="artable"><thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table></div></div>
+      <div class="toolbar"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
+    </div>
   </div>
-  <p class="hint">Send model <code>fusion</code> and cfrproxy asks several models the same question in parallel, then a judge model synthesizes one best answer from their drafts (à la OpenRouter Fusion). Slower and pricier than one call — reserve it for hard questions. Returns a single answer, so any tool can use it.</p>
-  <div style="max-width:760px">
-    <div class="check"><input type="checkbox" id="fusion-enabled"><span>Enabled</span></div>
-    <label>Participant models (2-4; answered in parallel)</label>
-    <select id="fusion-parts" multiple size="6" style="height:auto"></select>
-    <label>Judge model (synthesizes the final answer — use a strong reasoner)</label>
-    <div style="display:flex;gap:8px"><select id="fusion-judge-p" style="flex:1" onchange="fillModelSel('fusion-judge')"></select><select id="fusion-judge-m" style="flex:2"></select></div>
-    <div style="margin-top:8px"><label>Max tokens per draft</label><input type="text" id="fusion-maxtok" style="max-width:200px"></div>
-    <div style="margin-top:10px"><button class="b primary" onclick="saveFusion()">Save fusion</button></div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Custom routers</h2><div class="spacer"></div><button class="b primary" onclick="openRouterDialog()">+ New router</button></div>
+    <div class="panel-body">
+      <details class="help"><summary>Named routers, addressed as <code>auto:NAME</code></summary><p>Each with its own classifier and per-task models (<code>auto-plan:NAME</code> when it has a planner) — e.g. one for coding agents, one for cheap bulk work. Assign one to a share endpoint's forced model to give someone a specific setup.</p></details>
+      <div id="routercards" class="grid"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Custom fusions</h2><div class="spacer"></div><button class="b primary" onclick="openFusionDialog()">+ New fusion</button></div>
+    <div class="panel-body">
+      <details class="help"><summary>Named panels, addressed as <code>fusion:NAME</code></summary><p>Each with its own participants and judge. They appear as models, so a fusion can sit in a router bucket, a share endpoint's forced model, or a provider default. Point a harness at <code>/p/cfrproxy-fusion/v1</code> for a provider whose whole catalogue is your fusions.</p></details>
+      <div id="fusioncards" class="grid"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Fusion</h2><span id="fusion-state" class="pill"></span></div>
+    <div class="panel-body">
+      <details class="help"><summary>Send <code>fusion</code> for several drafts and one synthesis</summary><p>Several models answer the same question in parallel, then a judge model synthesizes one best answer from their drafts. Slower and pricier than one call — reserve it for hard questions. Returns a single answer, so any tool can use it.</p></details>
+      <div class="check"><input type="checkbox" id="fusion-enabled"><span>Enabled</span></div>
+      <div class="field"><label>Participant models <span class="sub">— 2–4, answered in parallel</span></label><select id="fusion-parts" multiple size="6" style="height:auto"></select></div>
+      <div class="field"><label>Judge model <span class="sub">— synthesizes the final answer</span></label>
+        <div class="pair"><select id="fusion-judge-p" onchange="fillModelSel('fusion-judge')"></select><select id="fusion-judge-m"></select></div></div>
+      <div class="field"><label>Max tokens per draft</label><input type="text" id="fusion-maxtok" style="max-width:200px"></div>
+      <div class="toolbar"><button class="b primary" onclick="saveFusion()">Save fusion</button></div>
+    </div>
   </div>
 </section>
 
 <section id="tab-transforms" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">Transform rules</h2>
-    <div class="spacer"></div>
-    <button class="b primary" onclick="openTransformDialog()">+ Add transform</button>
+  <div class="page-title"><h1>Transforms</h1><p>Declarative rewrites of request and response bodies.</p></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Rules</h2><div class="spacer"></div><button class="b primary" onclick="openTransformDialog()">+ Add transform</button></div>
+    <div class="panel-body">
+      <p class="hint">Request-phase rules rewrite the outbound provider body; response-phase rules rewrite what goes back to the caller. Ops: <code>set</code>, <code>default</code>, <code>rename</code>, <code>delete</code>.</p>
+      <div class="table-wrap"><table id="ttable">
+        <thead><tr><th></th><th>Name</th><th>Phase</th><th>Provider</th><th>Dialect</th><th>Rules</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
   </div>
-  <p class="hint">Request-phase rules rewrite the outbound provider body; response-phase rules rewrite the body returned to the consumer. Ops: <code>set</code>, <code>default</code>, <code>rename</code>, <code>delete</code>.</p>
-  <table id="ttable">
-    <thead><tr><th></th><th>Name</th><th>Phase</th><th>Provider</th><th>Target dialect</th><th>Rules</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
 </section>
 
 <section id="tab-traces" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">Live request trace</h2>
-    <span id="sse-state" class="pill">connecting…</span>
-    <div class="spacer"></div>
-    <button class="b" onclick="clearTraces()">Clear view</button>
-  </div>
-  <div id="errpanel" style="margin:12px 0;border:1px solid var(--err);border-radius:10px;overflow:hidden">
-    <div style="display:flex;align-items:center;gap:10px;background:rgba(248,81,73,.12);padding:9px 12px">
-      <strong style="color:var(--err)">⚠ Recent errors</strong>
+  <div class="page-title"><h1>Live traces</h1><p>Every request as it happens: where it went, what it cost, why it failed.</p></div>
+  <div id="errpanel">
+    <div class="ehead">
+      <strong>Recent failures</strong>
       <span id="errcount" class="pill">0</span>
-      <span class="hint" style="margin:0">full provider error text — rate limits, quota, bad requests</span>
-      <div class="spacer"></div>
-      <button class="b" onclick="clearErrs()">Clear</button>
+      <span class="hint">full provider error text — rate limits, quota, bad requests</span>
+      <div class="spacer" style="flex:1"></div>
+      <button class="b ghost" onclick="clearErrs()">Clear</button>
     </div>
-    <div id="errlist" style="max-height:280px;overflow:auto"></div>
+    <div id="errlist"></div>
   </div>
-  <h2 style="margin:18px 0 8px">Token burn by model</h2>
-  <table id="statstable">
-    <thead><tr><th>Model</th><th>Reqs</th><th>Err</th><th>In tok</th><th>Out tok</th><th>Cached</th><th>Cache hit</th><th>Avg latency</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <p class="hint" style="margin-top:16px">⚠ = error or failover · 🔀 = auto-routed · ✓ Stream = streamed. Tokens are in/out (cached read). Rows in red are real failures.</p>
-  <table id="trtable">
-    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Cached</th><th title="bytes removed by Caveman compression on this request">Caveman</th><th>Status</th><th>pp tok/s</th><th>tg tok/s</th><th>TTFB</th><th>Post</th><th>Latency</th><th>Stream</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <div id="tracedetail" class="hidden"></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Token burn by model</h2></div>
+    <div class="table-wrap"><table id="statstable">
+      <thead><tr><th>Model</th><th>Reqs</th><th>Err</th><th>In tok</th><th>Out tok</th><th class="sec">Cached</th><th>Cache hit</th><th class="sec">Avg latency</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Requests</h2><span id="sse-state" class="pill">connecting…</span><div class="spacer"></div><button class="b ghost" onclick="clearTraces()">Clear view</button></div>
+    <div class="panel-body">
+      <p class="hint">Tap a row for the request and response. ⚠ error or failover · 🔀 auto-routed · ✓ streamed. Rows in red are real failures.</p>
+      <div class="table-wrap"><table id="trtable">
+        <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th class="sec">Cached</th><th class="sec" title="bytes removed by Caveman compression on this request">Caveman</th><th>Status</th><th class="sec">pp tok/s</th><th class="sec">tg tok/s</th><th class="sec">TTFB</th><th class="sec">Post</th><th>Latency</th><th class="sec">Stream</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div id="tracedetail" class="hidden"></div>
+    </div>
+  </div>
 </section>
 
 <section id="tab-docs" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">Provider docs</h2>
-    <select id="docsel" onchange="loadDocs()" style="width:220px"></select>
-    <button class="b" onclick="fetchDocUrl()">Fetch from URL</button>
-    <label class="b" style="cursor:pointer">Upload .md<input type="file" id="docupload" accept=".md,.markdown,.txt" style="display:none" onchange="uploadDoc(event)"></label>
-    <span id="injectstate" class="pill"></span>
-    <button class="b" onclick="toggleInject()">Toggle inject</button>
+  <div class="page-title"><h1>Provider docs</h1><p>Markdown attached to a provider and optionally injected as system context.</p></div>
+  <div class="panel">
+    <div class="panel-head">
+      <select id="docsel" onchange="loadDocs()" style="width:auto;min-width:180px"></select>
+      <button class="b" onclick="fetchDocUrl()">Fetch from URL</button>
+      <label class="b" style="cursor:pointer;margin:0">Upload .md<input type="file" id="docupload" accept=".md,.markdown,.txt" style="display:none" onchange="uploadDoc(event)"></label>
+      <div class="spacer"></div>
+      <span id="injectstate" class="pill"></span>
+      <button class="b" onclick="toggleInject()">Toggle inject</button>
+    </div>
+    <div class="panel-body">
+      <p class="hint">When inject is on, the doc is prepended as system context on every request routed to that provider.</p>
+      <div id="docsview">select a provider…</div>
+    </div>
   </div>
-  <p class="hint">Docs attach per provider (URL fetch or Markdown upload). When inject is on, the doc is prepended as system context on every request routed to that provider.</p>
-  <div id="docsview">select a provider…</div>
 </section>
 
 <section id="tab-accounts" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">OAuth accounts</h2>
-    <div class="spacer"></div>
-    <button class="b" onclick="loadAccounts()">Refresh</button>
-  </div>
-  <p class="hint">Subscription logins (held by CLIProxyAPI, surfaced as the <code>oauth</code> provider). Device-flow providers show a code to enter; browser-flow providers give a link — after approving you'll land on a localhost URL that won't load: copy that full URL from the address bar and paste it below.</p>
-  <div class="toolbar" style="gap:6px">
-    <button class="b primary" onclick="startOAuth('claude')">+ Claude</button>
-    <button class="b primary" onclick="startOAuth('codex')">+ Codex</button>
-    <button class="b primary" onclick="startOAuth('supergrok')">+ SuperGrok</button>
-    <button class="b primary" onclick="startOAuth('antigravity')">+ Antigravity</button>
-    <button class="b primary" onclick="startOAuth('kimi')">+ Kimi</button>
-  </div>
-  <div id="oauth-flow" class="hidden" style="background:var(--panel);border:1px solid var(--accent);border-radius:10px;padding:18px;margin:14px 0">
-    <h3 id="of-title" style="margin-bottom:10px"></h3>
-    <div id="of-code" class="hidden" style="font:700 28px ui-monospace,monospace;letter-spacing:4px;margin:10px 0;color:var(--accent)"></div>
-    <div style="margin:8px 0"><a id="of-link" target="_blank" rel="noopener" class="b" style="text-decoration:none;display:inline-block">Open login page ↗</a>
-      <button class="b" onclick="copyText($('#of-link').href)">Copy link</button></div>
-    <div id="of-paste" class="hidden" style="margin-top:10px">
-      <label>Paste the localhost redirect URL you landed on</label>
-      <div style="display:flex;gap:8px"><input type="text" id="of-redirect" placeholder="http://localhost:1455/auth/callback?code=…&state=…" style="flex:1">
-      <button class="b primary" onclick="submitCallback()">Complete</button></div>
-    </div>
-    <div id="of-status" style="margin-top:12px;color:var(--dim)">waiting for login…</div>
-    <div style="margin-top:10px"><button class="b danger" onclick="cancelOAuth()">Cancel</button></div>
-  </div>
-  <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin:14px 0">
-    <h3 style="margin:0 0 4px">API-key accounts</h3>
-    <p class="hint" style="margin:0 0 10px">Ollama Cloud isn't OAuth — create a key at <code>ollama.com/settings/keys</code> and paste it here. Saved as the <code>ollama-cloud</code> provider (base <code>https://ollama.com/v1</code>); its models appear in the picker automatically.</p>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <strong style="min-width:110px">🦙 Ollama Cloud</strong>
-      <input type="password" id="oc-key" placeholder="ollama.com API key" style="flex:1;min-width:220px">
-      <button class="b primary" onclick="saveOllamaCloud()">Save</button>
-      <span id="oc-status" style="color:var(--dim)"></span>
+  <div class="page-title"><h1>Accounts</h1><p>Subscription logins surfaced as providers.</p></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Add a subscription</h2><div class="spacer"></div><button class="b ghost" onclick="loadAccounts()">Refresh</button></div>
+    <div class="panel-body">
+      <details class="help"><summary>How the login flows work</summary><p>Logins are held by CLIProxyAPI and surfaced as the <code>oauth</code> provider. Device-flow providers show a code to enter; browser-flow providers give a link — after approving you land on a localhost URL that won't load: copy that full URL from the address bar and paste it below.</p></details>
+      <div class="toolbar">
+        <button class="b primary" onclick="startOAuth('claude')">+ Claude</button>
+        <button class="b primary" onclick="startOAuth('codex')">+ Codex</button>
+        <button class="b primary" onclick="startOAuth('supergrok')">+ SuperGrok</button>
+        <button class="b primary" onclick="startOAuth('antigravity')">+ Antigravity</button>
+        <button class="b primary" onclick="startOAuth('kimi')">+ Kimi</button>
+      </div>
+      <div id="oauth-flow" class="hidden" style="border-radius:12px;padding:16px">
+        <h3 id="of-title" style="margin-bottom:8px"></h3>
+        <div id="of-code" class="hidden"></div>
+        <div class="toolbar"><a id="of-link" target="_blank" rel="noopener" class="b">Open login page ↗</a>
+          <button class="b" onclick="copyText($('#of-link').href)">Copy link</button></div>
+        <div id="of-paste" class="hidden field">
+          <label>Paste the localhost redirect URL you landed on</label>
+          <div class="pair"><input type="text" id="of-redirect" placeholder="http://localhost:1455/auth/callback?code=…&state=…">
+          <button class="b primary" onclick="submitCallback()">Complete</button></div>
+        </div>
+        <div id="of-status" style="margin-top:12px;color:var(--muted)">waiting for login…</div>
+        <div class="toolbar" style="margin-top:10px"><button class="b danger" onclick="cancelOAuth()">Cancel</button></div>
+      </div>
+      <div class="field"><label>🦙 Ollama Cloud <span class="sub">— not OAuth: create a key at <code>ollama.com/settings/keys</code>; saved as the <code>ollama-cloud</code> provider</span></label>
+        <div class="pair"><input type="password" id="oc-key" placeholder="ollama.com API key">
+        <button class="b primary" onclick="saveOllamaCloud()">Save</button></div>
+        <div class="help" id="oc-status"></div></div>
     </div>
   </div>
-  <table id="acctable"
-    <thead><tr><th>Provider</th><th>Account</th><th>Type</th><th>Status</th><th>OK / fail</th><th>Last refresh</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
+  <div class="panel">
+    <div class="panel-head"><h2>Logged-in accounts</h2></div>
+    <div class="table-wrap"><table id="acctable">
+      <thead><tr><th>Provider</th><th>Account</th><th class="sec">Type</th><th>Status</th><th class="sec">OK / fail</th><th class="sec">Last refresh</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
 </section>
 
 <section id="tab-agents" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">Consensus round table (MCP)</h2>
-  </div>
-  <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:20px">
-    <p style="font-size:13px;color:var(--text);margin-bottom:12px">Define a panel of <b>agent profiles</b> — each a persona pinned to a different model behind the router — and let them deliberate a question together. cfrproxy exposes this as an <b>MCP server</b>, so any MCP-capable agent (Claude Code, etc.) can convene the panel as a tool.</p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0;text-align:center;font-size:12px">
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px">1 · <b>Fan out</b><br><span style="color:var(--dim)">every enabled profile answers independently, in parallel</span></div>
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px">2 · <b>Cross-critique</b><br><span style="color:var(--dim)">each panelist sees the others and revises (round 2)</span></div>
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px">3 · <b>Synthesize</b><br><span style="color:var(--dim)">the moderator merges into consensus + dissent</span></div>
-    </div>
-    <label style="margin-top:0">Register it in a harness</label>
-    <div style="display:flex;gap:8px;align-items:center;max-width:520px">
-      <code style="flex:1;background:var(--panel2);padding:6px 8px;border-radius:6px;font-size:12px;overflow-x:auto;white-space:nowrap">claude mcp add roundtable -- cfrproxy mcp</code>
-      <button class="b" onclick="copyText('claude mcp add roundtable -- cfrproxy mcp')">Copy</button>
-    </div>
-    <div style="margin-top:12px;font-size:12px;color:var(--dim)">
-      <b style="color:var(--text)">Tools exposed:</b>
-      <code>roundtable</code> (full panel + synthesis) ·
-      <code>consult</code> (ask one profile) ·
-      <code>list_profiles</code>.
-      Every voice routes through cfrproxy, so panelists can mix any providers — a local model, a Claude subscription, a Grok model — at the same table.
+  <div class="page-title"><h1>Agents</h1><p>A round table of model personas, exposed as an MCP tool.</p></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Consensus round table</h2></div>
+    <div class="panel-body">
+      <p class="hint">Define <b>agent profiles</b> — each a persona pinned to a model — and let them deliberate a question together. Any MCP-capable agent (Claude Code, etc.) can convene the panel as a tool.</p>
+      <div class="steps">
+        <div><b>Fan out</b>every enabled profile answers independently, in parallel</div>
+        <div><b>Cross-critique</b>each panelist sees the others and revises (round 2)</div>
+        <div><b>Synthesize</b>the moderator merges into consensus + dissent</div>
+      </div>
+      <div class="field"><label>Register it in a harness</label>
+        <div class="copyline"><code>claude mcp add roundtable -- cfrproxy mcp</code><button class="b" onclick="copyText('claude mcp add roundtable -- cfrproxy mcp')">Copy</button></div>
+        <div class="help">Tools: <code>roundtable</code> (full panel + synthesis) · <code>consult</code> (ask one profile) · <code>list_profiles</code>. Every voice routes through cfrproxy, so panelists can mix any providers at the same table.</div></div>
     </div>
   </div>
-
-  <div class="toolbar">
-    <h2 style="margin:0">Round table history</h2>
-    <div class="spacer"></div>
-    <button class="b" onclick="loadRTLogs()">Refresh</button>
-  </div>
-  <p class="hint">Every <code>roundtable</code> call logged: the question, panel, rounds, token burn, and latency. Click a row to read the full synthesis + panel positions.</p>
-  <table id="rtlogtable">
-    <thead><tr><th>Time</th><th>Question</th><th>Panel</th><th>Rounds</th><th>Tokens (in/out)</th><th>Latency</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <div id="rtlog-detail" class="hidden" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-top:14px;white-space:pre-wrap;font-size:13px;max-height:520px;overflow:auto"></div>
-
-  <div class="toolbar" style="margin-top:26px">
-    <h2 style="margin:0">Agent profiles (panelists)</h2>
-    <div class="spacer"></div>
-    <button class="b primary" onclick="openAgentDialog()">+ Add profile</button>
-  </div>
-  <p class="hint">Each profile is one voice on the panel: a persona (system prompt) pinned to a model. Disabled profiles sit out the round table.</p>
-  <div id="agentcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
-
-  <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Round table settings</h2></div>
-  <div style="max-width:760px">
-    <label>Moderator model (synthesizes; blank = first panelist)</label>
-    <div style="display:flex;gap:8px"><select id="rt-mod-p" style="flex:1" onchange="fillModelSel('rt-mod')"></select><select id="rt-mod-m" style="flex:2"></select></div>
-    <div style="display:flex;gap:16px;margin-top:8px">
-      <div style="flex:1"><label>Rounds (1 = answer+synthesis, 2 = +cross-critique)</label><input type="text" id="rt-rounds"></div>
-      <div style="flex:1"><label>Max tokens per voice</label><input type="text" id="rt-maxtok"></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Round table history</h2><div class="spacer"></div><button class="b ghost" onclick="loadRTLogs()">Refresh</button></div>
+    <div class="panel-body">
+      <p class="hint">Every <code>roundtable</code> call: question, panel, rounds, token burn, latency. Tap a row for the full synthesis.</p>
+      <div class="table-wrap"><table id="rtlogtable">
+        <thead><tr><th>Time</th><th>Question</th><th class="sec">Panel</th><th class="sec">Rounds</th><th class="sec">Tokens (in/out)</th><th>Latency</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div id="rtlog-detail" class="hidden"></div>
     </div>
-    <div class="check"><input type="checkbox" id="rt-compress"><span>Compress the shared context once before fan-out (summarizes the question's context so each panelist gets the short version, not the full payload × N). Uses the summarizer from the Context compression section — works even if global compression is off.</span></div>
-    <div style="margin-top:10px"><button class="b primary" onclick="saveRT()">Save round table</button></div>
   </div>
-
-  <div class="toolbar" style="margin-top:28px"><h2 style="margin:0">Context compression</h2><span id="comp-state" class="pill"></span></div>
-  <p class="hint">When a request exceeds the threshold, older turns are summarized by the summarizer model and replaced with one compressed block (recent turns stay verbatim; summaries cached per conversation prefix). Trace note shows <code>compressed ~A→~B tok</code>.</p>
-  <div style="max-width:760px">
-    <div class="check"><input type="checkbox" id="comp-enabled"><span>Enabled</span></div>
-    <label>Summarizer model (cheap + fast)</label>
-    <div style="display:flex;gap:8px"><select id="comp-sum-p" style="flex:1" onchange="fillModelSel('comp-sum')"></select><select id="comp-sum-m" style="flex:2"></select></div>
-    <div style="display:flex;gap:16px;margin-top:8px">
-      <div style="flex:1"><label>Threshold (est. tokens)</label><input type="text" id="comp-threshold"></div>
-      <div style="flex:1"><label>Keep recent messages</label><input type="text" id="comp-keep"></div>
-      <div style="flex:1"><label>Summary target words</label><input type="text" id="comp-words"></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Agent profiles</h2><div class="spacer"></div><button class="b primary" onclick="openAgentDialog()">+ Add profile</button></div>
+    <div class="panel-body">
+      <p class="hint">Each profile is one voice on the panel: a persona pinned to a model. Disabled profiles sit out.</p>
+      <div id="agentcards" class="grid"></div>
     </div>
-    <div style="margin-top:10px"><button class="b primary" onclick="saveComp()">Save compression</button></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Round table settings</h2></div>
+    <div class="panel-body">
+      <div class="field"><label>Moderator model <span class="sub">— synthesizes; blank = first panelist</span></label>
+        <div class="pair"><select id="rt-mod-p" onchange="fillModelSel('rt-mod')"></select><select id="rt-mod-m"></select></div></div>
+      <div class="pair">
+        <div class="field" style="flex:1"><label>Rounds <span class="sub">— 1 = answer + synthesis, 2 = + cross-critique</span></label><input type="text" id="rt-rounds"></div>
+        <div class="field" style="flex:1"><label>Max tokens per voice</label><input type="text" id="rt-maxtok"></div>
+      </div>
+      <div class="check"><input type="checkbox" id="rt-compress"><span>Compress the shared context once before fan-out <span>— each panelist gets the short version, not the full payload × N. Uses the summarizer below, even when global compression is off.</span></span></div>
+      <div class="toolbar"><button class="b primary" onclick="saveRT()">Save round table</button></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Context compression</h2><span id="comp-state" class="pill"></span></div>
+    <div class="panel-body">
+      <details class="help"><summary>Summarize old turns past a threshold</summary><p>When a request exceeds the threshold, older turns are summarized by the summarizer model and replaced with one compressed block; recent turns stay verbatim and summaries are cached per conversation prefix. The trace note shows <code>compressed ~A→~B tok</code>.</p></details>
+      <div class="check"><input type="checkbox" id="comp-enabled"><span>Enabled</span></div>
+      <div class="field"><label>Summarizer model <span class="sub">— cheap and fast</span></label>
+        <div class="pair"><select id="comp-sum-p" onchange="fillModelSel('comp-sum')"></select><select id="comp-sum-m"></select></div></div>
+      <div class="pair">
+        <div class="field" style="flex:1"><label>Threshold (est. tokens)</label><input type="text" id="comp-threshold"></div>
+        <div class="field" style="flex:1"><label>Keep recent messages</label><input type="text" id="comp-keep"></div>
+        <div class="field" style="flex:1"><label>Summary target words</label><input type="text" id="comp-words"></div>
+      </div>
+      <div class="toolbar"><button class="b primary" onclick="saveComp()">Save compression</button></div>
+    </div>
   </div>
 </section>
 
 <section id="tab-share" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">Share endpoints</h2>
-    <div class="spacer"></div>
-    <button class="b primary" onclick="openEndpointDialog()">+ New endpoint</button>
+  <div class="page-title"><h1>Share</h1><p>Scoped URLs and keys for other people and other machines.</p></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Share endpoints</h2><div class="spacer"></div><button class="b primary" onclick="openEndpointDialog()">+ New endpoint</button></div>
+    <div class="panel-body">
+      <p class="hint">Each endpoint is a URL + key that reaches only the models you allow — or forces every request to one model or the <code>auto</code> router. Revoke by deleting or disabling it.</p>
+      <div id="epcards" class="grid"></div>
+    </div>
   </div>
-  <p class="hint">Create a scoped URL + API key to hand to someone else. They reach only the models you allow — or you force every request to one model or the <code>auto</code> router. Revoke anytime by deleting or disabling it.</p>
-  <div id="epcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px"></div>
 </section>
 
 <section id="tab-skills" class="hidden">
-  <div class="toolbar">
-    <h2 style="margin:0">Skill index</h2>
-    <div class="spacer"></div>
-    <button class="b" onclick="openSkillRoots()">Manage roots</button>
-    <button class="b primary" onclick="rescanSkills()">Rescan</button>
+  <div class="page-title"><h1>Skills</h1><p>Every SKILL.md under your scan roots, assignable to providers and share endpoints.</p></div>
+  <div class="panel">
+    <div class="panel-head"><h2>Skill index</h2><span id="skill-count" class="pill"></span><div class="spacer"></div><button class="b" onclick="openSkillRoots()">Manage roots</button><button class="b primary" onclick="rescanSkills()">Rescan</button></div>
+    <div class="panel-body">
+      <details class="help"><summary>Lazy-loaded skills</summary><p>Assigned skills inject only their name and description into the target's system prompt; the model fetches the full instructions from <code>/p/{provider}/skills/{name}</code> (or <code>/e/{endpoint}/skills/{name}</code>) only when it needs one. Edit skills in place, or symlink one into another root.</p></details>
+      <div class="toolbar">
+        <input type="text" id="skill-q" placeholder="Search name, description or path" oninput="renderSkills()" style="flex:1;min-width:200px">
+        <label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap">Assign to <select id="skill-ep" onchange="loadAssignment()" style="min-width:180px;width:auto"></select></label>
+        <button class="b primary" id="skill-assign-save" onclick="saveAssignment()" disabled>Save assignment</button>
+        <label class="switch" style="margin:0"><input type="checkbox" id="skill-dedupe" checked onchange="renderSkills()"><i></i>dedupe</label>
+      </div>
+      <div class="table-wrap"><table id="skilltable">
+        <thead><tr><th style="width:26px"></th><th>Skill</th><th>Description</th><th class="sec">Root</th><th class="sec">Location</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
   </div>
-  <p class="hint">Every <code>SKILL.md</code> found under your scan roots, in one place. View &amp; edit them in place, symlink one into another root, and <b>assign skills to any provider or share endpoint</b> — assigned skills are lazy-loaded: their name+description is injected into that target's system prompt and the model fetches the full instructions from <code>/p/{provider}/skills/{name}</code> (or <code>/e/{endpoint}/skills/{name}</code>) only when it needs one.</p>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-    <input type="text" id="skill-q" placeholder="search name / description / path" oninput="renderSkills()" style="flex:1;min-width:220px">
-    <label style="margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap">Assign to
-      <select id="skill-ep" onchange="loadAssignment()" style="min-width:180px"></select>
-    </label>
-    <button class="b primary" id="skill-assign-save" onclick="saveAssignment()" disabled>Save assignment</button>
-    <label style="margin:0;display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;color:var(--dim)"><input type="checkbox" id="skill-dedupe" checked onchange="renderSkills()"> dedupe</label>
-    <span id="skill-count" style="color:var(--dim);font-size:12px"></span>
-  </div>
-  <table id="skilltable">
-    <thead><tr><th style="width:26px"></th><th>Skill</th><th>Description</th><th>Root</th><th>Location</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
 </section>
 
 </main>
@@ -458,17 +618,17 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <h3 id="rdlg-title">New custom router</h3>
   <form method="dialog" onsubmit="return saveRouter(event)">
     <input type="hidden" id="r-id">
-    <label>Name (address as <code>auto:name</code>)</label><input type="text" id="r-name" required placeholder="coding">
-    <label>Classifier model (small + fast)</label>
-    <div style="display:flex;gap:8px"><select id="r-classifier-p" style="flex:1" onchange="fillModelSel('r-classifier')"></select><select id="r-classifier-m" style="flex:2"></select></div>
-    <label>Planner model (optional — enables <code>auto-plan:name</code>)</label>
-    <div style="display:flex;gap:8px"><select id="r-planner-p" style="flex:1" onchange="fillModelSel('r-planner')"></select><select id="r-planner-m" style="flex:2"></select></div>
-    <label style="margin-top:14px">Task routes</label>
-    <table id="rtable"><thead><tr><th>bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table>
+    <div class="field"><label>Name <span class="sub">— addressed as <code>auto:name</code></span></label><input type="text" id="r-name" required placeholder="coding"></div>
+    <div class="field"><label>Classifier model <span class="sub">— small and fast</span></label>
+      <div class="pair"><select id="r-classifier-p" onchange="fillModelSel('r-classifier')"></select><select id="r-classifier-m"></select></div></div>
+    <div class="field"><label>Planner model <span class="sub">— optional; enables <code>auto-plan:name</code></span></label>
+      <div class="pair"><select id="r-planner-p" onchange="fillModelSel('r-planner')"></select><select id="r-planner-m"></select></div></div>
+    <div class="field"><label>Task routes</label>
+      <div class="table-wrap"><table id="rtable"><thead><tr><th>bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table></div></div>
     <div class="check"><input type="checkbox" id="r-enabled" checked><span>Enabled</span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="rdlg.close()">Cancel</button>
-      <button class="b primary" type="submit">Save</button>
+      <button class="b primary" type="submit">Save router</button>
     </div>
   </form>
 </dialog>
@@ -477,17 +637,17 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <h3 id="fdlg-title">New custom fusion</h3>
   <form method="dialog" onsubmit="return saveNamedFusion(event)">
     <input type="hidden" id="f-id">
-    <label>Name (address as <code>fusion:name</code>)</label><input type="text" id="f-name" required placeholder="deep">
-    <label>Participants <span style="color:var(--dim)">(ctrl/cmd-click for several — they answer in parallel)</span></label>
-    <select id="f-parts" multiple size="6" style="height:auto"></select>
-    <label>Judge model <span style="color:var(--dim)">(synthesizes the drafts into the final answer)</span></label>
-    <div style="display:flex;gap:8px"><select id="f-judge-p" style="flex:1" onchange="fillModelSel('f-judge')"></select><select id="f-judge-m" style="flex:2"></select></div>
-    <label style="margin-top:8px">Max tokens per draft <span style="color:var(--dim)">(blank = inherit the default fusion)</span></label>
-    <input type="text" id="f-maxtok" style="max-width:200px" placeholder="2000">
+    <div class="field"><label>Name <span class="sub">— addressed as <code>fusion:name</code></span></label><input type="text" id="f-name" required placeholder="deep"></div>
+    <div class="field"><label>Participants <span class="sub">— ctrl/cmd-click for several; they answer in parallel</span></label>
+      <select id="f-parts" multiple size="6" style="height:auto"></select></div>
+    <div class="field"><label>Judge model <span class="sub">— synthesizes the drafts into the final answer</span></label>
+      <div class="pair"><select id="f-judge-p" onchange="fillModelSel('f-judge')"></select><select id="f-judge-m"></select></div></div>
+    <div class="field"><label>Max tokens per draft <span class="sub">— blank = inherit the default fusion</span></label>
+      <input type="text" id="f-maxtok" style="max-width:200px" placeholder="2000"></div>
     <div class="check"><input type="checkbox" id="f-enabled" checked><span>Enabled</span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="fdlg.close()">Cancel</button>
-      <button class="b primary" type="submit">Save</button>
+      <button class="b primary" type="submit">Save fusion</button>
     </div>
   </form>
 </dialog>
@@ -496,23 +656,23 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <h3 id="edlg-title">New share endpoint</h3>
   <form method="dialog" onsubmit="return saveEndpoint(event)">
     <input type="hidden" id="e-id">
-    <label>Name (used in the URL: /e/<b>name</b>/v1)</label><input type="text" id="e-name" required placeholder="friend-bob">
-    <label>API key <span style="color:var(--dim)">(share this; blank on edit = keep)</span></label>
-    <div style="display:flex;gap:8px"><input type="text" id="e-key" style="flex:1" placeholder="auto-generated"><button type="button" class="b" onclick="genEpKey()">Generate</button></div>
-    <label>Force model <span style="color:var(--dim)">(optional — every request routes here; pick <code>auto</code> to give them your auto-router)</span></label>
-    <select id="e-force"></select>
-    <label>Allowed models <span style="color:var(--dim)">(used only when Force is none; nothing selected = ALL models)</span></label>
-    <select id="e-models" multiple size="8" style="height:auto"></select>
-    <label>Note (optional)</label><input type="text" id="e-note" placeholder="Bob — gpt + claude only">
-    <label>Context window cap <span style="font-weight:normal;opacity:.7">— optional; lowers only</span></label>
-    <input type="number" id="e-ctx" min="0" step="1024" placeholder="0 = use the model's own window">
-    <div id="e-ctx-hint" style="font-size:12px;opacity:.75;margin:-4px 0 8px"></div>
+    <div class="field"><label>Name <span class="sub">— used in the URL: /e/<b>name</b>/v1</span></label><input type="text" id="e-name" required placeholder="friend-bob"></div>
+    <div class="field"><label>API key <span class="sub">— share this; blank on edit keeps the current key</span></label>
+      <div class="pair"><input type="text" id="e-key" placeholder="auto-generated"><button type="button" class="b" onclick="genEpKey()">Generate</button></div></div>
+    <fieldset class="group"><legend>Model policy</legend>
+      <div class="field"><label>Force model <span class="sub">— every request routes here; pick <code>auto</code> to hand out your auto-router</span></label><select id="e-force"></select></div>
+      <div class="field"><label>Allowed models <span class="sub">— used only when nothing is forced; none selected = all models</span></label><select id="e-models" multiple size="8" style="height:auto"></select></div>
+      <div class="field"><label>Context window cap <span class="sub">— optional; only lowers</span></label>
+        <input type="number" id="e-ctx" min="0" step="1024" placeholder="0 = use the model's own window">
+        <div class="help" id="e-ctx-hint"></div></div>
+    </fieldset>
+    <div class="field"><label>Note <span class="sub">— optional</span></label><input type="text" id="e-note" placeholder="Bob — gpt + claude only"></div>
     <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
-      <div class="check"><input type="checkbox" id="e-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(off by default)</span></span></div>
-      <div class="check"><input type="checkbox" id="e-nofb"><span title="Never re-route requests on this shared API to another provider. Off by default. Use it so a key you hand out cannot spend on providers the recipient was never granted.">Disable fallback <span style="color:var(--dim)">(off by default)</span></span></div>
+    <div class="check"><input type="checkbox" id="e-caveman"><span title="Compress bulky tool results before they are sent upstream. Deterministic and tail-only, so the prefix-cached system prompt is untouched. Savings show in Traces.">Caveman compression <span>(shrink bulky tool results — off by default)</span></span></div>
+    <div class="check"><input type="checkbox" id="e-nofb"><span title="Never re-route requests on this shared API to another provider, so a key you hand out cannot spend on providers the recipient was never granted.">Disable fallback <span>(fail instead of re-routing — off by default)</span></span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="edlg.close()">Cancel</button>
-      <button class="b primary" type="submit">Save</button>
+      <button class="b primary" type="submit">Save endpoint</button>
     </div>
   </form>
 </dialog>
@@ -521,16 +681,16 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <h3 id="adlg-title">Add agent profile</h3>
   <form method="dialog" onsubmit="return saveAgent(event)">
     <input type="hidden" id="a-id">
-    <label>Name</label><input type="text" id="a-name" required placeholder="Skeptic">
-    <label>Model</label>
-    <div style="display:flex;gap:8px"><select id="a-model-p" style="flex:1" onchange="fillModelSel('a-model')"></select><select id="a-model-m" style="flex:2"></select></div>
-    <label>Persona (system prompt)</label>
-    <textarea id="a-persona" placeholder="You are the panel's skeptic. Attack assumptions, find failure modes, demand evidence."></textarea>
-    <label>Temperature (blank = default)</label><input type="text" id="a-temp" placeholder="0.7">
-    <div class="check"><input type="checkbox" id="a-enabled" checked><span>Enabled (participates in round table)</span></div>
+    <div class="field"><label>Name</label><input type="text" id="a-name" required placeholder="Skeptic"></div>
+    <div class="field"><label>Model</label>
+      <div class="pair"><select id="a-model-p" onchange="fillModelSel('a-model')"></select><select id="a-model-m"></select></div></div>
+    <div class="field"><label>Persona <span class="sub">— system prompt</span></label>
+      <textarea id="a-persona" placeholder="You are the panel's skeptic. Attack assumptions, find failure modes, demand evidence."></textarea></div>
+    <div class="field"><label>Temperature <span class="sub">— blank = default</span></label><input type="text" id="a-temp" placeholder="0.7"></div>
+    <div class="check"><input type="checkbox" id="a-enabled" checked><span>Enabled <span>— participates in the round table</span></span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="adlg.close()">Cancel</button>
-      <button class="b primary" type="submit">Save</button>
+      <button class="b primary" type="submit">Save profile</button>
     </div>
   </form>
 </dialog>
@@ -539,35 +699,45 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <h3 id="pdlg-title">Add provider</h3>
   <form method="dialog" onsubmit="return saveProvider(event)">
     <input type="hidden" id="p-id">
-    <label>Name</label><input type="text" id="p-name" required placeholder="openrouter">
-    <label>Type</label>
-    <select id="p-type">
-      <option value="openai">openai-compatible (OpenAI, OpenRouter, Nexum, SuperGrok, OpenCode…)</option>
-      <option value="anthropic">anthropic (Claude)</option>
-      <option value="ollama">ollama (local models)</option>
-    </select>
-    <label>Base URL</label><input type="text" id="p-url" required placeholder="https://openrouter.ai/api or http://127.0.0.1:11434">
-    <label>API key <span style="color:var(--dim)">(leave blank to keep existing; stored encrypted)</span></label>
-    <input type="password" id="p-key" autocomplete="off">
-    <label>Default model <button type="button" class="b" style="margin-left:8px;font-size:11px;padding:2px 8px" onclick="scanModels()">Scan models</button> <span id="scan-count" style="color:var(--dim);font-size:11px"></span></label>
-    <input type="text" id="p-model" placeholder="glm-5.2:cloud" list="modellist">
-    <select id="p-model-pick" class="hidden" style="margin-top:6px" onchange="pickScannedModel(this.value)"></select>
-    <datalist id="modellist"></datalist>
-    <label>Context window override (tokens — what harnesses are told this provider's models hold; blank/0 = auto-detect)</label>
-    <input type="text" id="p-ctxlen" placeholder="262144">
-    <label>Model filter (comma globs — narrows a shared upstream to this provider's models; <code>!</code> excludes)</label>
-    <input type="text" id="p-filter" placeholder="claude-*, !claude-*-thinking">
-    <label>Model aliases (comma-separated — bare names routed here)</label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model">
-    <label>Fallback (provider/model — chains follow transitively, e.g. Nexum→fred→ollama)</label><select id="p-fallback"></select>
-    <label>Pinned models (comma-sep — pickers show ONLY these; blank = full catalog)</label><input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist">
-    <label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md">
-    <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
-    <div class="check"><input type="checkbox" id="p-caveman"><span title="Compress bulky tool results before they are sent upstream (JSON/logs/code/diffs are shrunk type-aware; errors and structure are kept). Deterministic and tail-only, so the prefix-cached system prompt is untouched. Off by default; savings show in Traces.">Caveman compression <span style="color:var(--dim)">(shrink bulky tool results — off by default)</span></span></div>
-    <div class="check"><input type="checkbox" id="p-nofb"><span title="Never re-route a failed request from this provider to another. You get the real error instead of a silent switch. Off by default. Use it on a local/free provider so an outage cannot quietly spend on a paid one.">Disable fallback <span style="color:var(--dim)">(fail instead of re-routing — off by default)</span></span></div>
+    <fieldset class="group"><legend>Connection</legend>
+      <div class="field"><label>Name</label><input type="text" id="p-name" required placeholder="openrouter"></div>
+      <div class="field"><label>Type</label>
+        <select id="p-type">
+          <option value="openai">OpenAI-compatible</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="ollama">Ollama (local)</option>
+        </select>
+        <div class="help">OpenAI-compatible covers OpenAI, OpenRouter, Nexum, SuperGrok, OpenCode, CLIProxyAPI, llama.cpp and vLLM.</div></div>
+      <div class="field"><label>Base URL</label><input type="text" id="p-url" required placeholder="https://openrouter.ai/api or http://127.0.0.1:11434"></div>
+      <div class="field"><label>API key <span class="sub">— leave blank to keep the existing one; stored encrypted</span></label><input type="password" id="p-key" autocomplete="off"></div>
+    </fieldset>
+    <fieldset class="group"><legend>Models</legend>
+      <div class="field"><label>Default model</label>
+        <div class="combo"><input type="text" id="p-model" placeholder="type or scan to browse" autocomplete="off" oninput="renderModelList()" onfocus="renderModelList()"><button type="button" class="b" onclick="scanModels()">Scan models</button></div>
+        <div id="scan-count" class="help"></div>
+        <div id="p-model-list" class="combo-list hidden" role="listbox"></div>
+        <datalist id="modellist"></datalist></div>
+      <div class="field"><label>Model filter <span class="sub">— comma globs; narrows a shared upstream to this provider's models; <code>!</code> excludes</span></label>
+        <input type="text" id="p-filter" placeholder="claude-*, !claude-*-thinking" oninput="renderModelList()"></div>
+      <div class="field"><label>Pinned models <span class="sub">— comma-separated; pickers show only these, blank = full catalog</span></label>
+        <input type="text" id="p-pinned" placeholder="gpt-5.6-terra, claude-opus-4-6-thinking" list="modellist"></div>
+      <div class="field"><label>Aliases <span class="sub">— bare names that route here</span></label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model"></div>
+      <div class="field"><label>Context window override <span class="sub">— tokens harnesses are told these models hold; blank = auto-detect</span></label>
+        <input type="text" id="p-ctxlen" placeholder="262144" inputmode="numeric"></div>
+    </fieldset>
+    <fieldset class="group"><legend>Routing</legend>
+      <div class="field"><label>Fallback <span class="sub">— provider/model; only used when "honour each provider's own fallback" is on</span></label><select id="p-fallback"></select></div>
+      <div class="check"><input type="checkbox" id="p-nofb"><span title="Never re-route a failed request from this provider to another. You get the real error instead of a silent switch.">Disable fallback <span>(fail instead of re-routing — off by default)</span></span></div>
+      <div class="check"><input type="checkbox" id="p-caveman"><span title="Compress bulky tool results before they are sent upstream. Deterministic and tail-only, so the prefix-cached system prompt is untouched. Savings show in Traces.">Caveman compression <span>(shrink bulky tool results — off by default)</span></span></div>
+    </fieldset>
+    <fieldset class="group"><legend>Docs</legend>
+      <div class="field"><label>Docs URL</label><input type="text" id="p-docurl" placeholder="https://…/api-reference.md"></div>
+      <div class="check"><input type="checkbox" id="p-inject"><span>Inject docs as system context</span></div>
+    </fieldset>
     <div class="check"><input type="checkbox" id="p-enabled" checked><span>Enabled</span></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="pdlg.close()">Cancel</button>
-      <button class="b primary" type="submit">Save</button>
+      <button class="b primary" type="submit">Save provider</button>
     </div>
   </form>
 </dialog>
@@ -576,31 +746,31 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
   <h3 id="tdlg-title">Add transform</h3>
   <form method="dialog" onsubmit="return saveTransform(event)">
     <input type="hidden" id="t-id">
-    <label>Name</label><input type="text" id="t-name" required>
-    <label>Phase</label>
-    <select id="t-phase"><option value="request">request (outbound provider body)</option><option value="response">response (body returned to consumer)</option></select>
-    <label>Provider (blank = all)</label><select id="t-provider"><option value="0">all providers</option></select>
-    <label>Target inbound dialect (blank = any)</label>
-    <select id="t-target"><option value="">any</option><option>openai</option><option>anthropic</option><option>ollama</option></select>
-    <label>Rules (JSON array)</label>
-    <textarea id="t-rules" spellcheck="false">[
+    <div class="field"><label>Name</label><input type="text" id="t-name" required></div>
+    <div class="field"><label>Phase</label>
+      <select id="t-phase"><option value="request">request — outbound provider body</option><option value="response">response — body returned to the caller</option></select></div>
+    <div class="field"><label>Provider <span class="sub">— blank = all</span></label><select id="t-provider"><option value="0">all providers</option></select></div>
+    <div class="field"><label>Target inbound dialect <span class="sub">— blank = any</span></label>
+      <select id="t-target"><option value="">any</option><option>openai</option><option>anthropic</option><option>ollama</option></select></div>
+    <div class="field"><label>Rules <span class="sub">— JSON array</span></label>
+      <textarea id="t-rules" spellcheck="false">[
   {"op":"set","path":"temperature","value":0.2}
-]</textarea>
+]</textarea></div>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="tdlg.close()">Cancel</button>
-      <button class="b primary" type="submit">Save</button>
+      <button class="b primary" type="submit">Save transform</button>
     </div>
   </form>
 </dialog>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
-<dialog id="sdlg" style="max-width:820px;width:92vw">
+<dialog id="sdlg" style="width:860px;max-width:min(94vw,900px)">
   <h3 id="sdlg-title">Edit skill</h3>
-  <div id="sdlg-path" style="font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);word-break:break-all;margin-bottom:8px"></div>
+  <div id="sdlg-path" class="sub-title mono" style="word-break:break-all;margin:8px 0"></div>
   <form method="dialog" onsubmit="return saveSkill(event)">
     <input type="hidden" id="s-id">
-    <textarea id="s-content" spellcheck="false" style="width:100%;height:52vh;font-family:ui-monospace,monospace;font-size:12px;white-space:pre;overflow:auto"></textarea>
+    <textarea id="s-content" spellcheck="false" style="width:100%;height:56vh;white-space:pre;overflow:auto"></textarea>
     <div class="dlg-actions">
       <button class="b" type="button" onclick="sdlg.close()">Cancel</button>
       <button class="b primary" type="submit">Save (keeps .bak)</button>
@@ -610,10 +780,10 @@ code,.mono{font-family:ui-monospace,monospace;font-size:12px}
 
 <dialog id="srdlg">
   <h3>Skill scan roots</h3>
-  <p class="hint" style="margin-top:0">Directories scanned for <code>SKILL.md</code>. Writes (edit/symlink/copy) are only allowed inside enabled roots.</p>
-  <table id="srtable"><thead><tr><th>Path</th><th style="width:60px">On</th><th style="width:40px"></th></tr></thead><tbody></tbody></table>
-  <div style="display:flex;gap:8px;margin-top:10px">
-    <input type="text" id="sr-new" placeholder="/home/crogers2287/some/skills" style="flex:1">
+  <p class="hint" style="margin:10px 0">Directories scanned for <code>SKILL.md</code>. Edits, symlinks and copies are only allowed inside enabled roots.</p>
+  <div class="table-wrap"><table id="srtable"><thead><tr><th>Path</th><th style="width:60px">On</th><th style="width:40px"></th></tr></thead><tbody></tbody></table></div>
+  <div class="pair" style="margin-top:10px">
+    <input type="text" id="sr-new" placeholder="/home/you/some/skills">
     <button class="b primary" type="button" onclick="addSkillRoot()">Add</button>
   </div>
   <div class="dlg-actions"><button class="b" type="button" onclick="srdlg.close();loadSkills()">Done</button></div>
@@ -660,12 +830,10 @@ function renderLaunch(){
   HARNESSES.forEach(h=>{
     const cmd=h.cmd(m);
     const card=document.createElement('div');
-    card.style.cssText='background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px';
-    card.innerHTML=`<div style="font-weight:600;margin-bottom:6px">${h.name} <span style="color:var(--dim);font-weight:400;font-size:11px">${h.note}</span></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <code style="flex:1;background:var(--panel2);padding:6px 8px;border-radius:6px;font-size:12px;overflow-x:auto;white-space:nowrap">${esc(cmd)}</code>
-        <button class="b" onclick="copyText('${esc(cmd).replace(/'/g,"\\'")}')">Copy</button>
-      </div>`;
+    card.className='cmd';
+    card.innerHTML=`<div class="name">${h.name}<small>${h.note}</small></div>
+      <div class="line"><code>${esc(cmd)}</code><button class="b" type="button">Copy</button></div>`;
+    card.querySelector('button').onclick=()=>copyText(cmd);
     grid.appendChild(card);
   });
   const base=proxyBase();
@@ -684,27 +852,51 @@ async function loadProviders(){
     const card=document.createElement('div');
     card.className='card'+(p.enabled?'':' off');
     card.draggable=true;card.dataset.id=p.id;
+    card.classList.add('provider');
+    const pins=p.pinned_models?p.pinned_models.split(',').filter(x=>x.trim()).length:0;
+    const facts=[
+      p.has_key?'<span class="badge-ok">✓ key</span>':'<span class="badge-err">no key</span>',
+      p.models?`aliases <b>${esc(p.models)}</b>`:'',
+      p.fallback?`fallback <b>${esc(fbChain(p))}</b>`:'',
+      pins?`<b>${pins}</b> pinned`:'',
+      p.models_filter?(()=>{const n=p.models_filter.split(',').filter(x=>x.trim()).length;return `<span title="${esc(p.models_filter)}">filter <b>${n>2?n+' patterns':esc(p.models_filter)}</b></span>`})():'',
+      p.context_length?`ctx <b>${(p.context_length/1024).toFixed(0)}k</b>`:'',
+      p.inject_docs?'<span class="badge-ok">docs → system</span>':'',
+      p.caveman?'caveman':'', p.no_fallback?'no fallback':''
+    ].filter(Boolean).join('<span style="opacity:.4"> · </span>');
     card.innerHTML=`
-      <div class="reorder">
-        <button class="b" title="move up" onclick="moveProvider(${p.id},-1)"${i===0?' disabled':''}>↑</button>
-        <button class="b" title="move down" onclick="moveProvider(${p.id},1)"${i===providers.length-1?' disabled':''}>↓</button>
+      <div class="head">
+        <span class="rank">#${i+1}</span>
+        <h3>${esc(p.name)}</h3>
+        <span class="type">${esc(p.type)}</span>
+        <label class="switch" title="${p.enabled?'Enabled — tap to disable':'Disabled — tap to enable'}"><input type="checkbox" ${p.enabled?'checked':''} onchange="toggleProvider(${p.id})"><i></i></label>
       </div>
-      <div class="prio">#${i+1}</div>
-      <h3>${esc(p.name)}</h3>
-      <span class="type">${p.type}</span>
+      <div>${routeChip(p.name,p.default_model,p.type)}</div>
       <div class="url">${esc(p.base_url)}</div>
-      <div class="meta">model: <b>${esc(p.default_model||'—')}</b> · key: ${p.has_key?'<span class="badge-ok">✓ encrypted</span>':'<span class="badge-err">none</span>'}${p.models?` · aliases: <b>${esc(p.models)}</b>`:''}${p.inject_docs?' · <span class="badge-ok">docs→sys</span>':''}${p.fallback?` · chain:<b>${esc(fbChain(p))}</b>`:''}${p.pinned_models?` · pins:<b>${p.pinned_models.split(',').filter(x=>x.trim()).length}</b>`:''}</div>
+      <div class="facts">${facts}</div>
       <div class="row">
         <button class="b" onclick="openProviderDialog(${p.id})">Edit</button>
         <button class="b" onclick="testProvider(${p.id},this)">Test</button>
-        <button class="b" onclick="toggleProvider(${p.id})">${p.enabled?'Disable':'Enable'}</button>
-        <button class="b danger" onclick="delProvider(${p.id},'${esc(p.name)}')">Delete</button>
+        <button class="b danger ghost" onclick="delProvider(${p.id})">Delete</button>
+        <span class="spacer"></span>
+        <span class="reorder">
+          <button class="b ghost" title="move up" onclick="moveProvider(${p.id},-1)"${i===0?' disabled':''}>↑</button>
+          <button class="b ghost" title="move down" onclick="moveProvider(${p.id},1)"${i===providers.length-1?' disabled':''}>↓</button>
+        </span>
       </div>
-      <div class="meta test-out"></div>`;
+      <div class="test-out"></div>`;
     addDnD(card);grid.appendChild(card);
   });
+  const pc=$('#prov-count');if(pc)pc.textContent=providers.filter(p=>p.enabled).length+' of '+providers.length+' enabled';
   refreshDocSel();
 }
+// routeChip renders `provider / model` the same way everywhere a model is named.
+function routeChip(prov,model,type){
+  const t=type||(providers.find(p=>p.name===prov)||{}).type||(prov==='fusion'||/^auto/.test(prov||'')?'virtual':'openai');
+  if(!prov)return `<span class="route"><span class="dot virtual"></span><span class="model">${esc(model||'—')}</span></span>`;
+  return `<span class="route" title="${esc(prov+'/'+model)}"><span class="dot ${esc(t)}"></span><span class="prov">${esc(prov)}</span><span class="sep">/</span><span class="model">${esc(model||'—')}</span></span>`;
+}
+function splitRoute(s){const i=(s||'').indexOf('/');return i>0?[s.slice(0,i),s.slice(i+1)]:['',s||'']}
 function fbChain(p){
   let chain=p.name, cur=p, seen=new Set([p.id]);
   for(let i=0;i<3&&cur.fallback;i++){
@@ -772,18 +964,53 @@ async function saveProvider(e){
   }catch(err){toast(err.message,true)}
   return false;
 }
-// the datalist + picker are shared by every provider dialog, so clear them on
-// open — otherwise the last provider you scanned keeps offering ITS models.
+// The scan result is shared by every provider dialog, so clear it on open —
+// otherwise the last provider you scanned keeps offering ITS models.
+let scanAll=[];            // every model the upstream listed
 function resetModelScan(){
+  scanAll=[];
   $('#modellist').innerHTML='';
-  const pick=$('#p-model-pick');
-  pick.innerHTML='';pick.classList.add('hidden');
+  $('#p-model-list').innerHTML='';$('#p-model-list').classList.add('hidden');
   $('#scan-count').textContent='';
 }
+// glob semantics mirror the server's models_filter: comma-separated, `*`
+// wildcards, `!` excludes, case-insensitive. Evaluated live so editing the
+// filter re-labels the list without another scan.
+function filterMatch(id,filter){
+  const pats=(filter||'').split(',').map(x=>x.trim()).filter(Boolean);
+  if(!pats.length)return true;
+  const one=(pat,s)=>{pat=pat.toLowerCase();s=s.toLowerCase();
+    if(!pat.includes('*'))return pat===s;
+    const re=new RegExp('^'+pat.split('*').map(x=>x.replace(/[.+?^${}()|[\]\\]/g,'\\$&')).join('.*')+'$');return re.test(s)};
+  const inc=pats.filter(p=>!p.startsWith('!')),exc=pats.filter(p=>p.startsWith('!')).map(p=>p.slice(1));
+  if(exc.some(p=>one(p,id)))return false;
+  return !inc.length||inc.some(p=>one(p,id));
+}
 function pickScannedModel(v){
-  if(!v)return;
   $('#p-model').value=v;
+  renderModelList();
   toast('default model set to '+v);
+}
+function renderModelList(){
+  const box=$('#p-model-list');if(!box)return;
+  if(!scanAll.length){box.classList.add('hidden');return}
+  const filter=$('#p-filter').value, cur=$('#p-model').value.trim();
+  // filter by what is being typed; a value that already names a model shows
+  // the whole list with that model highlighted, so the picker never collapses
+  // to a single row the moment a default is set
+  const q=scanAll.includes(cur)?'':cur.toLowerCase();
+  let rows=scanAll.map(id=>({id,ok:filterMatch(id,filter)}));
+  const shown=q?rows.filter(r=>r.id.toLowerCase().includes(q)):rows;
+  shown.sort((a,b)=>(b.ok-a.ok)||a.id.localeCompare(b.id));
+  const matches=rows.filter(r=>r.ok).length, MAX=150;
+  $('#scan-count').textContent=filter.trim()
+    ? `${scanAll.length} models on this upstream · ${matches} pass the filter`
+    : `${scanAll.length} models on this upstream`;
+  box.classList.remove('hidden');
+  if(!shown.length){box.innerHTML='<div class="empty" style="border:none">Nothing matches what you typed.</div>';return}
+  box.innerHTML=shown.slice(0,MAX).map(r=>`<div class="opt${r.ok?'':' outside'}${r.id===cur?' sel':''}" role="option" data-v="${esc(r.id)}"><span class="id">${esc(r.id)}</span>${filter.trim()?(r.ok?'<span class="tag" style="color:var(--ok)">in filter</span>':'<span class="tag">outside filter</span>'):''}</div>`).join('')
+    +(shown.length>MAX?`<div class="more">${shown.length-MAX} more — keep typing to narrow</div>`:'');
+  box.querySelectorAll('.opt').forEach(el=>el.onmousedown=e=>{e.preventDefault();pickScannedModel(el.dataset.v)});
 }
 async function scanModels(){
   const id=$('#p-id').value;
@@ -797,27 +1024,16 @@ async function scanModels(){
       id:id?+id:0,type:$('#p-type').value,base_url:url,api_key:$('#p-key').value,
       models_filter:$('#p-filter').value})});
     if(r.error){resetModelScan();toast('scan failed: '+r.error,true);return}
-    const models=r.models||[];
-    // the upstream may be shared (CLIProxyAPI, OpenRouter): say how much the
-    // filter removed so an empty or surprising list is self-explanatory
-    const filtered=typeof r.scanned==='number'&&r.scanned!==models.length;
-    if(!models.length){
-      resetModelScan();
-      $('#scan-count').textContent=filtered
-        ? `0 of ${r.scanned} models match the filter above`
-        : '0 models found';
-      return;
-    }
+    // the whole catalog is offered, not just what the filter passes: a
+    // default outside the filter is a legitimate choice (widen the filter,
+    // or the filter only exists to keep pickers short) and the operator must
+    // be able to see what the filter is hiding.
+    const all=r.all||r.models||[];
+    if(!all.length){resetModelScan();$('#scan-count').textContent='0 models found on this upstream';return}
     if(r.base_url&&r.base_url!==url){$('#p-url').value=r.base_url;toast('base URL corrected to '+r.base_url)}
-    $('#modellist').innerHTML=models.map(m=>`<option value="${esc(m)}">`).join('');
-    const cur=$('#p-model').value;
-    const pick=$('#p-model-pick');
-    pick.innerHTML='<option value="">— pick from '+models.length+' scanned models —</option>'
-      +models.map(m=>`<option value="${esc(m)}"${m===cur?' selected':''}>${esc(m)}</option>`).join('');
-    pick.classList.remove('hidden');
-    $('#scan-count').textContent=filtered
-      ? `${models.length} of ${r.scanned} models (filtered) — pick below or type to filter`
-      : `${models.length} models found — pick below or type to filter`;
+    scanAll=all.slice();
+    $('#modellist').innerHTML=all.map(m=>`<option value="${esc(m)}">`).join('');
+    renderModelList();
   }catch(err){resetModelScan();toast(err.message,true)}
 }
 async function toggleProvider(id){
@@ -825,7 +1041,8 @@ async function toggleProvider(id){
   try{await api('providers/'+id,{method:'PUT',body:JSON.stringify({...p,api_key:'',enabled:!p.enabled})});loadProviders()}
   catch(err){toast(err.message,true)}
 }
-async function delProvider(id,name){
+async function delProvider(id){
+  const name=(providers.find(x=>x.id===id)||{}).name||id;
   if(!confirm('Delete provider "'+name+'"?'))return;
   try{await api('providers/'+id,{method:'DELETE'});toast('deleted');loadProviders()}
   catch(err){toast(err.message,true)}
@@ -1139,16 +1356,16 @@ function traceRow(t){
   // re-processed, and only streams expose a usable time-to-first-token
   const ppTok=(t.prompt_tokens||0)-(t.cached_tokens||0);
   const pp=(t.stream&&t.ttfb_ms>0&&ppTok>0)?(ppTok/(t.ttfb_ms/1000)):0;
-  tr.innerHTML=`<td>${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
+  tr.innerHTML=`<td class="mono">${new Date(t.ts).toLocaleTimeString()}</td><td>${esc(t.provider)}</td>
     <td class="mono">${esc(t.model)}</td>
-    <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td>${cached}</td>
-    <td class="mono">${cm}</td>
+    <td>${t.prompt_tokens||'·'}</td><td>${t.completion_tokens||'·'}</td><td class="sec">${cached}</td>
+    <td class="mono sec">${cm}</td>
     <td>${t.status}${t.err?' ⚠':''}${t.note?' 🔀':''}</td>
-    <td class="mono">${pp?pp.toFixed(0):'·'}</td>
-    <td class="mono">${tps?tps.toFixed(1):'·'}</td>
-    <td class="mono">${t.ttfb_ms?t.ttfb_ms+'ms':'·'}</td>
-    <td class="mono">${t.status===200?((t.post_us||0)/1000).toFixed(2)+'ms':'·'}</td>
-    <td>${t.latency_ms}ms</td><td>${t.stream?'✓':''}</td>`;
+    <td class="mono sec">${pp?pp.toFixed(0):'·'}</td>
+    <td class="mono sec">${tps?tps.toFixed(1):'·'}</td>
+    <td class="mono sec">${t.ttfb_ms?t.ttfb_ms+'ms':'·'}</td>
+    <td class="mono sec">${t.status===200?((t.post_us||0)/1000).toFixed(2)+'ms':'·'}</td>
+    <td>${t.latency_ms}ms</td><td class="sec">${t.stream?'✓':''}</td>`;
   return tr;
 }
 async function loadStats(){
@@ -1163,14 +1380,14 @@ async function loadStats(){
       tr.innerHTML=`<td class="mono">${esc(m.provider)}/${esc(m.model)}</td>
         <td>${m.requests}</td><td>${m.errors?'<span class="badge-err">'+m.errors+'</span>':'0'}</td>
         <td>${fmtK(m.prompt_tokens)}</td><td>${fmtK(m.completion_tokens)}</td>
-        <td>${fmtK(m.cached_tokens)}</td><td>${hit?'<span class="badge-ok">'+hit+'%</span>':'0%'}</td>
-        <td>${m.avg_latency_ms}ms</td>`;
+        <td class="sec">${fmtK(m.cached_tokens)}</td><td>${hit?'<span class="badge-ok">'+hit+'%</span>':'0%'}</td>
+        <td class="sec">${m.avg_latency_ms}ms</td>`;
       tb.appendChild(tr);
     });
     if(st.length>1){
       const hit=tin?Math.round(100*tcache/tin):0;
       const tr=document.createElement('tr');tr.style.borderTop='2px solid var(--border)';
-      tr.innerHTML=`<td><b>All models</b></td><td></td><td></td><td><b>${fmtK(tin)}</b></td><td><b>${fmtK(tout)}</b></td><td><b>${fmtK(tcache)}</b></td><td><b>${hit}%</b></td><td></td>`;
+      tr.innerHTML=`<td><b>All models</b></td><td></td><td></td><td><b>${fmtK(tin)}</b></td><td><b>${fmtK(tout)}</b></td><td class="sec"><b>${fmtK(tcache)}</b></td><td><b>${hit}%</b></td><td class="sec"></td>`;
       tb.appendChild(tr);
     }
   }catch(err){/* stats best-effort */}
@@ -1185,12 +1402,17 @@ async function loadTraces(){
   loadStats();
 }
 function clearTraces(){trbody().innerHTML='';$('#tracedetail').classList.add('hidden')}
+const recent=[]; // timestamps of the last minute's requests, for the sidebar pulse
+function setPulse(live,text){const p=$('#pulse');if(!p)return;p.classList.toggle('live',live);p.querySelector('span').textContent=text}
+function tickPulse(){const now=Date.now();while(recent.length&&now-recent[0]>60000)recent.shift();
+  setPulse(true,recent.length?`live · ${recent.length}/min`:'live · idle')}
+setInterval(tickPulse,5000);
 function connectSSE(){
   const es=new EventSource('/admin/api/logs/stream');
-  es.onopen=()=>{const p=$('#sse-state');p.textContent='live';p.classList.add('on')};
-  es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on')};
+  es.onopen=()=>{const p=$('#sse-state');p.textContent='live';p.classList.add('on');tickPulse()};
+  es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on');setPulse(false,'reconnecting…')};
   let statsDebounce=null;
-  es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));
+  es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));recent.push(Date.now());tickPulse();
     if(isErr(t))pushErr(t);
     while(trbody().children.length>200)trbody().lastChild.remove();
     clearTimeout(statsDebounce);statsDebounce=setTimeout(loadStats,1500)};
@@ -1249,9 +1471,9 @@ async function loadAccounts(){
       const status=f.disabled?'<span class="badge-err">disabled</span>':(String(f.status||'ok'));
       tr.innerHTML=`<td>${esc(f.provider||f.id.split('-')[0])}</td>
         <td>${esc(f.email||f.account||f.label||f.name||f.id)}</td>
-        <td>${esc(f.account_type||'')}</td><td>${status}</td>
-        <td>${f.success??0} / ${f.failed??0}</td>
-        <td>${f.last_refresh?new Date(f.last_refresh).toLocaleString():''}</td>
+        <td class="sec">${esc(f.account_type||'')}</td><td>${status}</td>
+        <td class="sec">${f.success??0} / ${f.failed??0}</td>
+        <td class="sec">${f.last_refresh?new Date(f.last_refresh).toLocaleString():''}</td>
         <td><button class="b" onclick="toggleAccount('${esc(f.id)}',${!f.disabled})">${f.disabled?'Enable':'Disable'}</button>
             <button class="b danger" onclick="delAccount('${esc(f.id)}')">Delete</button></td>`;
       tb.appendChild(tr);
@@ -1340,9 +1562,9 @@ async function loadRTLogs(){
       tr.onclick=()=>showRTLog(l.id);
       tr.innerHTML=`<td>${new Date(l.ts).toLocaleString()}</td>
         <td>${esc((l.question||'').slice(0,80))}${(l.question||'').length>80?'…':''}</td>
-        <td>${esc(l.profiles)}${l.compressed?' <span class="badge-ok" title="context compressed">🗜</span>':''}</td>
-        <td>${l.rounds}</td>
-        <td>${fmtK(l.prompt_tokens)} / ${fmtK(l.completion_tokens)}</td>
+        <td class="sec">${esc(l.profiles)}${l.compressed?' <span class="badge-ok" title="context compressed">🗜</span>':''}</td>
+        <td class="sec">${l.rounds}</td>
+        <td class="sec">${fmtK(l.prompt_tokens)} / ${fmtK(l.completion_tokens)}</td>
         <td>${(l.latency_ms/1000).toFixed(1)}s</td>`;
       tb.appendChild(tr);
     });
@@ -1364,13 +1586,14 @@ async function loadAgents(){
     agents.forEach(a=>{
       const card=document.createElement('div');
       card.className='card'+(a.enabled?'':' off');card.style.cursor='default';
-      card.innerHTML=`<h3>${esc(a.name)}</h3>
-        <span class="type">${esc(a.model)}</span>
+      const [ap,am]=splitRoute(a.model);
+      card.innerHTML=`<div class="head"><h3>${esc(a.name)}</h3>${a.enabled?'':'<span class="type">off</span>'}</div>
+        <div>${routeChip(ap,am)}</div>
         <div class="meta" style="white-space:pre-wrap">${esc((a.persona||'').slice(0,140))}${(a.persona||'').length>140?'…':''}</div>
         <div class="row">
           <button class="b" onclick="openAgentDialog(${a.id})">Edit</button>
           <button class="b" onclick="toggleAgent(${a.id})">${a.enabled?'Disable':'Enable'}</button>
-          <button class="b danger" onclick="delAgent(${a.id},'${esc(a.name)}')">Delete</button>
+          <button class="b danger" onclick="delAgent(${a.id})">Delete</button>
         </div>`;
       grid.appendChild(card);
     });
@@ -1411,7 +1634,8 @@ async function toggleAgent(id){
   try{await api('agents/'+id,{method:'PUT',body:JSON.stringify({...a,enabled:!a.enabled})});loadAgents()}
   catch(err){toast(err.message,true)}
 }
-async function delAgent(id,name){
+async function delAgent(id){
+  const name=(agents.find(x=>x.id===id)||{}).name||id;
   if(!confirm('Delete profile "'+name+'"?'))return;
   try{await api('agents/'+id,{method:'DELETE'});loadAgents()}catch(err){toast(err.message,true)}
 }
@@ -1436,18 +1660,19 @@ async function loadRouters(){
   try{
     routers=await api('routers');
     const grid=$('#routercards');grid.innerHTML='';
-    if(!routers.length)grid.innerHTML='<p class="hint">No custom routers yet.</p>';
+    if(!routers.length)grid.innerHTML='<div class="empty">No custom routers yet. Add one to give a harness its own classifier and routes.</div>';
     routers.forEach(rt=>{
       const routes=rt.routes||{};
       const nb=Object.keys(routes).filter(k=>routes[k]).length;
       const card=document.createElement('div');
       card.className='card'+(rt.enabled?'':' off');card.style.cursor='default';
-      card.innerHTML=`<h3>auto:${esc(rt.name)}</h3>
-        <div class="meta">${nb} route(s) · classifier <b>${esc(rt.classifier||'—')}</b>${rt.planner?' · has planner':''}</div>
+      const [cp,cm]=splitRoute(rt.classifier);
+      card.innerHTML=`<div class="head"><h3>auto:${esc(rt.name)}</h3>${rt.enabled?'':'<span class="type">off</span>'}</div>
+        <div class="meta">${nb} route(s) · classifier ${routeChip(cp,cm)}${rt.planner?' · has planner':''}</div>
         <div class="row">
           <button class="b" onclick="openRouterDialog(${rt.id})">Edit</button>
           <button class="b" onclick="toggleRouter(${rt.id})">${rt.enabled?'Disable':'Enable'}</button>
-          <button class="b danger" onclick="delRouter(${rt.id},'${esc(rt.name)}')">Delete</button>
+          <button class="b danger" onclick="delRouter(${rt.id})">Delete</button>
         </div>`;
       grid.appendChild(card);
     });
@@ -1487,7 +1712,8 @@ async function toggleRouter(id){
   try{await api('routers/'+id,{method:'PUT',body:JSON.stringify({...rt,enabled:!rt.enabled})});loadRouters()}
   catch(err){toast(err.message,true)}
 }
-async function delRouter(id,name){
+async function delRouter(id){
+  const name=(routers.find(x=>x.id===id)||{}).name||id;
   if(!confirm('Delete router "'+name+'"?'))return;
   try{await api('routers/'+id,{method:'DELETE'});toast('deleted');loadRouters()}catch(err){toast(err.message,true)}
 }
@@ -1501,18 +1727,19 @@ async function loadNamedFusions(){
   try{
     namedFusions=await api('fusions');
     const grid=$('#fusioncards');grid.innerHTML='';
-    if(!namedFusions.length){grid.innerHTML='<p class="hint">No custom fusions yet.</p>';return;}
+    if(!namedFusions.length){grid.innerHTML='<div class="empty">No custom fusions yet.</div>';return;}
     namedFusions.forEach(f=>{
       const parts=f.participants||[];
       const card=document.createElement('div');
       card.className='card'+(f.enabled?'':' off');card.style.cursor='default';
-      card.innerHTML=`<h3>fusion:${esc(f.name)}</h3>
-        <div class="meta">${parts.length} participant(s) · judge <b>${esc(f.judge||'—')}</b>${f.max_tokens?' · '+f.max_tokens+' tok/draft':''}</div>
+      const [jp,jm]=splitRoute(f.judge);
+      card.innerHTML=`<div class="head"><h3>fusion:${esc(f.name)}</h3>${f.enabled?'':'<span class="type">off</span>'}</div>
+        <div class="meta">${parts.length} participant(s) · judge ${routeChip(jp,jm)}${f.max_tokens?' · '+f.max_tokens+' tok/draft':''}</div>
         <div class="meta" style="opacity:.75">${esc(parts.join(', ')||'no participants')}</div>
         <div class="row">
           <button class="b" onclick="openFusionDialog(${f.id})">Edit</button>
           <button class="b" onclick="toggleNamedFusion(${f.id})">${f.enabled?'Disable':'Enable'}</button>
-          <button class="b danger" onclick="delNamedFusion(${f.id},'${esc(f.name)}')">Delete</button>
+          <button class="b danger" onclick="delNamedFusion(${f.id})">Delete</button>
         </div>`;
       grid.appendChild(card);
     });
@@ -1552,7 +1779,8 @@ async function toggleNamedFusion(id){
   try{await api('fusions/'+id,{method:'PUT',body:JSON.stringify({...f,enabled:!f.enabled})});loadNamedFusions()}
   catch(err){toast(err.message,true)}
 }
-async function delNamedFusion(id,name){
+async function delNamedFusion(id){
+  const name=(namedFusions.find(x=>x.id===id)||{}).name||id;
   if(!confirm('Delete fusion "'+name+'"?'))return;
   try{await api('fusions/'+id,{method:'DELETE'});toast('deleted');loadNamedFusions()}catch(err){toast(err.message,true)}
 }
@@ -1565,22 +1793,24 @@ async function loadEndpoints(){
   try{
     endpoints=await api('endpoints');
     const grid=$('#epcards');grid.innerHTML='';
-    if(!endpoints.length){grid.innerHTML='<p class="hint">No share endpoints yet.</p>';}
+    if(!endpoints.length){grid.innerHTML='<div class="empty">No share endpoints yet. Create one to hand someone a URL and key.</div>';}
     endpoints.forEach(e=>{
-      let policy = e.force_model ? ('forced → <b>'+esc(e.force_model)+'</b>')
+      const [fp,fm]=splitRoute(e.force_model);
+      let policy = e.force_model ? ('forced → '+routeChip(fp,fm))
                  : (e.models ? ('<b>'+e.models.split(',').filter(x=>x.trim()).length+'</b> model(s) allowed')
                              : 'ALL models');
       const card=document.createElement('div');
       card.className='card'+(e.enabled?'':' off');card.style.cursor='default';
-      card.innerHTML=`<h3>${esc(e.name)}</h3>
+      card.innerHTML=`<div class="head"><h3>${esc(e.name)}</h3>${e.enabled?'':'<span class="type">off</span>'}${e.no_fallback?'<span class="type">no fallback</span>':''}${e.context_length?'<span class="type">ctx '+(e.context_length/1024).toFixed(0)+'k</span>':''}</div>
         <div class="meta">${policy}${e.note?' · '+esc(e.note):''}</div>
-        <div class="meta" style="margin-top:8px">URL<div style="display:flex;gap:6px;margin-top:2px"><code style="flex:1;background:var(--panel2);padding:4px 6px;border-radius:5px;overflow-x:auto;white-space:nowrap">${esc(epURL(e.name))}</code><button class="b" onclick="copyText('${esc(epURL(e.name))}')">Copy</button></div></div>
-        <div class="meta" style="margin-top:6px">Key<div style="display:flex;gap:6px;margin-top:2px"><code style="flex:1;background:var(--panel2);padding:4px 6px;border-radius:5px;overflow-x:auto;white-space:nowrap">${esc(e.api_key)}</code><button class="b" onclick="copyText('${esc(e.api_key)}')">Copy</button></div></div>
+        <div class="kv">URL</div><div class="copyline"><code>${esc(epURL(e.name))}</code><button class="b" type="button" data-copy="${esc(epURL(e.name))}">Copy</button></div>
+        <div class="kv">Key</div><div class="copyline"><code>${esc(e.api_key)}</code><button class="b" type="button" data-copy="${esc(e.api_key)}">Copy</button></div>
         <div class="row">
           <button class="b" onclick="openEndpointDialog(${e.id})">Edit</button>
           <button class="b" onclick="toggleEndpoint(${e.id})">${e.enabled?'Disable':'Enable'}</button>
-          <button class="b danger" onclick="delEndpoint(${e.id},'${esc(e.name)}')">Delete</button>
+          <button class="b danger" onclick="delEndpoint(${e.id})">Delete</button>
         </div>`;
+      card.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyText(b.dataset.copy));
       grid.appendChild(card);
     });
   }catch(err){toast('endpoints: '+err.message,true)}
@@ -1640,7 +1870,8 @@ async function toggleEndpoint(id){
   try{await api('endpoints/'+id,{method:'PUT',body:JSON.stringify({...e,api_key:'',enabled:!e.enabled})});loadEndpoints()}
   catch(err){toast(err.message,true)}
 }
-async function delEndpoint(id,name){
+async function delEndpoint(id){
+  const name=(endpoints.find(x=>x.id===id)||{}).name||id;
   if(!confirm('Delete endpoint "'+name+'"? Its key stops working immediately.'))return;
   try{await api('endpoints/'+id,{method:'DELETE'});toast('deleted');loadEndpoints()}catch(err){toast(err.message,true)}
 }
@@ -1661,7 +1892,7 @@ async function boot(){
   try{
     await loadProviders();await loadTransforms();await loadTraces();connectSSE();await loadModelMap();loadAutoRoute();loadFusion();renderLaunch();
     const st=await api('status');
-    $('#status').textContent=st.providers+' providers · '+st.enabled+' enabled';
+    $('#status-text').innerHTML='<b>'+st.enabled+'</b> of '+st.providers+' providers enabled';
   }catch(err){toast(err.message,true)}
 }
 // ---- skill index ----
@@ -1717,8 +1948,8 @@ function skillRow(rep, extra){ // extra: {badge, loc, ids} for deduped groups
   tr.innerHTML=`<td>${chk}</td>`+
     `<td style="font-weight:600;white-space:nowrap">${esc(rep.name)}${extra?extra.badge:''}${link}</td>`+
     `<td style="color:var(--dim);font-size:12px">${esc(rep.description||'')}</td>`+
-    `<td style="font-size:11px;color:var(--dim);white-space:nowrap">${esc(rootLabel(rep.root_id))}</td>`+
-    `<td style="font-family:ui-monospace,monospace;font-size:10px;color:var(--dim);word-break:break-all">${extra?extra.loc:esc(rep.path)}</td>`+
+    `<td class="sec" style="font-size:11px;color:var(--dim);white-space:nowrap">${esc(rootLabel(rep.root_id))}</td>`+
+    `<td class="sec" style="font-family:ui-monospace,monospace;font-size:10.5px;color:var(--dim)" title="${esc(rep.path)}"><span style="display:block;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left">${extra?extra.loc:esc(rep.path)}</span></td>`+
     `<td style="white-space:nowrap"><button class="b" onclick="openSkill(${rep.id})">Edit</button> <button class="b" onclick="distSkill(${rep.id})">Send→</button></td>`;
   return tr;
 }

@@ -433,25 +433,38 @@ func (a *API) hProviderScanModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"models": []string{}, "error": "enter a base URL first"})
 		return
 	}
-	models, scanned, err := a.Proxy.ListModelsFiltered(r.Context(), prov)
+	// The response carries BOTH the filtered list (what routing will accept)
+	// and the whole catalog: the default-model picker must be able to offer a
+	// model the current filter excludes, or the operator cannot see what the
+	// filter is hiding, let alone widen it from the same dialog.
+	all, err := a.Proxy.ListModels(r.Context(), prov)
+	discovered := ""
 	if err != nil {
 		probe := prov
-		if discovered, _ := a.Proxy.DiscoverBase(r.Context(), probe); discovered != "" && discovered != prov.BaseURL {
-			probe.BaseURL = discovered
-			if m2, n2, err2 := a.Proxy.ListModelsFiltered(r.Context(), probe); err2 == nil {
-				writeJSON(w, 200, map[string]any{"models": m2, "count": len(m2), "scanned": n2,
-					"filter": prov.ModelsFilter, "base_url": discovered})
-				return
+		if d, _ := a.Proxy.DiscoverBase(r.Context(), probe); d != "" && d != prov.BaseURL {
+			probe.BaseURL = d
+			if m2, err2 := a.Proxy.ListModels(r.Context(), probe); err2 == nil {
+				all, discovered, err = m2, d, nil
 			}
 		}
-		writeJSON(w, 200, map[string]any{"models": []string{}, "error": err.Error()})
+	}
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"models": []string{}, "all": []string{}, "error": err.Error()})
 		return
 	}
+	if all == nil {
+		all = []string{}
+	}
+	models := proxy.ApplyModelsFilter(all, prov.ModelsFilter)
 	if models == nil {
 		models = []string{}
 	}
-	writeJSON(w, 200, map[string]any{"models": models, "count": len(models),
-		"scanned": scanned, "filter": prov.ModelsFilter})
+	resp := map[string]any{"models": models, "count": len(models), "scanned": len(all),
+		"all": all, "filter": prov.ModelsFilter}
+	if discovered != "" {
+		resp["base_url"] = discovered
+	}
+	writeJSON(w, 200, resp)
 }
 
 func (a *API) hDocsGet(w http.ResponseWriter, r *http.Request) {
