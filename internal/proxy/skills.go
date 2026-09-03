@@ -44,6 +44,63 @@ func (p *Proxy) skillTokenOK(r *http.Request, scope, skill string) bool {
 	return t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(p.skillToken(scope, skill))) == 1
 }
 
+// skillByToken resolves WHICH skill a load URL's token was minted for,
+// regardless of the name in the path. Models re-type the URL from the
+// catalog and mangle unusual names ("cfrfl-email" became "cflfl-email"); the
+// token survives copy-paste intact, and it is the capability, so it decides.
+func (p *Proxy) skillByToken(r *http.Request, scope string, skills []store.Skill) (store.Skill, bool) {
+	t := r.URL.Query().Get("t")
+	if t == "" {
+		return store.Skill{}, false
+	}
+	for _, s := range skills {
+		if subtle.ConstantTimeCompare([]byte(t), []byte(p.skillToken(scope, s.Name))) == 1 {
+			return s, true
+		}
+	}
+	return store.Skill{}, false
+}
+
+// nearestSkill tolerates small typos in a key-authenticated fetch: one
+// assigned skill within edit distance 2 of the requested name.
+func nearestSkill(skills []store.Skill, want string) (store.Skill, bool) {
+	want = strings.ToLower(skillURLName(want))
+	best, bestD := store.Skill{}, 3
+	for _, s := range skills {
+		if d := editDistance(strings.ToLower(skillURLName(s.Name)), want); d < bestD {
+			best, bestD = s, d
+		}
+	}
+	return best, bestD <= 2
+}
+
+func editDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			c := 1
+			if a[i-1] == b[j-1] {
+				c = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+c)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
+}
+
+func logSkillFetch(r *http.Request, scope, want, served, outcome string) {
+	Log.Info("skill", "path", r.URL.Path, "scope", scope, "requested", want, "served", served, "outcome", outcome)
+}
+
 func skillCatalog(skills []store.Skill, epBase string, tok func(name string) string) string {
 	if len(skills) == 0 {
 		return ""
@@ -224,17 +281,34 @@ func (p *Proxy) handleEndpointSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleEndpointSkill(w http.ResponseWriter, r *http.Request) {
-	// a load URL from the catalog authorizes itself; otherwise the endpoint key
-	if ep, found := p.Store.EndpointByName(r.PathValue("endpoint")); found && ep.Enabled &&
-		p.skillTokenOK(r, "e:"+ep.Name, r.PathValue("name")) {
-		p.serveSkillOneFor(w, p.effective("endpoint", ep.ID, ""), r.PathValue("name"), "endpoint", ep.ID)
-		return
+	want := r.PathValue("name")
+	// a load URL from the catalog authorizes itself — and names the skill,
+	// even when the path was re-typed wrongly; otherwise the endpoint key
+	if ep, found := p.Store.EndpointByName(r.PathValue("endpoint")); found && ep.Enabled {
+		skills := p.effective("endpoint", ep.ID, "")
+		if s, ok := p.skillByToken(r, "e:"+ep.Name, skills); ok {
+			if !strings.EqualFold(skillURLName(s.Name), skillURLName(want)) {
+				logSkillFetch(r, "e:"+ep.Name, want, s.Name, "served by token (name mismatch)")
+			} else {
+				logSkillFetch(r, "e:"+ep.Name, want, s.Name, "served by token")
+			}
+			p.serveSkillOneFor(w, skills, s.Name, "endpoint", ep.ID)
+			return
+		}
 	}
 	ep, ok := p.authEndpoint(w, r, "openai")
 	if !ok {
+		logSkillFetch(r, "e:"+r.PathValue("endpoint"), want, "", "401: no valid token or endpoint key")
 		return
 	}
-	p.serveSkillOneFor(w, p.effective("endpoint", ep.ID, ""), r.PathValue("name"), "endpoint", ep.ID)
+	skills := p.effective("endpoint", ep.ID, "")
+	if s, ok := nearestSkill(skills, want); ok {
+		logSkillFetch(r, "e:"+ep.Name, want, s.Name, "served by key")
+		p.serveSkillOneFor(w, skills, s.Name, "endpoint", ep.ID)
+		return
+	}
+	logSkillFetch(r, "e:"+ep.Name, want, "", "404: not assigned here")
+	p.serveSkillOneFor(w, skills, want, "endpoint", ep.ID)
 }
 
 // --- provider-mount fetch (public-key authed) ---
@@ -259,11 +333,23 @@ func (p *Proxy) handleProviderSkill(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, "openai", 404, "unknown provider")
 		return
 	}
-	if !p.skillTokenOK(r, "p:"+prov.Name, r.PathValue("name")) && !p.publicKeyOK(r) {
+	want := r.PathValue("name")
+	skills := p.effective("provider", prov.ID, "")
+	if s, ok := p.skillByToken(r, "p:"+prov.Name, skills); ok {
+		logSkillFetch(r, "p:"+prov.Name, want, s.Name, "served by token")
+		p.serveSkillOneFor(w, skills, s.Name, "provider", prov.ID)
+		return
+	}
+	if !p.publicKeyOK(r) {
+		logSkillFetch(r, "p:"+prov.Name, want, "", "401: no valid token or public key")
 		httpErr(w, "openai", 401, "public access requires a valid API key")
 		return
 	}
-	p.serveSkillOneFor(w, p.effective("provider", prov.ID, ""), r.PathValue("name"), "provider", prov.ID)
+	if s, ok := nearestSkill(skills, want); ok {
+		p.serveSkillOneFor(w, skills, s.Name, "provider", prov.ID)
+		return
+	}
+	p.serveSkillOneFor(w, skills, want, "provider", prov.ID)
 }
 
 // siblingFiles lists the non-SKILL.md files that live alongside a skill, so the

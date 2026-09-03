@@ -80,8 +80,19 @@ func TestSkillLoadURLAuthorizesItself(t *testing.T) {
 	if rec := get("/e/team/skills/ha-mcp?t="+tok[:31]+"0", nil, ""); rec.Code != 401 {
 		t.Fatalf("wrong token: want 401, got %d", rec.Code)
 	}
-	if rec := get("/e/team/skills/other?t="+tok, nil, ""); rec.Code == 200 {
-		t.Fatal("a token for one skill must not open another")
+	// the token names the skill: a re-typed path ("ha-mpc", "other") still
+	// serves ha-mcp, because models mangle unusual names when they rebuild the URL
+	for _, typo := range []string{"ha-mpc", "other", "HA-MCP"} {
+		if rec := get("/e/team/skills/"+typo+"?t="+tok, nil, ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), "Do the thing") {
+			t.Fatalf("token should resolve the skill despite path %q: %d %s", typo, rec.Code, rec.Body.String())
+		}
+	}
+	// with the key (no token), a near-miss name is tolerated but a different one is not
+	if rec := get("/e/team/skills/ha-mpc", map[string]string{"Authorization": "Bearer cfr_team"}, ""); rec.Code != 200 {
+		t.Fatalf("key-authed near-miss name: want 200, got %d", rec.Code)
+	}
+	if rec := get("/e/team/skills/something-else", map[string]string{"Authorization": "Bearer cfr_team"}, ""); rec.Code != 404 {
+		t.Fatalf("key-authed unrelated name: want 404, got %d", rec.Code)
 	}
 	if rec := get("/e/team/skills/ha-mcp", map[string]string{"Authorization": "Bearer cfr_team"}, ""); rec.Code != 200 {
 		t.Fatalf("endpoint key still works: want 200, got %d", rec.Code)
