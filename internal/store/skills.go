@@ -336,19 +336,57 @@ func (s *Store) ScanSkills(maxDepth int) (int, error) {
 			return nil
 		})
 	}
-	// prune vanished skills belonging to enabled roots
+	// prune vanished skills belonging to enabled roots. An assignment points
+	// at an index row, so a skill that merely moved (folders get reorganised)
+	// used to take its assignments with it: the endpoint's catalog silently
+	// lost the skill. Re-point assignments at another indexed copy of the same
+	// name first — preferring one outside an archive folder — and delete only
+	// when there is nowhere to go.
 	if all, err := s.Skills(); err == nil {
+		byName := map[string][]Skill{}
 		for _, sk := range all {
-			if !present[sk.Path] {
-				if _, statErr := os.Lstat(sk.Path); statErr != nil {
-					s.db.Exec(`DELETE FROM skills WHERE id=?`, sk.ID)
-				}
+			byName[strings.ToLower(sk.Name)] = append(byName[strings.ToLower(sk.Name)], sk)
+		}
+		for _, sk := range all {
+			if present[sk.Path] {
+				continue
 			}
+			if _, statErr := os.Lstat(sk.Path); statErr == nil {
+				continue
+			}
+			if alt, ok := pickSurvivor(byName[strings.ToLower(sk.Name)], sk.ID, present); ok {
+				s.db.Exec(`UPDATE skill_assignments SET skill_id=? WHERE skill_id=?`, alt.ID, sk.ID)
+			}
+			s.db.Exec(`DELETE FROM skills WHERE id=?`, sk.ID)
 		}
 	}
 	var n int
 	s.db.QueryRow(`SELECT COUNT(*) FROM skills`).Scan(&n)
 	return n, nil
+}
+
+// pickSurvivor chooses the indexed copy of a name that should inherit a
+// vanished row's assignments: a present copy outside an archive folder, else
+// any present copy.
+func pickSurvivor(copies []Skill, goneID int64, present map[string]bool) (Skill, bool) {
+	var archived *Skill
+	for i := range copies {
+		c := copies[i]
+		if c.ID == goneID || !present[c.Path] {
+			continue
+		}
+		if strings.Contains(c.Path, string(os.PathSeparator)+"_archive") {
+			if archived == nil {
+				archived = &copies[i]
+			}
+			continue
+		}
+		return c, true
+	}
+	if archived != nil {
+		return *archived, true
+	}
+	return Skill{}, false
 }
 
 func (s *Store) upsertSkill(rootPath string, rootID int64, path string, now int64) {

@@ -97,14 +97,27 @@ func serveSkillList(w http.ResponseWriter, skills []store.Skill, base string, to
 
 // serveSkillOne writes one skill's full SKILL.md (+ a listing of the other files
 // bundled in its folder), if it is among the given assigned skills.
-func serveSkillOne(w http.ResponseWriter, skills []store.Skill, want string) {
+func (p *Proxy) serveSkillOne(w http.ResponseWriter, skills []store.Skill, want string) {
 	want = skillURLName(want)
 	for _, s := range skills {
 		if strings.EqualFold(skillURLName(s.Name), want) {
 			body, err := os.ReadFile(s.Path)
 			if err != nil {
-				httpErr(w, "openai", 404, "skill file unavailable")
-				return
+				// The assigned copy moved since the last rescan (skills get
+				// reorganised; assignments point at index rows). Any other
+				// indexed copy of the same name is the same skill — serve it
+				// rather than fail the lazy-load until someone rescans and
+				// re-assigns by hand.
+				if alt, ok := p.readableSkillNamed(s.Name); ok {
+					s, body, err = alt, nil, nil
+					if body, err = os.ReadFile(alt.Path); err != nil {
+						httpErr(w, "openai", 404, "skill file unavailable")
+						return
+					}
+				} else {
+					httpErr(w, "openai", 404, "skill file unavailable")
+					return
+				}
 			}
 			out := string(body)
 			if extra := siblingFiles(s.Path); extra != "" {
@@ -117,6 +130,36 @@ func serveSkillOne(w http.ResponseWriter, skills []store.Skill, want string) {
 		}
 	}
 	httpErr(w, "openai", 404, "no such skill here")
+}
+
+// readableSkillNamed finds another indexed copy of a skill whose file still
+// exists, preferring copies outside an archive folder.
+func (p *Proxy) readableSkillNamed(name string) (store.Skill, bool) {
+	all, err := p.Store.Skills()
+	if err != nil {
+		return store.Skill{}, false
+	}
+	var archived *store.Skill
+	for i := range all {
+		s := all[i]
+		if !strings.EqualFold(skillURLName(s.Name), skillURLName(name)) {
+			continue
+		}
+		if _, err := os.Stat(s.Path); err != nil {
+			continue
+		}
+		if strings.Contains(s.Path, "/_archive") {
+			if archived == nil {
+				archived = &all[i]
+			}
+			continue
+		}
+		return s, true
+	}
+	if archived != nil {
+		return *archived, true
+	}
+	return store.Skill{}, false
 }
 
 // --- share-endpoint fetch (endpoint-key authed) ---
@@ -134,14 +177,14 @@ func (p *Proxy) handleEndpointSkill(w http.ResponseWriter, r *http.Request) {
 	// a load URL from the catalog authorizes itself; otherwise the endpoint key
 	if ep, found := p.Store.EndpointByName(r.PathValue("endpoint")); found && ep.Enabled &&
 		p.skillTokenOK(r, "e:"+ep.Name, r.PathValue("name")) {
-		serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
+		p.serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
 		return
 	}
 	ep, ok := p.authEndpoint(w, r, "openai")
 	if !ok {
 		return
 	}
-	serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
+	p.serveSkillOne(w, p.Store.SkillsForEndpoint(ep.ID, ""), r.PathValue("name"))
 }
 
 // --- provider-mount fetch (public-key authed) ---
@@ -170,7 +213,7 @@ func (p *Proxy) handleProviderSkill(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, "openai", 401, "public access requires a valid API key")
 		return
 	}
-	serveSkillOne(w, p.Store.SkillsForProvider(prov.ID, ""), r.PathValue("name"))
+	p.serveSkillOne(w, p.Store.SkillsForProvider(prov.ID, ""), r.PathValue("name"))
 }
 
 // siblingFiles lists the non-SKILL.md files that live alongside a skill, so the
