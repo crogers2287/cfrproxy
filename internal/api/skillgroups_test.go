@@ -71,6 +71,14 @@ func TestSkillGroupsAPIRoundTrip(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"hermes":{"calls":9,"sessions":4}`) || !strings.Contains(rec.Body.String(), `"score":9`) {
 		t.Fatalf("usage should be on the index row: %s", rec.Body.String()[:300])
 	}
+	// a save that only knows skill_ids must not wipe the groups
+	rec = do("POST", "/admin/api/skill-assign", `{"kind":"endpoint","id":1,"skill_ids":[]}`)
+	if rec.Code != 200 {
+		t.Fatalf("partial assign: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = do("GET", "/admin/api/skill-assign?kind=endpoint&id=1", ""); !strings.Contains(rec.Body.String(), `"group_ids":[1]`) {
+		t.Fatalf("groups were wiped by a skill-only save: %s", rec.Body.String())
+	}
 	rec = do("DELETE", "/admin/api/skill-groups/1", "")
 	if rec.Code != 200 {
 		t.Fatalf("delete: %d", rec.Code)

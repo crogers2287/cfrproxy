@@ -282,15 +282,23 @@ func (a *API) hSkillAssignSetRich(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	if err := a.Store.SetTargetSkills(body.Kind, body.ID, body.SkillIDs); err != nil {
-		httpErr(w, 500, err.Error())
-		return
+	// A field that is absent leaves that half of the assignment alone: an
+	// older page (or a script) that only knows skill_ids must not wipe the
+	// groups, and vice versa. An explicit empty list still clears.
+	if body.SkillIDs != nil {
+		if err := a.Store.SetTargetSkills(body.Kind, body.ID, body.SkillIDs); err != nil {
+			httpErr(w, 500, err.Error())
+			return
+		}
 	}
-	if err := a.Store.SetTargetGroups(body.Kind, body.ID, body.GroupIDs); err != nil {
-		httpErr(w, 500, err.Error())
-		return
+	if body.GroupIDs != nil {
+		if err := a.Store.SetTargetGroups(body.Kind, body.ID, body.GroupIDs); err != nil {
+			httpErr(w, 500, err.Error())
+			return
+		}
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	eff := a.Store.EffectiveSkillsFor(body.Kind, body.ID, "")
+	writeJSON(w, 200, map[string]any{"ok": true, "effective": len(eff)})
 }
 
 // ---- usage import ----

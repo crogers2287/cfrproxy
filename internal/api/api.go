@@ -75,6 +75,11 @@ func (a *API) basicAuth(next http.Handler) http.Handler {
 			http.Error(w, "forbidden: "+reason, http.StatusForbidden)
 			return
 		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			// every config change lands in the journal with who and what, so
+			// "which client cleared this" is answerable after the fact
+			proxy.Log.Info("admin", "method", r.Method, "path", r.URL.Path, "user", user, "peer", r.RemoteAddr, "ua", r.UserAgent())
+		}
 		next.ServeHTTP(w, r)
 	})
 }
