@@ -6,6 +6,46 @@
 
 ## 2026-09-02
 
+### REQ-096 — WebUI redesign: fluid, mobile-first, and a model picker that shows every model
+
+Source: chat + screenshot (phone, `api.skinnyc.pro/admin/#`, Edit ccbudget-pro dialog): "doesn't show
+all the models to select. redesign the UI in a more fluid imp please. needs to be prettier and more
+user friendly … then entire UI".
+
+**Ask.** (1) The provider dialog's default-model picker lists only the models that pass the
+provider's `models_filter` (9 of 67), so a default outside the filter cannot be chosen from the
+list. (2) Redesign the whole admin UI: fluid/responsive (it is used from a phone), prettier, more
+user-friendly, same functionality.
+
+#### What changed
+- **Model picker.** `POST /admin/api/providers/scan-models` now returns `all` (the whole upstream
+  catalog) alongside the filtered `models`; the dialog shows a searchable list of every model, sorted
+  with the ones that pass the filter first and tagged *in filter* / *outside filter*, re-labelled live
+  as the filter field is edited. Typing narrows across the full catalog; a value that already names
+  a model keeps the whole list visible with that model highlighted.
+- **Whole UI rebuilt** in `internal/api/webui/index.html` (markup + stylesheet; the script kept its
+  function set and every element id, so every API call path is unchanged): sidebar on wide screens,
+  brand bar + scrolling tab rail on phones; each concern is a panel with a head row and a body; long
+  explanations fold into "how it works" disclosures; dialogs become bottom sheets on phones with
+  grouped fieldsets (Connection / Models / Routing / Docs); a `provider / model` route chip is used
+  everywhere a model is named; provider cards get an enabled switch, rank, facts and a truncated
+  filter; secondary trace/table columns hide on phones (tap a row for the full record); the sidebar
+  carries a live pulse fed by the trace stream (`live · N/min`); toast, focus rings, reduced-motion
+  and 44 px tap targets throughout. Delete handlers look the name up by id instead of inlining it
+  into an onclick string (a name with a quote used to break the button).
+- Verified with headless Chromium at 390×844 and 1280×860 against a copy of the production DB
+  (`/tmp/.../uidata`, port 8499): no console errors on any tab; provider dialog after a real scan of
+  ccbudget-pro shows *67 models on this upstream · 9 pass the filter* with all 67 listed.
+
+#### Deploy + verify
+- `71b8459` (redesign + picker) and `87377ed` (skill table) via `make deploy`; `/api/version` reports the
+  new commit, `/admin/` 401 unauthenticated, `go vet` + api/proxy tests green.
+- Chad's own check: open `https://api.skinnyc.pro/admin/#providers` on the phone, Edit ccbudget-pro, tap
+  *Scan models* — the list should read *67 models on this upstream · 9 pass the filter* with all 67
+  offered.
+
+**REQ-096 status: COMPLETE.**
+
 ### REQ-095 — Tier 2 of the audit: data-plane trust model, CSRF guard, credential cache
 
 Source: chat ("do it") after REQ-094 listed Tier 2 as deferred; trust model already decided
