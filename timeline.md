@@ -6,6 +6,31 @@
 
 ## 2026-09-03
 
+### REQ-101 — Skill lazy-load 401 when the model re-types the skill name
+
+Source: chat + screenshot: `Read https://api.skinnyc.pro/e/w6800-test/skills/cflfl-email?t=81b0…`
+→ 401; "skill injection is working, but the actual skill recall is failing via the api" / "how can
+an llm mangle the name?"
+
+**Finding.** The token in the URL is `cfrfl-email`'s (HMAC verified); the model copied the token
+intact but re-typed the name as `cflfl-email` when it rebuilt the URL, so the token no longer
+validated against the path. Also found: `w6800-test` had **no** assignments left at all (both
+tables empty); the new assign endpoint treated an absent `group_ids` as "clear groups", so a save
+from a page that only sends `skill_ids` wiped them. No audit trail existed for admin writes.
+
+**Fix.** (1) The token identifies the skill: handlers resolve by token across the target's
+effective skills and ignore the path name; key-authed fetches tolerate a name within edit
+distance 2; every skill fetch is logged (`msg=skill requested= served= outcome=`).
+(2) Absent fields in a skill-assign POST leave that half unchanged. (3) Every non-GET admin
+request is logged with user, peer and user-agent. (4) Restored w6800-test: groups grant-lending +
+haxor-homelab, direct ha-mcp (12 skills).
+
+**Verify.** The exact URL from the screenshot → 200 through the public proxy, journal:
+`requested=cflfl-email served=cfrfl-email outcome="served by token (name mismatch)"`.
+Tests: `TestSkillLoadURLAuthorizesItself` (typo'd paths), `TestSkillGroupsAPIRoundTrip` (partial save).
+
+**REQ-101 status: COMPLETE.**
+
 ### REQ-099 — kvx_restore fires for unpooled local models too (new conversation by fingerprint)
 
 Source: coordinator follow-up after the live check of REQ-098: `POST /v1/chat/completions
