@@ -47,64 +47,60 @@ unpooled (tiel-kvx-w6800, qwen38-flash-next-kvx, qwen38-27b-3090-agg).
 
 **REQ-099 status: COMPLETE (proxy side).**
 
-### REQ-098 — KV-Rosetta request-time restore before a cold prefill (`kvx_restore`)
+### REQ-098 — Skill usage across all agents; skill groups + a more capable Skills tab
 
-Source: agent handoff (KV-Rosetta session) — kvxd only restores an attachment into a slot that is
-idle AND empty; after a model's first request no slot is ever empty again, so on a busy fleet a NEW
-conversation never gets a restore and llama.cpp prefills the whole prompt cold (haxor's 30,335- and
-7,399-token first requests both `cached: —`). Fix at request time: ask kvxd to restore into the
-slot llama.cpp is about to evict anyway, then forward.
+Source: chat ("use aise, see if you can figure out, across all my agents what my most used skills
+are, hermes/claude/codex etc. then lets build out skill groups and things for the skills tab. lets
+make it more user friendly, more capable, and more robust. dont half ass it.")
 
-**Contract (kvxd side built in parallel).** `POST {url}/v1/restore-for-prompt`
-`{"model","messages","tools"}` → `{"restored":true,"covers_tokens","slot",…}` or
-`{"restored":false,"reason"}`.
+#### Usage across agents (mined 2026-09-03; Hermes counts halved because each call is logged twice)
 
-#### What changed
-- `internal/proxy/kvxrestore.go` — the `kvx_restore` setting (`enabled` default **false**, `url`
-  default `http://127.0.0.1:8431`, `timeout_ms` default 3000, `provider` default `fred`), the gate
-  `kvxRestoreWanted`, and the synchronous call `kvxRestore` that never returns an error, only a
-  trace note: `kvx→restored 29,601 (slot 1)` / `kvx→miss: <reason>` / `kvx→timeout` /
-  `kvx→error: <transport or non-200>`.
-- `internal/proxy/proxy.go` — hook in the candidate loop right after `outBody` is final (after
-  passthrough/translate + transform rules), so kvxd gets the messages and tools byte-for-byte as
-  forwarded. Fires only when ALL hold: setting enabled; candidate is the primary (not failover, not
-  a pool sibling) and its provider name is the configured local one (`fred`); outbound dialect is
-  `openai`; the affinity pool routed the request with `why` ∈ {`cold/slots`, `cold/inflight`,
-  `prefix`} (never `conversation`, never an unpooled model); the request has a system prompt and/or
-  tools.
-- `internal/api/api.go` — `GET/PUT /admin/api/kvx-restore` mirrors `provider-fallback` so the
-  operator can flip it without sqlite.
+| skill | total | Hermes | Claude Code | Codex |
+|---|---|---|---|---|
+| paperclip (auto-invoked by a Claude Code hook) | 165 | 0 | 165 | 0 |
+| ponytail (not in the cfrproxy index) | 77 | 0 | 0 | 77 |
+| hermes-agent | 76 | 74 | 0 | 2 |
+| o365-email | 72 | 57 | 15 | 0 |
+| accela-permits | 59 | 56 | 0 | 3 |
+| ai-session-search (not indexed) | 59 | 0 | 1 | 58 |
+| gbrain-operations | 50 | 48 | 1 | 1 |
+| agent-reach | 37 | 0 | 4 | 33 |
+| brain-ops | 36 | 36 | 0 | 0 |
+| home-system-admin-local | 36 | 35 | 0 | 1 |
+| cfrfl-email | 33 | 31 | 2 | 0 |
+| mempalace | 31 | 31 | 0 | 0 |
+| context-restore | 30 | 0 | 0 | 30 |
+| deepseek-tui-ollama | 29 | 29 | 0 | 0 |
+| local-vision / obsidian / caveman / claude-code / prompt-master | 26–28 each | | | |
 
-#### Items
+219 distinct skills seen (153 Hermes, 60 Claude Code, 40 Codex, 2 Prime); 152 are in the cfrproxy
+index. Per Hermes profile: ash 466 calls (o365-email, accela-permits, gbrain-operations), haxor 261
+(home-system-admin-local, deepseek-tui-ollama, mempalace, network-device-discovery), grant 225
+(cfrfl-email, brain-ops, cfr-pb, loan-condition-clearance), hermes 89, winston 36, canna 9.
+Sources: Hermes `skill_view` tool calls in `~/.hermes/profiles/*/sessions/*.jsonl`; Claude Code
+`Skill` tool calls + `SKILL.md` reads and Codex/Prime `SKILL.md` reads via `aise db query`.
+Reproducible with `scripts/skill_usage_mine.py` (writes `~/.cfrproxy/skill-usage.json`, imports).
+
+#### What was built
 
 | Item | Status | Evidence |
 |---|---|---|
-| called for new conversations only (cold/*, prefix), not for `conversation` | ✅ | `TestKVXRestoreOnlyForNewConversations` (1 call cold, 0 on turn 2, 1 more on a prefix-routed new conversation; kvxd body == upstream body) |
-| not called for non-local providers | ✅ | `TestKVXRestoreSkipsNonLocalProvider` |
-| nothing to restore → no call | ✅ | `TestKVXRestoreSkipsWithoutPrefix` |
-| timeout / refused never fails or delays past the timeout | ✅ | `TestKVXRestoreTimeoutDoesNotFailRequest` (80 ms budget, 82 ms request), `TestKVXRestoreUnreachableDoesNotFailRequest` |
-| trace note for restored / miss / timeout | ✅ | same tests + `TestKVXRestoreMissNote` |
-| off by default = zero calls | ✅ | `TestKVXRestoreDisabledByDefault` (unset, and url-only without `enabled`) |
+| skill groups by name (`skill_groups`, `skill_group_members`, `skill_group_assignments`); assignments expand groups to the best readable copy, missing members reported | ✅ | `TestGroupsExpandByNameAndReportMissing`, `TestSkillGroupsAPIRoundTrip` |
+| load counters per skill per target (`skill_loads`) from the lazy-load handler; external usage per source (`skill_usage_external`) via `cfrproxy skills import-usage` | ✅ | `TestSkillLoadsAndExternalUsage` |
+| index API returns `exists`, `copies`, `groups`, `loads`, `usage`, `score`; filters `q/root/used/missing/group` | ✅ | `/admin/api/skills` |
+| group API (list/create/update/delete/members), `skill-targets` summary, assignment API with `group_ids`, expanded `effective` list and `catalog` preview | ✅ | `TestSkillGroupsAPIRoundTrip` |
+| `cfrproxy skills list|groups|group set|group rm|rescan|import-usage|assign` (no admin password needed) | ✅ | seeded production with it |
+| Skills tab rebuilt: Index (usage-ranked, filters, one-per-name, bulk select → add to group / new group), Groups (cards, colour, member picker, missing members, assigned-to, quick assign), Assignments (target cards, group toggles, skill picker, effective list, catalog preview) | ✅ | screenshots at 1280 and 390 px, no console errors |
+| seeded 6 groups from the usage data: hermes-core (10), ash-office (11), grant-lending (5), haxor-homelab (7), coding-agents (15), research-web (5); usage imported for 4 sources | ✅ | `cfrproxy skills groups` |
+| fixed on the way: a nested query while a cursor was open deadlocked the single-connection store (`TargetsUsingGroup`); group listing resolved members with one index read per member (2.6 s → ms) | ✅ | |
 
-#### Enable (operator)
-```
-curl -s -u admin:… -X PUT localhost:8420/admin/api/kvx-restore -d '{"enabled":true}'
-# or: sqlite3 ~/.cfrproxy/cfrproxy.db "insert or replace into settings(k,v) values('kvx_restore','{\"enabled\":true}')"
-```
-Then watch `note` on traces for `kvx→…`.
+Not changed: no production assignments were altered (w6800-test still carries only `ha-mcp`);
+the groups are ready to assign from the Assignments view or `cfrproxy skills assign`.
 
 #### Deploy + verify
-- `go vet ./... && go test ./...` green (proxy package 33.7 s); the 8 `TestKVXRestore*` tests pass
-  in 0.37 s.
-- `4fcdfe2` via `make deploy`: rollback copy `cfrproxy.bak-20260903-163600`, `/api/version` →
-  `{"built":"2026-09-03T20:36:36Z","commit":"4fcdfe2","version":"4fcdfe2"}`, MainPID 1140471 active.
-- Live DB: `select count(*) from settings where k='kvx_restore'` → 0 (off); `/admin/api/kvx-restore`
-  → 401 without auth; latest traces `fred/tiel-kvx-w6800 200` with an empty note — no kvxd call is
-  made until the operator enables the setting. llama-swap untouched.
+- `504a126` + `57530b7` via `make deploy`; `go vet && go test ./...` green (store 3 new tests, api 1, proxy 1).
 
-**REQ-098 status: COMPLETE (proxy side; live restore effect depends on kvxd shipping the endpoint).**
-
-## 2026-09-02
+**REQ-098 status: COMPLETE.**
 
 ### REQ-097 — Skill lazy-load 401 from a harness that cannot send the endpoint key
 
