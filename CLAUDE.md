@@ -18,6 +18,8 @@ make deploy     # test → dated rollback copy → build (temp+rename) → ~/.lo
 make rollback   # newest cfrproxy.bak-* back into place + restart
 make health     # /health 200, /admin/ 401, prints /api/version
 cfrproxy version
+cfrproxy skills list --used | groups | group set NAME --members a,b | assign endpoint NAME --groups g
+python3 scripts/skill_usage_mine.py     # re-mine skill usage from Hermes/Claude/Codex logs and import it
 ```
 - **Never** `go build -o cfrproxy .` while the service runs: it truncates the live executable
   (INCIDENT-002). `go build ./...` writes **no** binary at all, so it deploys nothing.

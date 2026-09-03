@@ -94,6 +94,7 @@ You can also **map** fixed harness names (`cfrproxy map 'claude-sonnet*' openrou
 | [docs/caching.md](docs/caching.md) | Sticky routes, prefix capture + warmup, the cache log |
 | [docs/pools.md](docs/pools.md) | One logical model over several instances; affinity routing |
 | [docs/caveman.md](docs/caveman.md) | Deterministic tool-result compression |
+| [docs/skills.md](docs/skills.md) | Skill index, usage mining, groups, lazy-load catalog |
 | [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md) | Optional: wiring cfrproxy into the Hermes agent platform |
 
 ## CLI reference
