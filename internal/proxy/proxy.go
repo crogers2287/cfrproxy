@@ -735,6 +735,18 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			}
 			outBody = transform.Apply(outBody, reqRules)
 		}
+		// KV-Rosetta request-time restore (kvxrestore.go). A NEW conversation
+		// on the local llama-swap pool is about to make llama.cpp evict an LRU
+		// slot and prefill cold; ask kvxd to restore the best attachment into
+		// that slot first. Synchronous with a hard timeout, and the request
+		// goes upstream whatever the answer. Hooked HERE, after outBody is
+		// final, so kvxd sees the messages and tools byte-for-byte as they
+		// are forwarded (passthrough or translated, docs/skills injected,
+		// caveman applied, transform rules run). Only the OpenAI dialect is
+		// parsed — llama-swap speaks nothing else.
+		if kcfg := p.KVXRestoreConfig(); otype == "openai" && kvxRestoreWanted(kcfg, prov, c, pooled, creq.System, len(creq.Tools)) {
+			tr.Note = strings.TrimSpace(tr.Note + " " + kvxRestore(r.Context(), kcfg, c.model, outBody))
+		}
 		// maxAttempts is 2 (one transient retry). Dropping a provider-rejected
 		// parameter buys one extra attempt, so the recovery never eats the
 		// transient budget.

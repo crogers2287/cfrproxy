@@ -202,6 +202,14 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/provider-fallback", func(w http.ResponseWriter, r *http.Request) {
 		settingJSONSet(a, w, r, "provider_fallback")
 	})
+	// KV-Rosetta request-time restore (internal/proxy/kvxrestore.go). Off by
+	// default; the operator flips it on with {"enabled":true}.
+	inner.HandleFunc("GET /admin/api/kvx-restore", func(w http.ResponseWriter, r *http.Request) {
+		settingJSON(a, w, "kvx_restore", `{"enabled":false,"url":"http://127.0.0.1:8431","timeout_ms":3000,"provider":"fred"}`)
+	})
+	inner.HandleFunc("PUT /admin/api/kvx-restore", func(w http.ResponseWriter, r *http.Request) {
+		settingJSONSet(a, w, r, "kvx_restore")
+	})
 	inner.HandleFunc("GET /admin/api/modelmap", a.hModelMapGet)
 	inner.HandleFunc("PUT /admin/api/modelmap", a.hModelMapPut)
 	inner.HandleFunc("GET /admin/api/stats", a.hStats)
