@@ -53,8 +53,13 @@ curl -s -u admin:… -X PUT localhost:8420/admin/api/kvx-restore -d '{"enabled":
 Then watch `note` on traces for `kvx→…`.
 
 #### Deploy + verify
-- `go vet ./... && go test ./...` green (proxy package 33.7 s). Deployed with `make deploy`
-  (setting off → behaviour-neutral; see stamp below).
+- `go vet ./... && go test ./...` green (proxy package 33.7 s); the 8 `TestKVXRestore*` tests pass
+  in 0.37 s.
+- `4fcdfe2` via `make deploy`: rollback copy `cfrproxy.bak-20260903-163600`, `/api/version` →
+  `{"built":"2026-09-03T20:36:36Z","commit":"4fcdfe2","version":"4fcdfe2"}`, MainPID 1140471 active.
+- Live DB: `select count(*) from settings where k='kvx_restore'` → 0 (off); `/admin/api/kvx-restore`
+  → 401 without auth; latest traces `fred/tiel-kvx-w6800 200` with an empty note — no kvxd call is
+  made until the operator enables the setting. llama-swap untouched.
 
 **REQ-098 status: COMPLETE (proxy side; live restore effect depends on kvxd shipping the endpoint).**
 
