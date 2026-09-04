@@ -81,6 +81,7 @@ main>section{display:flex;flex-direction:column;gap:18px;animation:rise .28s var
 .panel-body{padding:16px 18px}
 .panel-body>*+*{margin-top:12px}
 .panel.quiet{background:transparent;border-style:dashed}
+.panel.flash{border-color:var(--brand);transition:border-color .3s}
 h2{font-size:15px;font-weight:650;letter-spacing:-.01em;color:var(--text)}
 h3{font-size:15px;font-weight:650;letter-spacing:-.01em}
 
@@ -127,6 +128,28 @@ details.help p+p{margin-top:6px}
 .card .reorder{display:none;gap:4px}
 .card .test-out{font-size:12px;color:var(--muted);min-height:0}
 .card .test-out:empty{display:none}
+
+
+/* ---- routing tab: request path strip, tier columns, ordered-list editor ---- */
+.path{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.path .stage{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-m);background:var(--raised);text-decoration:none;color:var(--text);min-width:0}
+.path .stage b{font-size:13px} .path .stage span{font-size:12px;color:var(--muted);line-height:1.45} .path .stage span b{font-size:12px;color:var(--text-2);font-weight:600}
+@media (hover:hover){.path .stage:hover{border-color:var(--brand)}}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.settings-grid .field{margin-top:0}
+.tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(400px,100%),1fr));gap:12px}
+.tier{border:1px solid var(--line);border-radius:var(--r-m);padding:12px;background:var(--ink-2);display:flex;flex-direction:column;gap:8px;min-width:0}
+.tier h4{font-size:13px;font-weight:650;margin:0}
+.tier .desc{font-size:12px;color:var(--muted);line-height:1.45}
+.tier .now{font-size:12px;color:var(--text-2);min-height:1.2em} .tier .now code{color:var(--brand-2)} .tier .now:empty{display:none}
+.olrow{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto auto;grid-template-areas:"n input up down del" ". verdict up down del";gap:2px 4px;align-items:center;margin-bottom:8px;min-width:0}
+.olrow .n{grid-area:n;font-family:var(--mono);font-size:11px;color:var(--muted);text-align:right;align-self:start;padding-top:6px}
+.olrow input{grid-area:input;min-width:0;font-family:var(--mono);font-size:11.5px;padding:5px 8px}
+.olrow .b{padding:2px 6px;font-size:12px;align-self:start}
+.olrow .b[title="move up"]{grid-area:up} .olrow .b[title="move down"]{grid-area:down} .olrow .b[title="remove"]{grid-area:del}
+.olrow .pill{grid-area:verdict;justify-self:start;font-size:10.5px;padding:1px 7px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.olrow .pill:empty{display:none}
+.olist .empty-hint{font-size:12px;color:var(--muted);margin-bottom:6px}
 
 /* ---- controls ---- */
 button.b,.b{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--raised);border:1px solid var(--line-2);color:var(--text);
@@ -360,29 +383,100 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
 <main>
 
 <section id="tab-providers">
-  <div class="page-title"><h1>Routing</h1><p>Where each model name goes, and what happens when it can't.</p></div>
+  <div class="page-title"><h1>Routing</h1><p>What happens to a request between the model name a harness sends and the provider that answers it.</p></div>
 
   <div class="panel">
-    <div class="panel-head"><h2>Launch a harness</h2><div class="spacer"></div><select id="launch-model" onchange="renderLaunch()" style="width:auto;min-width:200px;max-width:100%"></select></div>
+    <div class="panel-head"><h2>The request path</h2><span class="hint">click a stage to jump to its settings</span></div>
     <div class="panel-body">
-      <p class="hint">Copy a command to start a coding agent pointed at cfrproxy with this model. The agent can switch models later from its own picker.</p>
-      <div id="launch-cmds"></div>
-      <details class="help"><summary>Manual setup (env vars, no launcher)</summary><div id="launch-env" style="margin-top:10px"></div></details>
+      <div class="path">
+        <a class="stage" href="#providers" onclick="return jumpTo('sec-names')"><b>1 · Name</b><span>the <b>model map</b> rewrites names harnesses insist on (<code>claude-sonnet*</code> → anything)</span></a>
+        <a class="stage" href="#providers" onclick="return jumpTo('sec-smart')"><b>2 · Virtual model?</b><span><code>auto</code> lets the <b>smart router</b> pick a real model per request; <code>auto:NAME</code> and <code>fusion:NAME</code> are your named setups</span></a>
+        <a class="stage" href="#providers" onclick="return jumpTo('sec-providers')"><b>3 · Provider</b><span><code>provider/model</code> goes straight there; a bare name goes to the first <b>provider</b> by priority that serves it</span></a>
+        <a class="stage" href="#providers" onclick="return jumpTo('sec-fallback')"><b>4 · Can't serve?</b><span>quota, overload, overflow or an error → the <b>fallback chain</b> answers instead</span></a>
+      </div>
+      <p class="hint">Every name a harness can send — real models, <code>auto</code>, <code>auto:NAME</code>, <code>fusion</code>, <code>fusion:NAME</code> — is listed in <code>/v1/models</code>. To see exactly where a name lands, use the <b>Test a request</b> box below or <code>cfrproxy explain &lt;model&gt;</code> in a shell.</p>
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="sec-smart">
+    <div class="panel-head"><h2>Smart router — <code>auto</code></h2><span id="ar-state" class="pill"></span><div class="spacer"></div><button class="b ghost" onclick="refreshTierStatus()">Refresh status</button><button class="b primary" onclick="saveAutoRoute()">Save</button></div>
+    <div class="panel-body">
+      <details class="help" open><summary>How a request addressed to <code>auto</code> is placed</summary>
+        <p><b>1. Grade the request.</b> The classifier model answers one word — <b>routine</b>, <b>careful</b> or <b>hard</b>. cfrproxy measures the rest itself: prompt size, conversation depth, tool count, whether an image is attached. Nothing in that profile names a model, so it never goes stale when your models change.</p>
+        <p><b>2. Walk the tier's list, in the order you wrote it.</b> Put local models first. Each entry is checked against live facts: is it served, is it loaded in llama-swap (<b>warm</b>), does it have a free slot, is its context window big enough, can it see images, and how often has it failed in the last 3 days. Entries can be <code>provider/model</code>, a pool name, or a glob like <code>fred/*flash-next*</code> — a renamed or unloaded model simply drops out instead of breaking the route.</p>
+        <p><b>3. First entry that passes wins.</b> A model that is merely <b>busy</b>, <b>cold</b> or <b>unhealthy</b> is kept as a last resort in that order — loading a cold model costs minutes, so a warm cloud model beats it. A conversation stays on the model it started on (<b>sticky</b>) until that model can no longer take it, e.g. it outgrew the local window.</p>
+        <p>The chosen route shows in Live traces as <code>auto→careful→fred/ornith</code>. Every decision is also appended to <code>~/.cfrproxy/route-decisions.jsonl</code>.</p></details>
+
+      <div class="settings-grid">
+        <div class="field"><label>Router</label>
+          <div class="check" style="margin-top:4px"><input type="checkbox" id="ar-enabled"><span><code>auto</code> is enabled</span></div>
+          <div class="check"><input type="checkbox" id="ar-smart-enabled"><span>Smart mode <span>(off = legacy bucket table below)</span></span></div></div>
+        <div class="field"><label>Classifier model <span class="sub">— grades the tier; small and fast, called once per conversation</span></label>
+          <div class="pair"><select id="ar-classifier-p" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m"></select></div>
+          <select id="ar-smart-classify" style="margin-top:6px"><option value="">Ask the classifier (heuristic if it fails)</option><option value="heuristic">Heuristic only — never calls a model</option></select></div>
+        <div class="field"><label>Local max tokens <span class="sub">— above this prompt size local models are skipped; blank = 150000</span></label>
+          <input type="number" id="ar-smart-maxtok" min="1000" step="1000" placeholder="150000"></div>
+      </div>
+
+      <div class="tiers">
+        <div class="tier">
+          <h4>Routine</h4><div class="desc">Short answers, small edits, lookups, simple tool calls, continuing a mechanical task. Most traffic.</div>
+          <div class="now" id="ar-now-routine"></div>
+          <div id="ar-tier-routine" class="olist"></div>
+        </div>
+        <div class="tier">
+          <h4>Careful</h4><div class="desc">Multi-file changes, debugging with evidence, moderate reasoning — a mistake costs rework.</div>
+          <div class="now" id="ar-now-careful"></div>
+          <div id="ar-tier-careful" class="olist"></div>
+        </div>
+        <div class="tier">
+          <h4>Hard</h4><div class="desc">Architecture and design decisions, deep debugging of an unknown cause, proofs, security review, long-horizon planning.</div>
+          <div class="now" id="ar-now-hard"></div>
+          <div id="ar-tier-hard" class="olist"></div>
+        </div>
+      </div>
+      <p class="hint">Type <code>provider/model</code>, a pool name, or a glob; the list suggests everything in the catalog. Order is preference. The pill next to each entry is its verdict for a typical request of that tier right now (<b>chosen</b>, viable, busy, cold, unhealthy, blind, too small…).</p>
+
+      <details class="help"><summary>Vision override, planner, sticky routing</summary>
+        <div class="field"><label>Vision list <span class="sub">— optional; replaces the tier list when the request carries an image. Leave empty to filter the tier list by vision capability instead.</span></label>
+          <div id="ar-tier-vision" class="olist"></div></div>
+        <div class="field"><label>Planner model <span class="sub">— optional strong reasoner; enables <code>auto-plan</code>, which writes a short briefing before routing</span></label>
+          <div class="pair"><select id="ar-planner-p" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m"></select></div></div>
+        <div class="check"><input type="checkbox" id="ar-sticky"><span>Sticky routing <span>— keep a conversation on the model it started on while it still fits (recommended; keeps prompt caches warm)</span></span></div>
+        <div class="field"><label>Sticky window <span class="sub">— minutes a conversation stays pinned; blank = 30</span></label>
+          <input type="number" id="ar-sticky-ttl" min="1" max="1440" placeholder="30" style="max-width:160px"></div>
+      </details>
+
+      <details class="help"><summary>Legacy bucket routes <span class="sub">— used only when smart mode is off; <code>default</code> is the last resort either way</span></summary>
+        <p>The old router asked the classifier for a task bucket (code, reasoning, quick, long, vision) and sent every request in that bucket to one fixed model. It knows nothing about what is loaded or how big the prompt is, which is why smart mode replaced it.</p>
+        <div class="table-wrap"><table id="artable"><thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table></div></details>
+
+      <fieldset class="group"><legend>Test a request</legend>
+        <p class="hint" style="margin:0 0 8px">Dry run against the live registry — nothing is sent upstream. Pick a tier, or leave it on "ask classifier" and paste a message to see how it would be graded.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="ar-test-tier" style="max-width:150px"><option value="routine">routine</option><option value="careful">careful</option><option value="hard">hard</option><option value="">ask classifier</option></select>
+          <input type="number" id="ar-test-tokens" placeholder="tokens" value="8000" style="max-width:120px" title="estimated prompt tokens">
+          <input type="number" id="ar-test-tools" placeholder="tools" value="10" style="max-width:100px" title="tools attached">
+          <label class="check" style="margin:0"><input type="checkbox" id="ar-test-image"><span>image</span></label>
+          <input type="text" id="ar-test-text" placeholder="last user message (used by 'ask classifier')" style="flex:1;min-width:200px">
+          <button class="b" onclick="testAutoRoute()">Test</button>
+        </div>
+        <div id="ar-test-out" style="margin-top:10px"></div></fieldset>
+    </div>
+  </div>
+
+  <div class="panel" id="sec-providers">
     <div class="panel-head"><h2>Providers</h2><span class="pill" id="prov-count"></span><div class="spacer"></div><button class="b primary" onclick="openProviderDialog()">+ Add provider</button></div>
     <div class="panel-body">
-      <details class="help"><summary>How priority works</summary><p>Drag cards (or use ↑ ↓ on a phone) to set routing priority. The first enabled provider handles bare model names; address one directly with <code>provider-name/model</code>. Use <code>cfrproxy explain &lt;model&gt;</code> to see exactly where a name would land.</p></details>
+      <details class="help"><summary>Where requests actually go, and how priority works</summary><p>A provider is one upstream API: a local llama-swap or Ollama, a cloud key, or a subscription bridge. Address one directly with <code>provider-name/model</code>. A bare model name goes to the first <b>enabled</b> provider by priority that lists it (drag cards, or use ↑ ↓ on a phone); a name nobody lists goes to the top provider's default model. Each card shows its default model, aliases, pinned models, context override and thinking level. <b>Test</b> sends a one-token request.</p></details>
       <div id="cards" class="grid"></div>
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head"><h2>Model map</h2></div>
+  <div class="panel" id="sec-names">
+    <div class="panel-head"><h2>Model map</h2><span class="hint">stage 1 — rename before routing</span></div>
     <div class="panel-body">
-      <details class="help"><summary>Rewrite the names harnesses insist on</summary><p>Map fixed harness model names to any provider/model — e.g. <code>claude-opus*</code>, <code>claude-sonnet*</code>, <code>claude-haiku*</code> so Claude Code's built-in presets become switchable cfrproxy slots. Patterns are an exact name or a trailing <code>*</code>. Unmapped unknown names route to the top provider's default model.</p></details>
+      <details class="help"><summary>Rewrite the names harnesses insist on</summary><p>Some harnesses hard-code model names. Map those names to any provider/model — e.g. <code>claude-opus*</code>, <code>claude-sonnet*</code>, <code>claude-haiku*</code> so Claude Code's built-in presets become switchable slots, or <code>gpt-4o</code> → <code>auto</code> so an old tool gets the smart router. Patterns are an exact name or a trailing <code>*</code>. The rewrite happens before anything else on this page.</p></details>
       <div class="table-wrap"><table id="maptable">
         <thead><tr><th>Harness name / pattern</th><th>→ provider/model</th><th></th></tr></thead>
         <tbody></tbody>
@@ -396,93 +490,46 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head"><h2>Auto fallback chain</h2><span id="gf-state" class="pill"></span></div>
+  <div class="panel" id="sec-fallback">
+    <div class="panel-head"><h2>Fallback chain</h2><span id="gf-state" class="pill"></span><div class="spacer"></div><button class="b primary" onclick="saveGlobalFallback()">Save</button></div>
     <div class="panel-body">
-      <details class="help"><summary>The safety net for every model</summary><p>If the model a harness asked for can't serve — quota exhausted, rate limited, overloaded, unreachable, or the prompt overflows its context — the request continues down this list instead of failing. Order matters: the first target that answers wins, and the reply carries a ⚠️ notice saying what was skipped. Up to 5 targets are tried per request.</p></details>
+      <details class="help"><summary>The safety net for every model, stage 4</summary><p>If the model a request resolved to can't serve — quota exhausted, rate limited, overloaded, unreachable, or the prompt overflows its context — the request continues down this list instead of failing. Order matters: the first target that answers wins, and the reply carries a ⚠️ notice saying what was skipped. Up to 5 targets are tried. This applies to <em>every</em> route, including what the smart router picked. Share endpoints can opt out ("disable fallback") so a key you hand out cannot spend on providers its owner was never granted.</p></details>
       <div class="check"><input type="checkbox" id="gf-enabled" onchange="renderGF()"><span>Enabled</span></div>
-      <div class="check"><input type="checkbox" id="pf-enabled"><span title="Each provider can name its own fallback in its settings. That hop runs BEFORE this chain and is invisible here, so it is off by default: a local provider going down would otherwise quietly bill whatever its own fallback names.">Also honour each provider's own <code>fallback</code> field <span>(off by default; runs before this chain)</span></span></div>
-      <div id="gf-list"></div>
-      <div class="toolbar">
-        <button class="b" onclick="gfAdd()">+ Add target</button>
-        <button class="b primary" onclick="saveGlobalFallback()">Save fallback chain</button>
-      </div>
+      <div class="check"><input type="checkbox" id="pf-enabled"><span title="Each provider can name its own fallback in its settings. That hop runs BEFORE this chain and is invisible here, so it is off by default: a local provider going down would otherwise quietly bill whatever its own fallback names.">Also honour each provider's own <code>fallback</code> field <span>(off by default; runs before this chain and is not shown here)</span></span></div>
+      <div id="gf-list" class="olist"></div>
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head"><h2>Auto router</h2><span id="ar-state" class="pill"></span></div>
+  <div class="panel" id="sec-named">
+    <div class="panel-head"><h2>Named routers — <code>auto:NAME</code></h2><div class="spacer"></div><button class="b primary" onclick="openRouterDialog()">+ New router</button></div>
     <div class="panel-body">
-      <details class="help"><summary>Send <code>auto</code> and let a classifier pick</summary><p>A small classifier model buckets each request (code, reasoning, quick, long, vision) and delegates to the model you map per task. The chosen route shows in Live traces. <b>Sticky routing</b> keeps a conversation on the model it was first routed to: prompt caches are per model, so re-classifying every turn can land turn 2 on a different model with a cold prefix. Sticky reuse shows as <code>·sticky</code>.</p></details>
-      <div class="check"><input type="checkbox" id="ar-enabled"><span>Enabled</span></div>
-      <div class="field"><label>Classifier model <span class="sub">— small and fast</span></label>
-        <div class="pair"><select id="ar-classifier-p" onchange="fillModelSel('ar-classifier')"></select><select id="ar-classifier-m"></select></div></div>
-      <div class="field"><label>Planner model <span class="sub">— a strong reasoner; enables <code>auto-plan</code></span></label>
-        <div class="pair"><select id="ar-planner-p" onchange="fillModelSel('ar-planner')"></select><select id="ar-planner-m"></select></div></div>
-      <div class="check"><input type="checkbox" id="ar-sticky"><span>Sticky routing <span>— keep a conversation on the model it was first routed to (recommended)</span></span></div>
-      <div class="field"><label>Sticky window <span class="sub">— minutes a conversation stays pinned; blank = 30</span></label>
-        <input type="number" id="ar-sticky-ttl" min="1" max="1440" placeholder="30" style="max-width:160px"></div>
-      <div class="field"><label>Classic routes per task bucket <span class="sub">— with smart mode on, only <code>default</code> is used (last resort)</span></label>
-        <div class="table-wrap"><table id="artable"><thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table></div></div>
-
-      <div class="panel-head" style="margin-top:22px;padding:0"><h2 style="font-size:15px">Smart mode</h2><span id="ar-smart-state" class="pill"></span></div>
-      <details class="help"><summary>Profile → live registry → local-first pick</summary><p>The classifier grades each request <b>routine / careful / hard</b>; cfrproxy measures tokens, depth, tools and images itself. The tier's list is walked <b>in the order you write it</b> (put local models first) and every entry is checked against live facts: served, loaded in llama-swap (warm), free slots, context window, vision, and recent failure rate. The first entry that passes wins; busy, cold or unhealthy models are last resorts. Entries are <code>provider/model</code>, a pool name, or a glob like <code>fred/*flash-next*</code> — so a renamed or unloaded local model just drops out instead of breaking the route. Use <b>Test a request</b> below to see exactly what would be picked and why.</p></details>
-      <div class="check"><input type="checkbox" id="ar-smart-enabled"><span>Smart routing enabled</span></div>
-      <div class="pair">
-        <div class="field"><label>Local max tokens <span class="sub">— above this, local models are skipped; blank = 150000</span></label>
-          <input type="number" id="ar-smart-maxtok" min="1000" step="1000" placeholder="150000"></div>
-        <div class="field"><label>Tier grading</label>
-          <select id="ar-smart-classify"><option value="">Classifier model (heuristic if it fails)</option><option value="heuristic">Heuristic only — never calls a model</option></select></div>
-      </div>
-      <div class="field"><label>Routine <span class="sub">— short answers, small edits, simple tool calls · one entry per line, first wins</span></label>
-        <textarea id="ar-tier-routine" rows="4" placeholder="fred/tiel-kvx-w6800&#10;fred/ornith&#10;ccbudget/deepseek/deepseek-v4-flash"></textarea></div>
-      <div class="field"><label>Careful <span class="sub">— multi-file changes, debugging with evidence, a mistake costs rework</span></label>
-        <textarea id="ar-tier-careful" rows="4"></textarea></div>
-      <div class="field"><label>Hard <span class="sub">— architecture, deep debugging, proofs, security, long-horizon planning</span></label>
-        <textarea id="ar-tier-hard" rows="3"></textarea></div>
-      <div class="field"><label>Vision override <span class="sub">— optional; replaces the tier list when the request carries an image</span></label>
-        <textarea id="ar-tier-vision" rows="2"></textarea></div>
-      <div class="toolbar"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
-
-      <div class="field"><label>Test a request <span class="sub">— dry run against the live registry, nothing is sent upstream</span></label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <select id="ar-test-tier" style="max-width:150px"><option value="routine">routine</option><option value="careful">careful</option><option value="hard">hard</option><option value="">ask classifier</option></select>
-          <input type="number" id="ar-test-tokens" placeholder="tokens" value="8000" style="max-width:120px">
-          <input type="number" id="ar-test-tools" placeholder="tools" value="10" style="max-width:100px">
-          <label class="check" style="margin:0"><input type="checkbox" id="ar-test-image"><span>image</span></label>
-          <input type="text" id="ar-test-text" placeholder="last user message (only needed for 'ask classifier')" style="flex:1;min-width:200px">
-          <button class="b" onclick="testAutoRoute()">Test</button>
-        </div>
-        <div id="ar-test-out" style="margin-top:10px"></div></div>
-    </div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-head"><h2>Custom routers</h2><div class="spacer"></div><button class="b primary" onclick="openRouterDialog()">+ New router</button></div>
-    <div class="panel-body">
-      <details class="help"><summary>Named routers, addressed as <code>auto:NAME</code></summary><p>Each with its own classifier and per-task models (<code>auto-plan:NAME</code> when it has a planner) — e.g. one for coding agents, one for cheap bulk work. Assign one to a share endpoint's forced model to give someone a specific setup.</p></details>
+      <details class="help"><summary>A separate routing setup you can hand to one harness or one share endpoint</summary><p>Each named router has its own classifier and a fixed model per task bucket (the legacy bucket style; they do not use smart mode). Address one as <code>auto:NAME</code>, or <code>auto-plan:NAME</code> when it has a planner. Typical use: a share endpoint whose forced model is <code>auto:budget</code>, so a guest gets a cheap setup while your own <code>auto</code> stays local-first.</p></details>
       <div id="routercards" class="grid"></div>
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head"><h2>Custom fusions</h2><div class="spacer"></div><button class="b primary" onclick="openFusionDialog()">+ New fusion</button></div>
+  <div class="panel" id="sec-fusions">
+    <div class="panel-head"><h2>Fusions — <code>fusion</code>, <code>fusion:NAME</code></h2><span id="fusion-state" class="pill"></span><div class="spacer"></div><button class="b primary" onclick="openFusionDialog()">+ New fusion</button></div>
     <div class="panel-body">
-      <details class="help"><summary>Named panels, addressed as <code>fusion:NAME</code></summary><p>Each with its own participants and judge. They appear as models, so a fusion can sit in a router bucket, a share endpoint's forced model, or a provider default. Point a harness at <code>/p/cfrproxy-fusion/v1</code> for a provider whose whole catalogue is your fusions.</p></details>
+      <details class="help"><summary>Several models answer, one judge writes the final reply</summary><p>A fusion sends the same prompt to 2–4 participant models in parallel, then a judge model synthesizes one answer from their drafts. Slower and pricier than a single call — reserve it for hard questions. It returns one ordinary answer, so it can sit anywhere a model can: a tier above, a share endpoint's forced model, a provider default. <code>fusion</code> is the default panel configured here; named panels are addressed as <code>fusion:NAME</code>. Point a harness at <code>/p/cfrproxy-fusion/v1</code> for a provider whose whole catalogue is your fusions.</p></details>
       <div id="fusioncards" class="grid"></div>
+      <fieldset class="group"><legend>Default fusion (<code>fusion</code>)</legend>
+        <div class="check" style="margin-top:0"><input type="checkbox" id="fusion-enabled"><span>Enabled</span></div>
+        <div class="field"><label>Participant models <span class="sub">— 2–4, answered in parallel</span></label><select id="fusion-parts" multiple size="6" style="height:auto"></select></div>
+        <div class="field"><label>Judge model <span class="sub">— synthesizes the final answer</span></label>
+          <div class="pair"><select id="fusion-judge-p" onchange="fillModelSel('fusion-judge')"></select><select id="fusion-judge-m"></select></div></div>
+        <div class="field"><label>Max tokens per draft</label><input type="text" id="fusion-maxtok" style="max-width:200px"></div>
+        <div class="toolbar"><button class="b primary" onclick="saveFusion()">Save default fusion</button></div>
+      </fieldset>
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head"><h2>Fusion</h2><span id="fusion-state" class="pill"></span></div>
+  <div class="panel" id="sec-launch">
+    <div class="panel-head"><h2>Launch a harness</h2><div class="spacer"></div><select id="launch-model" onchange="renderLaunch()" style="width:auto;min-width:200px;max-width:100%"></select></div>
     <div class="panel-body">
-      <details class="help"><summary>Send <code>fusion</code> for several drafts and one synthesis</summary><p>Several models answer the same question in parallel, then a judge model synthesizes one best answer from their drafts. Slower and pricier than one call — reserve it for hard questions. Returns a single answer, so any tool can use it.</p></details>
-      <div class="check"><input type="checkbox" id="fusion-enabled"><span>Enabled</span></div>
-      <div class="field"><label>Participant models <span class="sub">— 2–4, answered in parallel</span></label><select id="fusion-parts" multiple size="6" style="height:auto"></select></div>
-      <div class="field"><label>Judge model <span class="sub">— synthesizes the final answer</span></label>
-        <div class="pair"><select id="fusion-judge-p" onchange="fillModelSel('fusion-judge')"></select><select id="fusion-judge-m"></select></div></div>
-      <div class="field"><label>Max tokens per draft</label><input type="text" id="fusion-maxtok" style="max-width:200px"></div>
-      <div class="toolbar"><button class="b primary" onclick="saveFusion()">Save fusion</button></div>
+      <p class="hint">Copy a command to start a coding agent pointed at cfrproxy with this model. <code>auto</code> gives it the smart router; the agent can switch models later from its own picker.</p>
+      <div id="launch-cmds"></div>
+      <details class="help"><summary>Manual setup (env vars, no launcher)</summary><div id="launch-env" style="margin-top:10px"></div></details>
     </div>
   </div>
 </section>
@@ -948,7 +995,7 @@ function showTab(name){
   $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
-  if(name==='providers'){renderLaunch();loadRouters();loadNamedFusions();loadGlobalFallback();}
+  if(name==='providers'){renderLaunch();loadRouters();loadNamedFusions();loadGlobalFallback();loadAutoRoute();}
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
@@ -1210,28 +1257,10 @@ async function testProvider(id,btn){
 let gfTargets=[];
 function renderGF(){
   const box=$('#gf-list');if(!box)return;
-  if(!gfTargets.length){box.innerHTML='<div class="hint" style="margin:0">No targets yet — add the models you want requests to fall back to, strongest/cheapest first.</div>';}
-  else{
-    box.innerHTML=gfTargets.map((t,i)=>{
-      const opts=['<option value="">— pick a model —</option>']
-        .concat(allModels.map(m=>`<option value="${esc(m)}"${m===t?' selected':''}>${esc(m)}</option>`));
-      // keep a stale/unknown target visible instead of silently dropping it
-      if(t&&!allModels.includes(t))opts.push(`<option value="${esc(t)}" selected>${esc(t)} (not in catalog)</option>`);
-      return `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-        <span class="mono" style="color:var(--dim);min-width:18px">${i+1}.</span>
-        <select style="flex:1" onchange="gfSet(${i},this.value)">${opts.join('')}</select>
-        <button class="b" title="move up" onclick="gfMove(${i},-1)"${i===0?' disabled':''}>↑</button>
-        <button class="b" title="move down" onclick="gfMove(${i},1)"${i===gfTargets.length-1?' disabled':''}>↓</button>
-        <button class="b danger" onclick="gfDel(${i})">Del</button></div>`;
-    }).join('');
-  }
+  OL['gf-list']=gfTargets;olRender('gf-list');
   const p=$('#gf-state');
   if(p){const on=$('#gf-enabled').checked;p.textContent=on?`on · ${gfTargets.filter(Boolean).length} targets`:'off';p.classList.toggle('on',on)}
 }
-function gfSet(i,v){gfTargets[i]=v;renderGF()}
-function gfAdd(){gfTargets.push('');renderGF()}
-function gfDel(i){gfTargets.splice(i,1);renderGF()}
-function gfMove(i,d){const j=i+d;if(j<0||j>=gfTargets.length)return;[gfTargets[i],gfTargets[j]]=[gfTargets[j],gfTargets[i]];renderGF()}
 async function loadGlobalFallback(){
   try{
     const c=await api('global-fallback');
@@ -1371,13 +1400,66 @@ async function loadAutoRoute(){
     $('#ar-smart-maxtok').value=arSmart.local_max_tokens||'';
     $('#ar-smart-classify').value=arSmart.classify==='heuristic'?'heuristic':'';
     const tiers=arSmart.tiers||{};
-    for(const t of ['routine','careful','hard'])$('#ar-tier-'+t).value=(tiers[t]||[]).join('\n');
-    $('#ar-tier-vision').value=(arSmart.vision||[]).join('\n');
-    const sp=$('#ar-smart-state');sp.textContent=arSmart.enabled?'on':'off';sp.classList.toggle('on',!!arSmart.enabled);
+    for(const t of ['routine','careful','hard']){OL['ar-tier-'+t]=(tiers[t]||[]).slice();olRender('ar-tier-'+t)}
+    OL['ar-tier-vision']=(arSmart.vision||[]).slice();olRender('ar-tier-vision');
+    pill.textContent=c.enabled?(arSmart.enabled?'on · smart':'on · legacy buckets'):'off';
+    refreshTierStatus();
   }catch(err){toast('autoroute: '+err.message,true)}
 }
 let arSmart={};
-const arLines=id=>$('#'+id).value.split('\n').map(x=>x.trim()).filter(Boolean);
+const arLines=id=>(OL[id]||[]).map(x=>x.trim()).filter(Boolean);
+
+// ---- ordered-list editor: one input per row, reorder, delete; catalog suggestions via #allmodels ----
+const OL={};
+function olRender(id){
+  const box=$('#'+id);if(!box)return;
+  const arr=OL[id]||(OL[id]=[]);
+  box.innerHTML=(arr.length?'':'<div class="empty-hint">Empty — add an entry.</div>')+arr.map((v,i)=>`<div class="olrow">
+    <span class="n">${i+1}</span>
+    <input list="allmodels" value="${esc(v)}" placeholder="provider/model, pool name, or glob" oninput="OL['${id}'][${i}]=this.value">
+    <span class="pill ol-verdict" data-i="${i}"></span>
+    <button class="b ghost" type="button" title="move up" onclick="olMove('${id}',${i},-1)"${i===0?' disabled':''}>↑</button>
+    <button class="b ghost" type="button" title="move down" onclick="olMove('${id}',${i},1)"${i===arr.length-1?' disabled':''}>↓</button>
+    <button class="b ghost danger" type="button" title="remove" onclick="olDel('${id}',${i})">×</button></div>`).join('')
+    +`<button class="b" type="button" onclick="olAdd('${id}')">+ Add</button>`;
+}
+function olAdd(id){(OL[id]||(OL[id]=[])).push('');olRender(id);const ins=$$('#'+id+' input');if(ins.length)ins[ins.length-1].focus()}
+function olDel(id,i){OL[id].splice(i,1);olRender(id)}
+function olMove(id,i,d){const a=OL[id],j=i+d;if(j<0||j>=a.length)return;[a[i],a[j]]=[a[j],a[i]];olRender(id)}
+function olSetVerdicts(id,verdicts){ // verdicts: array aligned to OL[id], {why,facts} or null
+  $$('#'+id+' .ol-verdict').forEach(el=>{
+    const v=verdicts[+el.dataset.i];el.textContent=v?v.why:'';el.title=v?(v.facts||''):'';
+    el.classList.toggle('on',!!v&&v.why.startsWith('chosen'));
+    el.classList.toggle('warn',!!v&&!v.why.startsWith('chosen')&&v.why!=='viable');
+  });
+}
+function globToRe(g){return new RegExp('^'+g.split('*').map(x=>x.replace(/[.+?^${}()|[\]\\]/g,'\\$&')).join('.*')+'$','i')}
+// refreshTierStatus dry-runs a typical request per tier and annotates each entry with its verdict.
+const TIER_PROBE={routine:{tokens:8000,tools:10},careful:{tokens:60000,tools:12},hard:{tokens:30000,tools:4}};
+async function refreshTierStatus(){
+  if(!$('#ar-smart-enabled').checked||!$('#ar-enabled').checked){
+    for(const t of Object.keys(TIER_PROBE)){$('#ar-now-'+t).textContent='';olSetVerdicts('ar-tier-'+t,[])}
+    return;
+  }
+  for(const [t,pr] of Object.entries(TIER_PROBE)){
+    const now=$('#ar-now-'+t);now.textContent='checking…';
+    try{
+      const r=await api('explain?'+new URLSearchParams({model:'auto',tier:t,tokens:pr.tokens,tools:pr.tools}));
+      now.innerHTML=r.resolved?`Right now (~${(pr.tokens/1000)|0}k tokens, ${pr.tools} tools) → <code>${esc(r.resolved)}</code>`:'';
+      const cands=r.candidates||[];
+      const verdicts=(OL['ar-tier-'+t]||[]).map(entry=>{
+        const e=entry.trim();if(!e)return null;
+        const exact=cands.find(c=>c.provider+'/'+c.model===e);
+        if(exact)return exact;
+        if(e.includes('*')){const re=globToRe(e);const hits=cands.filter(c=>re.test(c.provider+'/'+c.model));
+          if(hits.length){const best=hits.find(c=>c.why.startsWith('chosen'))||hits[0];return {why:best.why+(hits.length>1?' (+'+(hits.length-1)+')':''),facts:best.facts}}}
+        return {why:'no such provider',facts:''};
+      });
+      olSetVerdicts('ar-tier-'+t,verdicts);
+    }catch(err){now.textContent='';}
+  }
+}
+function jumpTo(id){const el=document.getElementById(id);if(el){el.scrollIntoView({behavior:'smooth',block:'start'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1200)}return false}
 async function testAutoRoute(){
   const out=$('#ar-test-out');out.innerHTML='<span class="sub">testing…</span>';
   const q=new URLSearchParams({model:'auto',tier:$('#ar-test-tier').value,tokens:$('#ar-test-tokens').value||0,tools:$('#ar-test-tools').value||0,

@@ -127,6 +127,21 @@ so its `deepseek-v4-flash` row (the one in the tier list) looked clean and stale
 - Dry run: routine 8k → ornith; ccbudget deepseek `26/1794 failed` viable, ccbudget-pro
   deepseek **unhealthy (account-wide)**; careful 200k → ccbudget deepseek, terra viable.
 
+#### Follow-up (same day): Routing tab redesign
+Source: chat: "the provider section on the web UI doesn't seem to match what you've got in there. It
+also seems confusing as fuck compared with the custom routers and all the other stuff … redesign
+this whole routing interface to make it more user-friendly. Make sure the explanations are there".
+The tab is now organised around the request path: a 4-stage strip at the top (name → virtual
+model → provider → can't serve) that jumps to each section, then **Smart router (`auto`)** first
+with a step-by-step explanation open by default, an ordered-list editor per tier (catalog
+suggestions, ↑↓×, glob/pool entries) where every entry carries its live verdict for a typical
+request of that tier and each tier shows "Right now → chosen"; planner/sticky/vision under
+"advanced"; the legacy bucket table collapsed and labelled; the Test box in its own group. Then
+Providers, Model map (stage 1), Fallback chain (stage 4, same list editor), Named routers
+(`auto:NAME`, explained as legacy-bucket setups for share endpoints), Fusions (default + named in
+one panel), and Launch last. Verified with a headless Chromium against a throwaway copy of the
+live store on :18420 (desktop 1280 and phone 420; no JS errors); preview data removed.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
