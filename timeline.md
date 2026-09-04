@@ -232,6 +232,27 @@ working for each task".
   "already held: 78cb359d553a shares 30,910 of 30,918" (0.4 s). Next new Claude Code / omp /
   Hermes conversation on Ornith should read `kvx→restored` on its first turn.
 
+#### Follow-up (same day): auto-seed after a miss; Live traces "Auto router" panel
+Source: chat: "I thought that it got seeded automatically after the first run. it should be checking
+for it and if it's not there, saving the system prompt for the first time and making sure that it's
+saved correctly so that it caches correctly every time." + "add a section to the live traces tab
+that just shows the auto router traces".
+- `kvxseed.go` `autoSeedAfterMiss`: when the restore hook answers `kvx→miss` for a new
+  conversation, handleCore schedules a seed to run once the response has finished (never
+  competing with the conversation's own slot): the forwarded body's leading system messages +
+  tools + a one-token user turn → `POST /v1/seed` (pinned). Debounced 15 min per (model, head);
+  a "not seeded" (e.g. every slot busy) clears the debounce so the next miss retries. Heads under
+  `auto_seed_min_tokens` (4096 est.) are skipped. Setting `kvx_restore.auto_seed` (nil = on).
+  `TestKVXAutoSeedAfterMiss` (one seed for one head across two conversations; off switch).
+- **Live demo on ornith-kvx-w6800** (synthetic 9,984-token head, never seen): conversation 1
+  `kvx→miss`, 7.2 s, 0 cached → journal `kvx autoseed queued` → `kvx autoseed tokens=9980 slot=0
+  s=5.5` → conversation 2 `kvx→restored 9,980`, 9,969/9,984 cached, **2.1 s**.
+- Manual seeds also landed on tiel-kvx-w6800 (claude-code 53,968 / omp 29,871 / openai-sdk
+  31,204 tokens) and qwen38-flash-next-kvx (same three), all pinned.
+- WebUI Live traces: new **Auto router** panel above Requests — only `auto` traffic, live via the
+  same SSE stream: time, conv id, tier (·sticky), route, served-by, In, cached %, kvx verdict,
+  status, latency; filter box (conv id / model / tier); the Routing-activity rows link into it.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

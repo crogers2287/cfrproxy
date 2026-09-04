@@ -519,3 +519,71 @@ func TestKVXRestorePinsIDSlotOnForwardedBody(t *testing.T) {
 		t.Fatalf("a miss must not pin a slot: %s", up2.last())
 	}
 }
+
+// A miss on a new conversation must leave a pinned artifact behind: once the
+// response has finished, the static head (leading system messages + tools,
+// one-token user turn) is posted to /v1/seed — once per head, not per turn.
+func TestKVXAutoSeedAfterMiss(t *testing.T) {
+	var mu sync.Mutex
+	var seeds [][]byte
+	kvx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case kvxRestorePath:
+			w.Write([]byte(`{"restored":false,"reason":"no attachment shares at least 1024 tokens"}`))
+		case kvxSeedPath:
+			mu.Lock()
+			seeds = append(seeds, b)
+			mu.Unlock()
+			w.Write([]byte(`{"ok":true,"seeded":true,"tokens":9000,"slot":1}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(kvx.Close)
+	autoSeedDebounce.mu.Lock()
+	autoSeedDebounce.m = map[string]time.Time{}
+	autoSeedDebounce.mu.Unlock()
+	up := kvxUpstream(t)
+	// the fixture's system prompt is short; lower the floor so it qualifies
+	_, mux := kvxProxyPools(t, "fred", up.URL, kvxSetting(kvx.URL, `,"auto_seed_min_tokens":1`), "")
+	body := kvxUnpooledBody("fix the parser")
+	kvxSend(t, mux, body)
+	kvxSend(t, mux, strings.Replace(body, "fix the parser", "fix the lexer", 1)) // same head, new conversation
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(seeds)
+		mu.Unlock()
+		if n >= 1 && time.Now().After(deadline.Add(-2500*time.Millisecond)) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seeds) != 1 {
+		t.Fatalf("want exactly one seed for one head across two conversations, got %d", len(seeds))
+	}
+	var m map[string]json.RawMessage
+	json.Unmarshal(seeds[0], &m)
+	var msgs []map[string]any
+	json.Unmarshal(m["messages"], &msgs)
+	if len(msgs) != 2 || msgs[0]["role"] != "system" || msgs[1]["role"] != "user" || msgs[1]["content"] != "seed" {
+		t.Fatalf("seed must carry the system head + a one-token user turn: %s", m["messages"])
+	}
+	if string(m["user_turn"]) != `"seed"` || string(m["model"]) != `"tiel-kvx-w6800"` {
+		t.Fatalf("seed body: %s", seeds[0])
+	}
+	// off switch
+	autoSeedDebounce.mu.Lock()
+	autoSeedDebounce.m = map[string]time.Time{}
+	autoSeedDebounce.mu.Unlock()
+	_, mux2 := kvxProxyPools(t, "fred", up.URL, kvxSetting(kvx.URL, `,"auto_seed":false,"auto_seed_min_tokens":1`), "")
+	kvxSend(t, mux2, body)
+	time.Sleep(300 * time.Millisecond)
+	if len(seeds) != 1 {
+		t.Fatalf("auto_seed:false must not seed, got %d", len(seeds))
+	}
+}

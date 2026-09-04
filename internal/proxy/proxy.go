@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -496,6 +497,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	lastUpstreamByte := func() time.Time { return time.Time{} }
 	var sniff *timingsSniffer      // set for streamed responses; see timingsSniffer
 	var prefixSnap *prefixSnapshot // static head of the request actually sent
+	var afterResponse func()       // kvx auto-seed, once the slot is free again
 	defer func() {
 		tr.LatencyMS = time.Since(start).Milliseconds()
 		if t := lastUpstreamByte(); !t.IsZero() {
@@ -508,6 +510,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// after AddTrace so a slow/failed log write can never delay the trace
 		writeCacheRecord(tr)
 		recordPrefix(prefixSnap, tr)
+		if afterResponse != nil && tr.Status > 0 && tr.Status < 400 {
+			afterResponse()
+		}
 	}()
 
 	// candidate chain: primary, then its fallback chain followed transitively
@@ -801,6 +806,16 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			if slot >= 0 {
 				// seat the request in the slot that now holds its prefix
 				outBody = setJSONInt(outBody, "id_slot", slot)
+			} else if strings.HasPrefix(note, "kvx→miss") {
+				// Nothing to restore: this harness's head has never been
+				// pinned on this model. Seed it once the response is done so
+				// the next conversation from it restores (kvxseed.go).
+				seedModel, seedBody := c.model, outBody
+				afterResponse = func() {
+					if p.autoSeedAfterMiss(kcfg, seedModel, seedBody) {
+						slog.Info("kvx autoseed queued", "model", seedModel)
+					}
+				}
 			}
 		}
 		// maxAttempts is 2 (one transient retry). Dropping a provider-rejected

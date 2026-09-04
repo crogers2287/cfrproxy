@@ -17,12 +17,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
@@ -258,4 +260,115 @@ func (p *Proxy) kvxWouldRestore(ctx context.Context, prov store.Provider, model 
 		return 0
 	}
 	return ans.Shared
+}
+
+// ---- auto-seed after a miss -------------------------------------------------
+
+// autoSeedDebounce remembers (model, static head) pairs already sent to
+// /v1/seed, so a harness that opens ten conversations in a minute costs one
+// prefill, not ten. kvxd's own "already held" check makes a later repeat
+// cheap (~0.4 s), so the window only has to cover the burst.
+var autoSeedDebounce = struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}{m: map[string]time.Time{}}
+
+const autoSeedWindow = 15 * time.Minute
+
+// seedBodyFromForwarded turns the body handleCore is forwarding into the seed
+// body for its static head: every leading system message, the tools, the
+// template fields — and a one-token user turn in place of the conversation.
+// Returns nil when the head is too small to be worth an artifact.
+func seedBodyFromForwarded(model string, outBody []byte, minTokens int) ([]byte, string) {
+	body := kvxRestoreBody(model, outBody)
+	if body == nil {
+		return nil, ""
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return nil, ""
+	}
+	var msgs []json.RawMessage
+	json.Unmarshal(m["messages"], &msgs)
+	var head []json.RawMessage
+	for _, raw := range msgs {
+		var probe struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(raw, &probe) != nil || probe.Role != "system" {
+			break
+		}
+		head = append(head, raw)
+	}
+	size := len(m["tools"])
+	for _, h := range head {
+		size += len(h)
+	}
+	if size/4 < minTokens {
+		return nil, ""
+	}
+	user, _ := json.Marshal(map[string]string{"role": "user", "content": kvxSeedDefaultTurn})
+	head = append(head, user)
+	m["messages"], _ = json.Marshal(head)
+	m["user_turn"] = mustJSON(kvxSeedDefaultTurn)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, ""
+	}
+	// debounce key: the head as sent (tools included), not the conversation
+	key := model + "\x00" + sha256hex(append(append([]byte{}, m["messages"]...), m["tools"]...))[:24]
+	return out, key
+}
+
+// autoSeedAfterMiss is what handleCore schedules when the restore hook came
+// back "miss" for a new conversation: after the response has finished, seed
+// the static head so the NEXT conversation from this harness restores. Runs
+// in its own goroutine; every outcome is a journal line, never a request
+// error. Returns whether a seed was actually queued (tests, trace note).
+func (p *Proxy) autoSeedAfterMiss(cfg KVXRestore, model string, outBody []byte) bool {
+	if !cfg.Enabled || !cfg.autoSeed() {
+		return false
+	}
+	body, key := seedBodyFromForwarded(model, outBody, cfg.autoSeedMin())
+	if body == nil {
+		return false
+	}
+	autoSeedDebounce.mu.Lock()
+	if at, ok := autoSeedDebounce.m[key]; ok && time.Since(at) < autoSeedWindow {
+		autoSeedDebounce.mu.Unlock()
+		return false
+	}
+	autoSeedDebounce.m[key] = time.Now()
+	autoSeedDebounce.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), kvxSeedTimeout)
+		defer cancel()
+		started := time.Now()
+		rb, err := kvxPost(ctx, cfg.baseURL()+kvxSeedPath, body)
+		if err != nil {
+			slog.Warn("kvx autoseed failed", "model", model, "err", trimErr(err.Error()))
+			return
+		}
+		var ans struct {
+			Seeded  bool   `json:"seeded"`
+			Already bool   `json:"already"`
+			Tokens  int    `json:"tokens"`
+			Slot    int    `json:"slot"`
+			Reason  string `json:"reason"`
+		}
+		json.Unmarshal(rb, &ans)
+		switch {
+		case ans.Seeded:
+			slog.Info("kvx autoseed", "model", model, "tokens", ans.Tokens, "slot", ans.Slot, "s", time.Since(started).Seconds())
+		case ans.Already:
+			slog.Info("kvx autoseed already held", "model", model)
+		default:
+			// e.g. every slot busy: forget the key so the next miss retries
+			autoSeedDebounce.mu.Lock()
+			delete(autoSeedDebounce.m, key)
+			autoSeedDebounce.mu.Unlock()
+			slog.Warn("kvx autoseed not seeded", "model", model, "reason", ans.Reason)
+		}
+	}()
+	return true
 }

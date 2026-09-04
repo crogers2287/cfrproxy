@@ -58,6 +58,21 @@ type KVXRestore struct {
 	// Provider names the local llama-swap provider whose requests may trigger
 	// a restore. Empty means "fred".
 	Provider string `json:"provider"`
+	// AutoSeed (nil = on): when a NEW conversation misses, seed and pin its
+	// static head (system + tools) in kvxd once the response has finished,
+	// so the next conversation from that harness restores. See kvxseed.go.
+	AutoSeed *bool `json:"auto_seed,omitempty"`
+	// AutoSeedMinTokens: heads smaller than this are not worth an artifact
+	// (estimate, ~4 chars/token). 0 = 4096.
+	AutoSeedMinTokens int `json:"auto_seed_min_tokens,omitempty"`
+}
+
+func (c KVXRestore) autoSeed() bool { return c.AutoSeed == nil || *c.AutoSeed }
+func (c KVXRestore) autoSeedMin() int {
+	if c.AutoSeedMinTokens > 0 {
+		return c.AutoSeedMinTokens
+	}
+	return 4096
 }
 
 func (c KVXRestore) timeout() time.Duration {
