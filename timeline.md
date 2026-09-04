@@ -175,7 +175,12 @@ cfrproxy also never pinned the restored slot, so llama.cpp could seat the reques
 - Messaged the kv-rosetta session (kv-rosetta-12) with the evidence and four asks: per-stage
   timings in the daemon log, don't finish/duplicate a restore after the caller disconnects (two
   restores 8 s apart landed in different slots), the timeout it wants cfrproxy to hold, and
-  anything else to pin besides id_slot. Awaiting reply.
+  anything else to pin besides id_slot. kvxd shipped per-stage timings within minutes.
+- **Verified live** (new Telegram chat, 16:57:11, trace 169111): `auto→routine→fred/ornith
+  pool→ornith-kvx-w6800 (cold/inflight) kvx→restored 70,911 (slot 0, 2.7s)`, prompt 31,466 /
+  cached 30,896 (98%), first-turn latency 14.2 s (was 89 s with 0 cached). kvxd line:
+  `2.69s render=0.07s tokenize=0.13s scan=0.17s ensure=2.85s (runtime_restore=1.01s
+  reuse_probe=0.68s pristine_restore=0.96s)`. Following turns 2.7-9.9 s, 97-99% cached.
 
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
