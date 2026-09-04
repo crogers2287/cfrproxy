@@ -149,6 +149,9 @@ type RouteCandidate struct {
 	Vision   bool   `json:"vision"`
 	Requests int64  `json:"requests"`
 	Failed   int64  `json:"failed"` // failed + fellback in the health window
+	// HealthFrom is "provider" when the model had too little recent traffic
+	// and the account-wide totals were used instead.
+	HealthFrom string `json:"health_from,omitempty"`
 	// Verdict: "chosen", "viable", or why it lost: not served | blind |
 	// too small | beyond local_max_tokens | unhealthy | cold | busy.
 	Verdict string `json:"verdict"`
@@ -173,7 +176,11 @@ func (c RouteCandidate) Facts() string {
 		b = append(b, "vision")
 	}
 	if c.Requests > 0 {
-		b = append(b, fmt.Sprintf("%d/%d failed", c.Failed, c.Requests))
+		f := fmt.Sprintf("%d/%d failed", c.Failed, c.Requests)
+		if c.HealthFrom == "provider" {
+			f += " (account-wide)"
+		}
+		b = append(b, f)
 	}
 	return strings.Join(b, ", ")
 }
@@ -386,6 +393,20 @@ func (p *Proxy) modelHealth(cfg *SmartRouterConfig) map[string]store.ModelHealth
 	if err != nil {
 		rows = map[string]store.ModelHealth{}
 	}
+	// account-wide totals under "provider/" (see describe)
+	totals := map[string]store.ModelHealth{}
+	for k, h := range rows {
+		if i := strings.IndexByte(k, '/'); i > 0 {
+			t := totals[k[:i+1]]
+			t.Requests += h.Requests
+			t.Failed += h.Failed
+			t.Fellback += h.Fellback
+			totals[k[:i+1]] = t
+		}
+	}
+	for k, t := range totals {
+		rows[k] = t
+	}
 	p.health.at, p.health.days, p.health.rows = time.Now(), days, rows
 	return rows
 }
@@ -473,7 +494,18 @@ func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, entry stri
 	for _, m := range members {
 		if h, ok := health[strings.ToLower(prov.Name+"/"+m)]; ok {
 			c.Requests += h.Requests
-			c.Failed += h.Failed + h.Fellback
+			c.Failed += max(h.Failed, h.Fellback) // one request can be both
+		}
+	}
+	// A usage cap or dead key fails EVERY model on the account, but the tier
+	// list may name a model the account has not been asked for lately (the
+	// capped ccbudget-pro key was burning through deepseek-v4-flash-vision-exp
+	// while its deepseek-v4-flash row stayed clean and stale). When the model
+	// itself has too little recent evidence, the provider's total speaks.
+	if c.Requests < cfg.healthMin() {
+		if h, ok := health[strings.ToLower(prov.Name+"/")]; ok && h.Requests >= cfg.healthMin() {
+			c.Requests, c.Failed = h.Requests, max(h.Failed, h.Fellback)
+			c.HealthFrom = "provider"
 		}
 	}
 	return c

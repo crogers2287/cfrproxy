@@ -111,6 +111,22 @@ careful 60k + image → flash-next (deepseek/Kimi blind); hard → terra; carefu
 too small → ccbudget-pro deepseek. Side note: llama-swap aliases `27b`, `qwen38-27b`,
 `qwen3.8-27b` currently point at the Flash-Next runner (same displayName/98304), not at a 27B.
 
+#### Follow-up (same day): account-wide health
+Source: chat: "I recently upgraded from the dollar plan to the $10 plan on the same CC budget API
+key. That's why you're seeing the 54% of failures". Daily rows confirm: every `ccbudget`
+failure through 2026-08-31 was `usage cap (HTTP 400)`; since 09-01 it is 13/1794. Meanwhile
+`ccbudget-pro` has been 100% `usage cap` since 08-31 — but on `deepseek-v4-flash-vision-exp`,
+so its `deepseek-v4-flash` row (the one in the tier list) looked clean and stale.
+- `describe` now falls back to the provider's totals when the model itself has fewer than
+  `health_min_requests` in the window (`HealthFrom:"provider"`, shown as "(account-wide)");
+  failed and fellback are counted as max, not sum, since one request can be both.
+  `TestSmartRouteAccountWideHealth`.
+- Config: `health_window_days` back to the 3-day default; `ccbudget/deepseek/deepseek-v4-flash`
+  now first among cloud in routine and careful, `ccbudget-pro` after it; hard: terra, GLM-5.3
+  (ccbudget), Kimi-K3 (ccbudget-pro), luna.
+- Dry run: routine 8k → ornith; ccbudget deepseek `26/1794 failed` viable, ccbudget-pro
+  deepseek **unhealthy (account-wide)**; careful 200k → ccbudget deepseek, terra viable.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

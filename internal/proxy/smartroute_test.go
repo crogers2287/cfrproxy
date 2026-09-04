@@ -330,3 +330,28 @@ func TestSmartRouteFallsBackToDefaultRoute(t *testing.T) {
 		t.Fatalf("nothing qualifies → routes.default, got %s %q", m, note)
 	}
 }
+
+// A capped account fails every model it is asked for; a tier entry naming a
+// model that account has not served lately must inherit that verdict.
+func TestSmartRouteAccountWideHealth(t *testing.T) {
+	p, s, _ := smartFixture(t)
+	now := time.Now().UnixMilli()
+	for i := 0; i < 40; i++ {
+		s.AddTrace(&store.Trace{TS: now, Provider: "cloud", Model: "fable", Status: 400, Err: "usage cap"})
+	}
+	// tier names cloud/terra, which has no rows of its own
+	d := p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, RouteProfile{Tier: tierRoutine, Tokens: 120_000}, "")
+	c := findCand(d, "terra")
+	if c.Verdict != "chosen (unhealthy, nothing better)" || c.HealthFrom != "provider" || c.Requests != 40 || c.Failed != 40 {
+		t.Fatalf("terra should inherit the account's cap failures: %+v", c)
+	}
+	// a model with enough clean traffic of its own is judged on that alone
+	for i := 0; i < 25; i++ {
+		s.AddTrace(&store.Trace{TS: now, Provider: "cloud", Model: "terra", Status: 200})
+	}
+	p.health.at = time.Time{} // drop the 60s cache
+	d = p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, RouteProfile{Tier: tierRoutine, Tokens: 120_000}, "")
+	if c := findCand(d, "terra"); c.Verdict != "chosen" || c.HealthFrom != "" || c.Requests != 25 {
+		t.Fatalf("terra's own clean record should win: %+v", c)
+	}
+}
