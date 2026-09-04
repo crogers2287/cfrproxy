@@ -89,6 +89,28 @@ text) that calls `/admin/api/explain?model=auto…` and renders every candidate 
 Save merges the form into the loaded `smart` object so keys the form does not edit survive.
 `TestAutoRouteSaveKeepsSmartBlock` proves the PUT→GET round-trip.
 
+#### Follow-up (same day): tier lists tuned to the fleet
+Source: chat: "so based on these models, how would you setup the routing? orinth, tiel, qwen flash
+next (or qwen 38 27b …) and then we have our ccbudget/-pro provider models … local capable models
+first, then use my codex sub for the big stuff".
+Evidence (14-day usage_daily): ornith-kvx-w6800 19/438 failed, tiel-kvx-w6800 108/640,
+qwen38-flash-next-kvx 24/106, ccbudget-pro deepseek-v4-flash 1355/8729 (16%), ccbudget
+deepseek-v4-flash 2110/3892 (54% — one GOAT account is the flaky one), deepseek-v4-flash-fast
+0/287, codex terra 39/2829. Flash-Next and qwen38-27b-kvx share the 3090 pair (llama-swap
+`swap:true`), so both are listed and warmth decides; the router never loads a cold one.
+Applied tiers (`health_window_days` 7):
+- routine: fred/ornith, fred/tiel-kvx-w6800, fred/qwen38-flash-next-kvx, fred/qwen38-27b-kvx,
+  ccbudget-pro/deepseek/deepseek-v4-flash, ccbudget/deepseek/deepseek-v4-flash-fast,
+  ccbudget/deepseek/deepseek-v4-flash, codex/gpt-5.6-luna
+- careful: fred/qwen38-flash-next-kvx, fred/qwen38-27b-kvx, fred/ornith, fred/tiel-kvx-w6800,
+  ccbudget-pro/deepseek/deepseek-v4-flash, ccbudget/deepseek/deepseek-v4-flash,
+  ccbudget-pro/moonshotai/Kimi-K3, codex/gpt-5.6-terra
+- hard: codex/gpt-5.6-terra, ccbudget-pro/moonshotai/Kimi-K3, ccbudget/zai-org/GLM-5.3, codex/gpt-5.6-luna
+Dry runs: routine 8k → ornith (tiel, flash-next viable; 27b-kvx cold); careful 60k → flash-next;
+careful 60k + image → flash-next (deepseek/Kimi blind); hard → terra; careful 200k → all local
+too small → ccbudget-pro deepseek. Side note: llama-swap aliases `27b`, `qwen38-27b`,
+`qwen3.8-27b` currently point at the Flash-Next runner (same displayName/98304), not at a 27B.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
