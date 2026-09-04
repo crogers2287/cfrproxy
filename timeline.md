@@ -182,6 +182,32 @@ cfrproxy also never pinned the restored slot, so llama.cpp could seat the reques
   `2.69s render=0.07s tokenize=0.13s scan=0.17s ensure=2.85s (runtime_restore=1.01s
   reuse_probe=0.68s pristine_restore=0.96s)`. Following turns 2.7-9.9 s, 97-99% cached.
 
+#### Follow-up (same day): Claude Code on `auto` — 67k cold prefill, 79 s, client retried
+Source: screenshot (Claude Code `cfrproxy/auto`, "Waiting for API response · will retry"), "it cold
+loaded the entire prompt", "at the very least, the base claude code prompt should be warm loading".
+Trace 169238: anthropic inbound, `auto→routine→fred/ornith … kvx→miss: no attachment shares at
+least 1024 tokens`, 66,968 prompt tokens, 78.9 s. Ornith had never served Claude Code, so kvxd had
+nothing to restore; it captured that session afterwards (b2bc6bc33139, 67,082 tokens, 18:33).
+- **Cold-prefill budget** (`smart.max_cold_prefill_seconds`, default 30, -1 = off): a NEW
+  conversation whose static prefix no instance of a local model has served is judged by
+  `tokens / measured prefill rate` (EWMA from llama.cpp timings via the cache log, 1000 tok/s until
+  measured); over budget → soft verdict `cold prefill ~67s > 30s budget`, ranked after viable and
+  before busy/cold/unhealthy, so a viable cloud model wins. Prefix knowledge comes from the pool
+  affinity table (conversation or `prefix:` key); an unpooled local winner's prefix is bound
+  after routing (`rememberPrefix`). Facts show `prefix cached` / `cold prefill ~Ns`.
+  `TestSmartRouteColdPrefillBudget`. Dry run: routine 67k → ccbudget deepseek (all three local
+  "cold prefill ~67s > 30s budget"); routine 8k → ornith unchanged.
+- **Billing header stripped**: Claude Code's first system block
+  `x-anthropic-billing-header: cc_version=2.1.261.467; cc_entrypoint=cli;` is dropped in
+  `ParseAnthropicRequest` (`isBillingHeader`). It is the head of the prefix and changes every CLI
+  update (2.1.259 → 2.1.261 today), which would invalidate every prompt cache / kvx artifact for
+  Claude Code on local models. Anthropic-type passthrough is unaffected (raw bytes).
+  `TestAnthropicDropsBillingHeaderBlock`.
+- Asked kv-rosetta (kv-rosetta-12): pinned/seeded standing prefixes per runtime from cfrproxy's
+  prefix manifests (`~/.cfrproxy/cache/<model>/<client>/…`), static-head artifacts (system+tools,
+  no user turn) so any new session matches, and a no-restore "would hit?" probe the router can
+  consult. kvwarm.service is disabled with a stale target list; retire or hand over.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

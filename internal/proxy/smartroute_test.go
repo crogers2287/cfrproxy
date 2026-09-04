@@ -177,6 +177,7 @@ func TestSmartRouteBusyYieldsToFreeSibling(t *testing.T) {
 func TestSmartRouteContextEscalatesToCloud(t *testing.T) {
 	p, _, _ := smartFixture(t)
 	cfg := p.AutoRouterConfig().Smart
+	cfg.MaxColdPrefillSeconds = -1 // this test is about the window, not the prefill budget
 	// bigger than local_max_tokens but inside the model window
 	d := p.smartSelect(context.Background(), cfg, RouteProfile{Tier: tierRoutine, Tokens: 120_000}, "")
 	if d.Chosen != "cloud/terra" {
@@ -397,5 +398,63 @@ func TestAutoMountListsAndRoutesRouters(t *testing.T) {
 	traces, _ := s.Traces(0, 5)
 	if len(traces) == 0 || traces[0].Provider != "cloud" || traces[0].Model != "terra" || !strings.Contains(traces[0].Note, "auto→default→cloud/terra") {
 		t.Fatalf("auto:budget via the mount should route to cloud/terra; HTTP %d %s; traces=%+v", r2.StatusCode, rb, traces)
+	}
+}
+
+// A new conversation with a big prompt and no cached prefix on the local
+// instance must not sit through a minute of silent prefill when a cloud
+// candidate is viable — but the same prompt from a harness whose prefix that
+// instance already served is fine, and so is any conversation already pinned.
+func TestSmartRouteColdPrefillBudget(t *testing.T) {
+	p, _, _ := smartFixture(t)
+	poolAffinity.reset()
+	cfg := p.AutoRouterConfig().Smart
+	req := &wire.Request{System: strings.Repeat("claude code system prompt ", 100), Tools: []wire.Tool{{Name: "bash"}},
+		Messages: []wire.Msg{{Role: "user", Content: "hey"}}}
+	pr := profileFacts(req)
+	pr.Tokens, pr.Tier = 67_000, tierRoutine // 67k at the 1000 tok/s default = 67 s > 30 s
+	d := p.smartSelect(context.Background(), cfg, pr, "")
+	if d.Chosen != "cloud/terra" {
+		t.Fatalf("67k cold on tiel-a should escalate, got %s\n%+v", d.Chosen, d.Candidates)
+	}
+	c := findCand(d, "tiel-a")
+	if !strings.HasPrefix(c.Verdict, "cold prefill ~67s") || c.ColdPrefillS < 60 || c.PrefixKnown {
+		t.Fatalf("tiel-a verdict: %+v", c)
+	}
+	// a faster measured rate changes the estimate
+	notePrefillRate("tiel-a", 5000)
+	d = p.smartSelect(context.Background(), cfg, pr, "")
+	if d.Chosen != "local/tiel-a" || findCand(d, "tiel-a").ColdPrefillS > 20 {
+		t.Fatalf("at 5000 tok/s 67k is 13 s and fits: %s %+v", d.Chosen, findCand(d, "tiel-a"))
+	}
+	notePrefillRate("tiel-a", 1) // and back to hopeless
+	notePrefillRate("tiel-a", 1)
+	notePrefillRate("tiel-a", 1)
+	notePrefillRate("tiel-a", 1)
+	notePrefillRate("tiel-a", 1)
+	// the prefix is known on tiel-a → viable regardless of size
+	poolAffinity.put(poolPrefixKey(req), "tiel-a", "test")
+	d = p.smartSelect(context.Background(), cfg, pr, "")
+	if d.Chosen != "local/tiel-a" || !findCand(d, "tiel-a").PrefixKnown {
+		t.Fatalf("known prefix should be judged cached: %s %+v", d.Chosen, findCand(d, "tiel-a"))
+	}
+	// budget off → always viable
+	poolAffinity.reset()
+	cfg.MaxColdPrefillSeconds = -1
+	if d := p.smartSelect(context.Background(), cfg, pr, ""); d.Chosen != "local/tiel-a" {
+		t.Fatalf("budget off: %s", d.Chosen)
+	}
+	// through the request path the winner's prefix is remembered
+	cfg.MaxColdPrefillSeconds = 0
+	poolAffinity.reset()
+	prefillRates.mu.Lock()
+	delete(prefillRates.m, "tiel-a")
+	prefillRates.mu.Unlock()
+	small := &wire.Request{System: "omp", Messages: []wire.Msg{{Role: "user", Content: "small"}}}
+	if m, _ := p.AutoRoute(context.Background(), small); m != "local/tiel-a" {
+		t.Fatalf("small new conversation: %s", m)
+	}
+	if !prefixKnownOn(small, []string{"tiel-a"}) {
+		t.Fatal("winner's static prefix should be bound after routing")
 	}
 }

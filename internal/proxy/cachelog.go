@@ -234,6 +234,9 @@ func writeCacheRecord(tr *store.Trace) {
 	if newPrefill == 0 && tr.PromptTokens > 0 {
 		newPrefill = tr.PromptTokens - tr.CachedTokens
 	}
+	if newPrefill >= 2000 && tr.PromptTPS > 0 {
+		notePrefillRate(tr.Model, tr.PromptTPS) // smart router's cold-prefill estimate
+	}
 	hit := 0.0
 	if tr.PromptTokens > 0 {
 		hit = 100.0 * float64(tr.PromptTokens-newPrefill) / float64(tr.PromptTokens)

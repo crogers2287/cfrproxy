@@ -71,13 +71,28 @@ func antText(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &blocks) == nil {
 		var b strings.Builder
 		for _, bl := range blocks {
-			if bl.Type == "text" {
+			if bl.Type == "text" && !isBillingHeader(bl.Text) {
 				b.WriteString(bl.Text)
 			}
 		}
 		return b.String()
 	}
 	return ""
+}
+
+// isBillingHeader spots the block Claude Code puts FIRST in its system prompt:
+//
+//	x-anthropic-billing-header: cc_version=2.1.261.467; cc_entrypoint=cli;
+//
+// It is metadata for Anthropic's billing, meaningless to any other provider —
+// and it carries the CLI version, so it changes with every Claude Code
+// update. Because it is the first ~10 tokens of the prefix, keeping it would
+// invalidate every prompt cache and every KV-Rosetta artifact for Claude Code
+// on the local models each time the CLI updates. Only the translated path is
+// affected: an Anthropic-dialect passthrough to an Anthropic-type provider
+// forwards the raw bytes and never comes through here.
+func isBillingHeader(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "x-anthropic-billing-header:")
 }
 
 func ParseAnthropicRequest(body []byte) (*Request, error) {

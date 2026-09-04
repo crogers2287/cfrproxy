@@ -64,6 +64,13 @@ type SmartRouterConfig struct {
 	HealthWindowDays  int     `json:"health_window_days,omitempty"`
 	HealthMinRequests int     `json:"health_min_requests,omitempty"`
 	HealthMaxFailRate float64 `json:"health_max_fail_rate,omitempty"`
+	// MaxColdPrefillSeconds: a NEW conversation whose static prefix no instance
+	// of a local model has served (so nothing is cached) only goes local when
+	// its estimated prefill — prompt tokens over the model's measured prefill
+	// rate — fits this budget. Claude Code opens with ~67k tokens; on a W6800 at
+	// ~850 tok/s that is 79 s of silence before the first byte, and the harness
+	// gives up and retries. 0 = 30 s; negative = no budget.
+	MaxColdPrefillSeconds int `json:"max_cold_prefill_seconds,omitempty"`
 	// Classify: "llm" (default when a classifier is configured) asks the
 	// classifier model for the tier; "heuristic" never calls a model.
 	Classify string `json:"classify,omitempty"`
@@ -96,8 +103,17 @@ func (c *SmartRouterConfig) localMaxTokens() int {
 	return smartDefaultLocalMaxTokens
 }
 func (c *SmartRouterConfig) preferWarm() bool { return c.PreferWarm == nil || *c.PreferWarm }
-func (c *SmartRouterConfig) skipBusy() bool   { return c.SkipBusy == nil || *c.SkipBusy }
-func (c *SmartRouterConfig) logOn() bool      { return c.Log == nil || *c.Log }
+func (c *SmartRouterConfig) coldPrefillBudget() float64 {
+	switch {
+	case c.MaxColdPrefillSeconds < 0:
+		return 0 // off
+	case c.MaxColdPrefillSeconds == 0:
+		return 30
+	}
+	return float64(c.MaxColdPrefillSeconds)
+}
+func (c *SmartRouterConfig) skipBusy() bool { return c.SkipBusy == nil || *c.SkipBusy }
+func (c *SmartRouterConfig) logOn() bool    { return c.Log == nil || *c.Log }
 func (c *SmartRouterConfig) healthWindow() int {
 	if c.HealthWindowDays > 0 {
 		return c.HealthWindowDays
@@ -120,12 +136,13 @@ func (c *SmartRouterConfig) healthMaxFail() float64 {
 // RouteProfile is everything the selector knows about a request. It is the
 // classifier's whole output plus what cfrproxy measures itself.
 type RouteProfile struct {
-	Tier   string `json:"tier"`   // routine | careful | hard
-	Source string `json:"source"` // classifier | heuristic | sticky | override
-	Tokens int    `json:"tokens"` // estimated prompt tokens
-	Depth  int    `json:"depth"`  // messages in the conversation
-	Tools  int    `json:"tools"`
-	Image  bool   `json:"image"`
+	Tier   string        `json:"tier"`   // routine | careful | hard
+	Source string        `json:"source"` // classifier | heuristic | sticky | override
+	Tokens int           `json:"tokens"` // estimated prompt tokens
+	Depth  int           `json:"depth"`  // messages in the conversation
+	Tools  int           `json:"tools"`
+	Image  bool          `json:"image"`
+	req    *wire.Request // request path only; nil in explain
 }
 
 func (pr RouteProfile) String() string {
@@ -155,7 +172,13 @@ type RouteCandidate struct {
 	// Verdict: "chosen", "viable", or why it lost: not served | blind |
 	// too small | beyond local_max_tokens | unhealthy | cold | busy.
 	Verdict string `json:"verdict"`
-	soft    int    // 0 viable, 1 busy, 2 cold, 3 unhealthy, 9 hard-skipped
+	// PrefixKnown: an instance of this model has already served this
+	// conversation or its static prefix (system + tools), so its KV is likely
+	// cached. ColdPrefillS is the estimated seconds to prefill the whole
+	// prompt from nothing, local models only.
+	PrefixKnown  bool    `json:"prefix_known,omitempty"`
+	ColdPrefillS float64 `json:"cold_prefill_s,omitempty"`
+	soft         int     // 0 viable, 1 cold prefill, 2 busy, 3 cold, 4 unhealthy, 9 hard-skipped
 }
 
 // Facts renders the registry row the way explain prints it.
@@ -171,6 +194,13 @@ func (c RouteCandidate) Facts() string {
 	}
 	if c.Context > 0 {
 		b = append(b, fmt.Sprintf("ctx %d", c.Context))
+	}
+	if c.Local {
+		if c.PrefixKnown {
+			b = append(b, "prefix cached")
+		} else if c.ColdPrefillS > 0 {
+			b = append(b, fmt.Sprintf("cold prefill ~%.0fs", c.ColdPrefillS))
+		}
 	}
 	if c.Vision {
 		b = append(b, "vision")
@@ -195,7 +225,7 @@ type smartDecision struct {
 // ---- profile -------------------------------------------------------------
 
 func profileFacts(req *wire.Request) RouteProfile {
-	pr := RouteProfile{Tokens: estTokens(req), Depth: len(req.Messages), Tools: len(req.Tools)}
+	pr := RouteProfile{Tokens: estTokens(req), Depth: len(req.Messages), Tools: len(req.Tools), req: req}
 	for _, m := range req.Messages {
 		if len(m.Images) > 0 {
 			pr.Image = true
@@ -463,7 +493,7 @@ func (p *Proxy) isServed(ctx context.Context, prov store.Provider, model string)
 }
 
 // describe builds the registry row for one (provider, model).
-func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, entry string, prov store.Provider, model string, health map[string]store.ModelHealth) RouteCandidate {
+func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, pr RouteProfile, entry string, prov store.Provider, model string, health map[string]store.ModelHealth) RouteCandidate {
 	c := RouteCandidate{Entry: entry, Provider: prov.Name, Model: model, Warm: "n/a"}
 	// the scan is what records llama-swap's per-model context/vision meta, and
 	// a fresh process (the explain CLI) has not run one yet
@@ -486,6 +516,12 @@ func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, entry stri
 					c.Slots += t
 				}
 			}
+		}
+	}
+	if local {
+		c.PrefixKnown = prefixKnownOn(pr.req, members)
+		if !c.PrefixKnown && pr.Tokens > 0 {
+			c.ColdPrefillS = float64(pr.Tokens) / prefillRateFor(members[0])
 		}
 	}
 	// context: a pool advertises its first member's window
@@ -523,11 +559,13 @@ func (p *Proxy) judge(cfg *SmartRouterConfig, pr RouteProfile, c *RouteCandidate
 	case c.Local && pr.Tokens > cfg.localMaxTokens():
 		c.Verdict, c.soft = fmt.Sprintf("beyond local_max_tokens %d", cfg.localMaxTokens()), 9
 	case c.Requests >= cfg.healthMin() && float64(c.Failed)/float64(c.Requests) > cfg.healthMaxFail():
-		c.Verdict, c.soft = "unhealthy", 3
+		c.Verdict, c.soft = "unhealthy", 4
 	case c.Local && cfg.preferWarm() && c.Warm == "cold":
-		c.Verdict, c.soft = "cold", 2
+		c.Verdict, c.soft = "cold", 3
 	case c.Local && cfg.skipBusy() && c.Slots > 0 && c.Busy >= c.Slots:
-		c.Verdict, c.soft = "busy", 1
+		c.Verdict, c.soft = "busy", 2
+	case c.Local && !c.PrefixKnown && cfg.coldPrefillBudget() > 0 && c.ColdPrefillS > cfg.coldPrefillBudget():
+		c.Verdict, c.soft = fmt.Sprintf("cold prefill ~%.0fs > %.0fs budget", c.ColdPrefillS, cfg.coldPrefillBudget()), 1
 	default:
 		c.Verdict, c.soft = "viable", 0
 	}
@@ -577,7 +615,7 @@ func (p *Proxy) smartSelect(ctx context.Context, cfg *SmartRouterConfig, pr Rout
 		}
 		var group []RouteCandidate
 		for _, m := range models {
-			c := p.describe(ctx, cfg, entry, prov, m, health)
+			c := p.describe(ctx, cfg, pr, entry, prov, m, health)
 			p.judge(cfg, pr, &c, p.isServed(ctx, prov, m))
 			group = append(group, c)
 		}
@@ -593,7 +631,7 @@ func (p *Proxy) smartSelect(ctx context.Context, cfg *SmartRouterConfig, pr Rout
 	best := -1
 	for i := range d.Candidates {
 		c := &d.Candidates[i]
-		if pinned != "" && c.soft <= 1 && c.Provider+"/"+c.Model == pinned {
+		if pinned != "" && c.soft <= 2 && c.Provider+"/"+c.Model == pinned {
 			best = i
 			break
 		}
@@ -644,7 +682,75 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 	} else {
 		routeCache.put(fp, d.Chosen, d.Tier)
 	}
+	rememberPrefix(req, d)
 	return d.Chosen, note
+}
+
+// prefixKnownOn reports whether one of members already holds this
+// conversation or its static prefix, per the pool affinity table (which
+// routePool and kvxUnpooledWhy both write).
+func prefixKnownOn(req *wire.Request, members []string) bool {
+	if req == nil {
+		return false
+	}
+	for _, key := range []string{poolConvKey(req), poolPrefixKey(req)} {
+		if key == "" {
+			continue
+		}
+		if m, _, ok := poolAffinity.get(key, poolAffinityTTL); ok && memberOf(members, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// rememberPrefix binds the request's static prefix to an unpooled local
+// winner (pools bind their own member in routePool), so the NEXT conversation
+// from the same harness is judged as prefix-cached there.
+func rememberPrefix(req *wire.Request, d smartDecision) {
+	for _, c := range d.Candidates {
+		if c.Provider+"/"+c.Model != d.Chosen || !c.Local || c.PrefixKnown {
+			return
+		}
+		if key := poolPrefixKey(req); key != "" {
+			poolAffinity.put(key, c.Model, "smart")
+		}
+		return
+	}
+}
+
+// ---- prefill rate: measured per model from llama.cpp timings ----------------
+
+const smartDefaultPrefillTPS = 1000.0 // local, until a measurement arrives
+
+var prefillRates = struct {
+	mu sync.Mutex
+	m  map[string]float64
+}{m: map[string]float64{}}
+
+// notePrefillRate folds one measured prefill (tokens/s over a real cold
+// stretch) into the per-model estimate. Cached turns are skipped by the
+// caller: their "prefill" is a few hundred tokens and says nothing.
+func notePrefillRate(model string, tps float64) {
+	if model == "" || tps <= 0 {
+		return
+	}
+	prefillRates.mu.Lock()
+	defer prefillRates.mu.Unlock()
+	if old, ok := prefillRates.m[model]; ok {
+		prefillRates.m[model] = 0.7*old + 0.3*tps
+	} else {
+		prefillRates.m[model] = tps
+	}
+}
+
+func prefillRateFor(model string) float64 {
+	prefillRates.mu.Lock()
+	defer prefillRates.mu.Unlock()
+	if r, ok := prefillRates.m[model]; ok && r > 0 {
+		return r
+	}
+	return smartDefaultPrefillTPS
 }
 
 // ---- decision log -----------------------------------------------------------

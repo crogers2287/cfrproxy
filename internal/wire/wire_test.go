@@ -274,3 +274,24 @@ func TestReasoningPreserved(t *testing.T) {
 		t.Errorf("thinking not mapped to effort: %s", oai2)
 	}
 }
+
+// Claude Code's version-stamped billing block must not become the head of the
+// prefix a local model caches on (it changes every CLI update).
+func TestAnthropicDropsBillingHeaderBlock(t *testing.T) {
+	body := []byte(`{"model":"auto","max_tokens":8,"system":[
+	  {"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.261.467; cc_entrypoint=cli;"},
+	  {"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}],
+	  "messages":[{"role":"user","content":"hey"}]}`)
+	r, err := ParseAnthropicRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.System != "You are Claude Code, Anthropic's official CLI for Claude." {
+		t.Fatalf("system prompt should start at the real text, got %q", r.System)
+	}
+	// a plain string system is untouched
+	r, _ = ParseAnthropicRequest([]byte(`{"model":"m","system":"x-anthropic-billing-header: keep me if I am the whole prompt","messages":[]}`))
+	if !strings.HasPrefix(r.System, "x-anthropic-billing-header") {
+		t.Fatalf("string form is not block-filtered: %q", r.System)
+	}
+}
