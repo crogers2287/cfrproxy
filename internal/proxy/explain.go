@@ -2,11 +2,12 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
+	"github.com/crogers2287/cfrproxy/internal/wire"
 )
 
 // Explain is a dry run of the routing decisions handleCore would make for a
@@ -24,6 +25,13 @@ type ExplainRequest struct {
 	Scope    string `json:"scope,omitempty"`    // provider name of a /p/{provider} mount
 	Inbound  string `json:"inbound,omitempty"`  // openai | anthropic | ollama | responses
 	Image    bool   `json:"image,omitempty"`    // the request carries an image
+	// Smart-router inputs (model "auto" with smart routing on): the request
+	// shape to dry-run, and an optional tier to bypass the classifier.
+	Tokens int    `json:"tokens,omitempty"` // estimated prompt tokens
+	Tools  int    `json:"tools,omitempty"`  // tools attached
+	Depth  int    `json:"depth,omitempty"`  // messages so far
+	Tier   string `json:"tier,omitempty"`   // routine | careful | hard
+	Text   string `json:"text,omitempty"`   // last user message, for the classifier/heuristic
 }
 
 type ExplainStep struct {
@@ -35,6 +43,7 @@ type ExplainCandidate struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Why      string `json:"why"`
+	Facts    string `json:"facts,omitempty"` // smart router registry row
 }
 
 type ExplainResult struct {
@@ -65,6 +74,10 @@ func (r ExplainResult) Text() string {
 	if len(r.Candidates) > 1 {
 		b.WriteString("chain:\n")
 		for i, c := range r.Candidates {
+			if c.Facts != "" {
+				fmt.Fprintf(&b, "  %d. %-40s %-32s %s\n", i+1, c.Provider+"/"+c.Model, c.Why, c.Facts)
+				continue
+			}
 			fmt.Fprintf(&b, "  %d. %s/%s  (%s)\n", i+1, c.Provider, c.Model, c.Why)
 		}
 	}
@@ -135,20 +148,18 @@ func (p *Proxy) Explain(ctx context.Context, q ExplainRequest) ExplainResult {
 	}
 	switch base := strings.SplitN(reqModel, ":", 2)[0]; base {
 	case "auto", "auto-plan":
-		routes := map[string]any{}
-		if raw := p.Store.Setting("auto_router"); raw != "" {
-			var cfg struct {
-				Enabled    bool           `json:"enabled"`
-				Classifier string         `json:"classifier"`
-				Routes     map[string]any `json:"routes"`
-			}
-			if json.Unmarshal([]byte(raw), &cfg) == nil {
-				routes = cfg.Routes
-				res.step("router", "%s: classifier %s decides the bucket per request; enabled=%v", base, cfg.Classifier, cfg.Enabled)
-			}
+		cfg := p.AutoRouterConfig()
+		if cfg.Enabled && cfg.Smart.on() {
+			return p.explainSmart(ctx, res, q, cfg)
 		}
-		for k, v := range routes {
-			res.step("router", "bucket %-9s → %v", k, v)
+		res.step("router", "%s: classifier %s decides the bucket per request; enabled=%v", base, cfg.Classifier, cfg.Enabled)
+		keys := make([]string, 0, len(cfg.Routes))
+		for k := range cfg.Routes {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			res.step("router", "bucket %-9s → %v", k, cfg.Routes[k])
 		}
 		res.Resolved = reqModel
 		res.step("note", "a virtual router resolves per request; explain one of its targets to see that chain")
@@ -262,4 +273,57 @@ func (p *Proxy) Explain(ctx context.Context, q ExplainRequest) ExplainResult {
 		res.step("thinking", "level %s from %s, %s", lvl, src, how)
 	}
 	return res
+}
+
+// explainSmart dry-runs the smart selector for the request shape in q. The
+// classifier is only called when the caller gave text and no tier; with
+// neither, the heuristic grades an empty request as routine.
+func (p *Proxy) explainSmart(ctx context.Context, res ExplainResult, q ExplainRequest, cfg AutoRouterConfig) ExplainResult {
+	pr := RouteProfile{Tokens: q.Tokens, Tools: q.Tools, Depth: q.Depth, Image: q.Image}
+	req := &wire.Request{}
+	if q.Text != "" {
+		req.Messages = []wire.Msg{{Role: "user", Content: q.Text}}
+	}
+	switch {
+	case parseTier(q.Tier) != "" && strings.EqualFold(q.Tier, parseTier(q.Tier)):
+		pr.Tier, pr.Source = parseTier(q.Tier), "override"
+	case q.Text != "":
+		pr = p.classifyTier(ctx, req, cfg, pr)
+	default:
+		pr.Tier, pr.Source = heuristicTier(req, pr), "heuristic"
+	}
+	res.step("router", "smart: classifier %q grades the tier; sticky=%v local_max_tokens=%d", cfg.Classifier, cfg.sticky(), cfg.Smart.localMaxTokens())
+	res.step("profile", "%s", pr)
+	d := p.smartSelect(ctx, cfg.Smart, pr, "")
+	res.step("tier", "walking %q: %s", d.Tier, strings.Join(cfg.Tiers(d.Tier), ", "))
+	for _, c := range d.Candidates {
+		if c.Provider == "" {
+			res.Candidates = append(res.Candidates, ExplainCandidate{Provider: "?", Model: c.Entry, Why: c.Verdict, Facts: "-"})
+			continue
+		}
+		res.Candidates = append(res.Candidates, ExplainCandidate{Provider: c.Provider, Model: c.Model, Why: c.Verdict, Facts: c.Facts()})
+	}
+	if d.Chosen == "" {
+		def := cfg.Routes["default"]
+		if def == "" {
+			res.Status, res.Error = 503, "no candidate qualified and routes.default is unset"
+			return res
+		}
+		res.step("result", "no candidate qualified → routes.default %s", def)
+		res.Resolved = def
+		return res
+	}
+	res.Resolved = d.Chosen
+	return res
+}
+
+// Tiers returns the list a tier name walks (vision list for "vision").
+func (c AutoRouterConfig) Tiers(tier string) []string {
+	if c.Smart == nil {
+		return nil
+	}
+	if tier == "vision" {
+		return c.Smart.Vision
+	}
+	return c.Smart.Tiers[tier]
 }

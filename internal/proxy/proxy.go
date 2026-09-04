@@ -81,6 +81,8 @@ type Proxy struct {
 	summaries summaryCache
 	inflight  inflightCounter
 	poolload  poolLoadCache
+	running   runningCache // smart router: llama-swap /running + /slots view per provider
+	health    healthCache  // smart router: usage_daily rollup per provider/model
 }
 
 func New(s *store.Store) *Proxy {

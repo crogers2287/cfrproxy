@@ -139,6 +139,7 @@ Usage:
   cfrproxy tui     [--data DIR]                       full-screen management TUI
   cfrproxy version                                    build version, commit, date
   cfrproxy explain <model> [--endpoint N] [--scope P] [--image] [--inbound openai|anthropic|ollama] [--json]
+  cfrproxy explain auto --tokens N --tools K [--image] [--tier routine|careful|hard | --text "..."]   # smart router dry run
                    dry-run the routing for a model id: policy, resolution, pool, fallback chain
   cfrproxy skills  list [--used] | groups | group set NAME [--desc D] [--members a,b,c]
                    | group rm NAME | rescan | import-usage FILE.json | assign provider|endpoint NAME [--groups g1,g2] [--skills s1,s2]
@@ -710,6 +711,11 @@ func cmdExplain(args []string) {
 	scope := fs.String("scope", "", "provider name of a /p/{provider} mount")
 	inbound := fs.String("inbound", "openai", "inbound dialect: openai | anthropic | ollama | responses")
 	image := fs.Bool("image", false, "the request carries an image")
+	tokens := fs.Int("tokens", 0, "smart router: estimated prompt tokens")
+	tools := fs.Int("tools", 0, "smart router: tools attached")
+	depth := fs.Int("depth", 0, "smart router: messages so far")
+	tier := fs.String("tier", "", "smart router: routine|careful|hard (skips the classifier)")
+	text := fs.String("text", "", "smart router: last user message to grade")
 	asJSON := fs.Bool("json", false, "print JSON instead of text")
 	var model string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -727,7 +733,8 @@ func cmdExplain(args []string) {
 	p := proxy.New(s)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res := p.Explain(ctx, proxy.ExplainRequest{Model: model, Endpoint: *endpoint, Scope: *scope, Inbound: *inbound, Image: *image})
+	res := p.Explain(ctx, proxy.ExplainRequest{Model: model, Endpoint: *endpoint, Scope: *scope, Inbound: *inbound, Image: *image,
+		Tokens: *tokens, Tools: *tools, Depth: *depth, Tier: *tier, Text: *text})
 	if *asJSON {
 		b, _ := json.MarshalIndent(res, "", "  ")
 		fmt.Println(string(b))

@@ -938,6 +938,35 @@ func (s *Store) rollupUsage(t *Trace) {
 		t.PromptTokens, t.CompletionTokens, t.CachedTokens, noUsage, absorbed, errSnip, time.Now().Unix())
 }
 
+// ModelHealth is the smart router's view of one provider/model over a window:
+// how often it was asked and how often that went wrong.
+type ModelHealth struct {
+	Requests int64 `json:"requests"`
+	Failed   int64 `json:"failed"`
+	Fellback int64 `json:"fellback"`
+}
+
+// ModelHealthSince sums usage_daily from sinceDay (inclusive), keyed by
+// lowercased "provider/model".
+func (s *Store) ModelHealthSince(sinceDay string) (map[string]ModelHealth, error) {
+	rows, err := s.db.Query(`SELECT provider,model,SUM(requests),SUM(failed),SUM(fellback)
+	  FROM usage_daily WHERE day >= ? GROUP BY provider,model`, sinceDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ModelHealth{}
+	for rows.Next() {
+		var prov, model string
+		var h ModelHealth
+		if err := rows.Scan(&prov, &model, &h.Requests, &h.Failed, &h.Fellback); err != nil {
+			continue
+		}
+		out[strings.ToLower(prov+"/"+model)] = h
+	}
+	return out, rows.Err()
+}
+
 // UsageDaily returns durable usage rows, newest day first.
 func (s *Store) UsageDaily(sinceDay string, limit int) ([]map[string]any, error) {
 	if limit <= 0 || limit > 2000 {

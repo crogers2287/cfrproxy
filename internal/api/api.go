@@ -202,9 +202,12 @@ func (a *API) Register(mux *http.ServeMux) {
 	inner.HandleFunc("PUT /admin/api/global-fallback", a.hGlobalFBSet)
 	inner.HandleFunc("GET /admin/api/explain", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		atoi := func(k string) int { n, _ := strconv.Atoi(q.Get(k)); return n }
 		res := a.Proxy.Explain(r.Context(), proxy.ExplainRequest{
 			Model: q.Get("model"), Endpoint: q.Get("endpoint"), Scope: q.Get("scope"),
 			Inbound: q.Get("inbound"), Image: q.Get("image") == "1" || q.Get("image") == "true",
+			Tokens: atoi("tokens"), Tools: atoi("tools"), Depth: atoi("depth"),
+			Tier: q.Get("tier"), Text: q.Get("text"),
 		})
 		writeJSON(w, 200, res)
 	})

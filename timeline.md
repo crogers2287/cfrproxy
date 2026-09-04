@@ -6,6 +6,88 @@
 
 ## 2026-09-04
 
+### REQ-105 — Smart auto-router: profile → live registry → local-first selector (+ explain)
+
+Source: chat: "what would be the best way to integrate automatic routing? … how can we make an
+intelligent router that doesn't break every time our local models change? … Plan this out, dont
+wait on me for any part, implement and test."
+
+**Finding.** The classic router maps six bucket words to hard-wired model ids and knows nothing
+about what is loaded, how deep the conversation is, whether the target sees images, or how it
+performed yesterday. Every rename/reload breaks a route and every live route pointed at cloud
+(200–700 of ~3,500 daily requests reached local models).
+
+**Design (phase 1+2 of the plan, sidecar classifier deferred until decisions accumulate).**
+- Profile, not model: the classifier answers ONE word — `routine|careful|hard`. Vision, tool
+  count, depth and token estimate are computed deterministically. Nothing in the profile names a
+  model, so it never goes stale. `classify:"heuristic"` skips the LLM call entirely.
+- Derived registry: for every entry of the tier's candidate list (globs allowed, e.g.
+  `fred/*flash-next*`, `fred/ornith*`), cfrproxy looks up live facts it already has or can probe:
+  served (listing/pool), local (llama-swap `/running` answers, ollama, or `local_providers`),
+  warm/cold (`/running` state ready), busy (`/slots`), context (provider→llama-swap meta→catalog),
+  vision (meta→globs), health (usage_daily failed+fellback over the last N days).
+- Deterministic selector: first entry in operator order that passes the hard gates (served,
+  sighted if image, context ≥ 1.1×tokens, local only below `local_max_tokens`); soft verdicts
+  (busy, cold, unhealthy) are used only when nothing clean remains. Sticky pins are re-validated
+  against the hard gates each turn, so a conversation that outgrows its local window escalates.
+- Explain: `cfrproxy explain auto --tokens N --tools K --image --tier careful` prints the
+  profile, every candidate with its verdict and facts, and the winner.
+- Training data for phase 3: every decision is appended to `~/.cfrproxy/route-decisions.jsonl`.
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. profile classifier (llm/heuristic) + sticky re-validation | ✅ | `TestSmartClassifierPicksTier`, `TestSmartHeuristicTier`, `TestSmartRouteStickyRevalidatesGates`; live classifier graded "rewrite the whole auth layer…" → hard |
+| 2. live registry (served/local/warm/busy/context/vision/health) | ✅ | `TestSmartRouteColdIsLastResort` (cloud provider correctly not local), `TestSmartRouteBusyYieldsToFreeSibling`, `TestSmartRouteImageNeedsSightedModel`, `TestSmartRouteUnhealthyIsLastResort` |
+| 3. selector with hard/soft gates, glob expansion, pool awareness | ✅ | `TestSmartRouteLocalFirstWarm`, `TestSmartRouteContextEscalatesToCloud`, `TestSmartTierFallsThroughToConfiguredList`, `TestSmartRouteFallsBackToDefaultRoute`; live `fred/ornith` pool reads warm with members' slots and health summed |
+| 4. explain for `auto` in smart mode + admin/CLI params | ✅ | `TestSmartExplainShowsVerdicts`; live output below |
+| 5. decision log jsonl | ✅ | `~/.cfrproxy/route-decisions.jsonl` first row: profile `{tier:routine, source:classifier, tokens:7, depth:1}` → `fred/tiel-kvx-w6800` |
+| 6. docs/auto-router.md smart section | ✅ | "Smart mode" section |
+| 7. live config on fred (local-first tiers) + deploy | ✅ | below |
+
+#### Files modified
+- `internal/proxy/smartroute.go` — new: `SmartRouterConfig`, `RouteProfile`, `RouteCandidate`, tier grading (classifier/heuristic), `/running` + `/slots` registry cache, health cache, `smartSelect`, `smartRoute`, decision log.
+- `internal/proxy/autoroute.go` — `Smart` field; `AutoRouteWith` dispatches to `smartRoute`; classifier call extracted into `askClassifier`.
+- `internal/proxy/explain.go` — `ExplainRequest` gains `tokens/tools/depth/tier/text`; `explainSmart` dry run; candidate `Facts` column; classic auto explain now reads `AutoRouterConfig()`.
+- `internal/proxy/proxy.go` — `running` and `health` caches on `Proxy`.
+- `internal/store/store.go` — `ModelHealth`, `ModelHealthSince(day)` (usage_daily rollup by provider/model).
+- `internal/api/api.go`, `main.go` — explain params/flags.
+- `internal/proxy/smartroute_test.go` — 12 tests over a fake llama-swap (listing meta, `/running`, `/slots`, classifier) and a fake cloud provider.
+- `docs/auto-router.md` — Smart mode section.
+
+#### Live config (fred)
+`auto_router.smart`: `local_max_tokens` 150000; routine → `fred/tiel-kvx-w6800, fred/ornith,
+fred/qwen38-flash-next-kvx, ccbudget/deepseek/deepseek-v4-flash, codex/gpt-5.6-luna`; careful →
+`fred/qwen38-flash-next-kvx, fred/ornith, fred/tiel-kvx-w6800, codex/gpt-5.6-terra`; hard →
+`claude/claude-fable-5, codex/gpt-5.6-terra`. Classifier stays `codex/gpt-5.6-luna` (one field to
+move it to a local model); classic `routes` kept as the last resort.
+
+#### Deploy + verify
+- `make test` green (proxy 34.8 s). `make deploy` → rollback copy `cfrproxy.bak-20260904-142209`,
+  MainPID 3355308 active.
+- Dry runs (scratch binary, live DB):
+  - `explain auto --tier routine --tokens 8000 --tools 20` → **fred/tiel-kvx-w6800** chosen
+    (`local, warm, 1/2 slots busy, ctx 131072, vision, 28/322 failed`); ornith, flash-next-kvx,
+    deepseek, luna viable.
+  - `--tier careful --tokens 60000 --tools 12` → **fred/qwen38-flash-next-kvx**.
+  - `--tier routine --tokens 3000 --image` → tiel; `ccbudget/deepseek/deepseek-v4-flash` = blind.
+  - `--tier hard` → **claude/claude-fable-5**.
+  - `--tier careful --tokens 200000` → all three local `too small (need ~220000)` → **codex/gpt-5.6-terra**.
+  - `--text "rewrite the whole auth layer…"` → classifier graded **hard** → fable.
+- Live: `POST /v1/chat/completions {"model":"auto","messages":[{"role":"user","content":"ping"}]}`
+  → answered by `tiel-kvx-w6800`; trace 168808 `fred|tiel-kvx-w6800|200|3676ms|auto→routine→fred/tiel-kvx-w6800 thinking=medium`.
+  `route-decisions.jsonl` row: tier routine (classifier), chosen fred/tiel-kvx-w6800, 5 candidates with verdicts.
+
+#### Next (not started)
+- Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
+  local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
+- Outcome scoring beyond failed/fellback (regenerate-within-minutes, tool errors after a turn,
+  sampled cloud judge).
+
+**REQ-105 status: COMPLETE.**
+
+
 ### REQ-104 — kvx_restore probe must carry the template-affecting fields (reasoning_effort et al.)
 
 Source: coordinator, after eight consecutive live misses on an agent whose conversation kvxd holds.
