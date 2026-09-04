@@ -178,6 +178,7 @@ type RouteCandidate struct {
 	// prompt from nothing, local models only.
 	PrefixKnown  bool    `json:"prefix_known,omitempty"`
 	ColdPrefillS float64 `json:"cold_prefill_s,omitempty"`
+	KVXShared    int     `json:"kvx_shared,omitempty"` // tokens a kvx artifact would restore (dry-run probe)
 	soft         int     // 0 viable, 1 cold prefill, 2 busy, 3 cold, 4 unhealthy, 9 hard-skipped
 }
 
@@ -196,6 +197,9 @@ func (c RouteCandidate) Facts() string {
 		b = append(b, fmt.Sprintf("ctx %d", c.Context))
 	}
 	if c.Local {
+		if c.KVXShared > 0 {
+			b = append(b, fmt.Sprintf("kvx covers %d", c.KVXShared))
+		}
 		if c.PrefixKnown {
 			b = append(b, "prefix cached")
 		} else if c.ColdPrefillS > 0 {
@@ -522,6 +526,21 @@ func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, pr RoutePr
 		c.PrefixKnown = prefixKnownOn(pr.req, members)
 		if !c.PrefixKnown && pr.Tokens > 0 {
 			c.ColdPrefillS = float64(pr.Tokens) / prefillRateFor(members[0])
+			// Over budget on the naive estimate: ask kvxd whether an artifact
+			// already covers most of this prompt (render + scan, no slot
+			// touched, ~0.5 s). A seeded harness prefix turns a 67 s cold
+			// prefill into a few seconds of tail, and the router should know.
+			if c.ColdPrefillS > cfg.coldPrefillBudget() && cfg.coldPrefillBudget() > 0 && c.Warm == "warm" {
+				if shared := p.kvxWouldRestore(ctx, prov, members[0], pr.req); shared > 0 {
+					c.KVXShared = shared
+					rest := pr.Tokens - shared
+					if rest < 0 {
+						rest = 0
+					}
+					c.ColdPrefillS = float64(rest) / prefillRateFor(members[0])
+					c.PrefixKnown = c.ColdPrefillS <= cfg.coldPrefillBudget()
+				}
+			}
 		}
 	}
 	// context: a pool advertises its first member's window
@@ -683,6 +702,10 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 		routeCache.put(fp, d.Chosen, d.Tier)
 	}
 	rememberPrefix(req, d)
+	if fp != "" {
+		// grouped into per-conversation trajectories by RouteTrajectories
+		note += " conv:" + fp[:8]
+	}
 	return d.Chosen, note
 }
 

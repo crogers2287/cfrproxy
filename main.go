@@ -81,7 +81,13 @@ func main() {
 	case "provider":
 		cmdProvider(rest)
 	case "route":
+		if len(rest) > 0 && rest[0] == "trajectories" {
+			cmdTrajectories(rest[1:])
+			return
+		}
 		cmdRoute(rest)
+	case "kvx":
+		cmdKVX(rest)
 	case "test":
 		cmdTest(rest)
 	case "logs":
@@ -138,6 +144,9 @@ Usage:
   cfrproxy serve   [--addr :8420] [--data DIR]        run the proxy + WebUI
   cfrproxy tui     [--data DIR]                       full-screen management TUI
   cfrproxy version                                    build version, commit, date
+  cfrproxy route trajectories [--limit N] [--json]        # what auto did to each conversation
+  cfrproxy kvx prefixes [--client claude-code]              # recorded harness prefixes (seed sources)
+  cfrproxy kvx seed --model fred/ornith-kvx-w6800 [--client claude-code] [--newest N]   # pin them in kvxd
   cfrproxy explain <model> [--endpoint N] [--scope P] [--image] [--inbound openai|anthropic|ollama] [--json]
   cfrproxy explain auto --tokens N --tools K [--image] [--tier routine|careful|hard | --text "..."]   # smart router dry run
                    dry-run the routing for a model id: policy, resolution, pool, fallback chain
@@ -930,5 +939,102 @@ func cmdSkills(args []string) {
 		}
 	default:
 		fatal("unknown skills subcommand %q", pos[0])
+	}
+}
+
+// cmdTrajectories prints one line per conversation the smart router handled.
+func cmdTrajectories(args []string) {
+	fs := flag.NewFlagSet("route trajectories", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data directory")
+	limit := fs.Int("limit", 40, "conversations to show")
+	scan := fs.Int("scan", 2000, "newest traces to scan")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(args)
+	s := openStore(*data)
+	defer s.Close()
+	p := proxy.New(s)
+	ts, err := p.RouteTrajectories(*scan, *limit)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if *asJSON {
+		b, _ := json.MarshalIndent(ts, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Print(proxy.TrajectoriesText(ts))
+}
+
+// cmdKVX: prefixes | seed — kv-rosetta seeding from cfrproxy's recorded
+// static prefixes (see internal/proxy/kvxseed.go).
+func cmdKVX(args []string) {
+	if len(args) < 1 {
+		fatal("usage: cfrproxy kvx prefixes|seed ...")
+	}
+	sub, args := args[0], args[1:]
+	fs := flag.NewFlagSet("kvx "+sub, flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data directory")
+	client := fs.String("client", "", "harness label (claude-code, omp, openai-sdk, …); blank = all")
+	model := fs.String("model", "", "provider/model to seed (must be resident in llama-swap)")
+	newest := fs.Int("newest", 1, "prefixes per harness, newest first")
+	turn := fs.String("user-turn", "", "user turn appended to the prefix (default: seed)")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(args)
+	ps, err := proxy.LoadSeedPrefixes(*client)
+	if err != nil {
+		fatal("%v", err)
+	}
+	switch sub {
+	case "prefixes":
+		if *asJSON {
+			b, _ := json.MarshalIndent(ps, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Printf("%-14s %-24s %-20s %-8s %-6s %s\n", "client", "recorded on", "last seen", "sys(B)", "tools", "fingerprint")
+		for _, p := range ps {
+			fmt.Printf("%-14s %-24s %-20s %-8d %-6d %s\n", p.Client, p.Model, p.LastSeen, p.SystemBytes, p.ToolCount, p.Fingerprint[:12])
+		}
+	case "seed":
+		if *model == "" {
+			fatal("--model required")
+		}
+		count := map[string]int{}
+		var pick []proxy.SeedPrefix
+		for _, p := range ps {
+			if count[p.Client] < *newest {
+				count[p.Client]++
+				pick = append(pick, p)
+			}
+		}
+		if len(pick) == 0 {
+			fatal("no recorded prefixes match")
+		}
+		s := openStore(*data)
+		defer s.Close()
+		p := proxy.New(s)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		res, err := p.KVXSeed(ctx, *model, pick, *turn)
+		if err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			b, _ := json.MarshalIndent(res, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+		for _, r := range res {
+			switch {
+			case r.Seeded:
+				fmt.Printf("%-14s %s seeded %d tokens into slot %d (%.1fs)\n", r.Client, r.Prefix, r.Tokens, r.Slot, r.Seconds)
+			case r.Already:
+				fmt.Printf("%-14s %s already held\n", r.Client, r.Prefix)
+			default:
+				fmt.Printf("%-14s %s not seeded: %s\n", r.Client, r.Prefix, r.Reason)
+			}
+		}
+	default:
+		fatal("usage: cfrproxy kvx prefixes|seed ...")
 	}
 }

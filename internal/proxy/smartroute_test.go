@@ -116,6 +116,14 @@ func smartFixture(t *testing.T) (*Proxy, *store.Store, *fakeSwap) {
 	return New(s), s, f
 }
 
+// tierOf strips the " conv:<id>" tag the smart router appends to its bucket.
+func tierOf(note string) string {
+	if i := strings.Index(note, " conv:"); i >= 0 {
+		return note[:i]
+	}
+	return note
+}
+
 func smallReq(text string) *wire.Request {
 	return &wire.Request{Messages: []wire.Msg{{Role: "user", Content: text}}}
 }
@@ -132,12 +140,12 @@ func findCand(d smartDecision, model string) RouteCandidate {
 func TestSmartRouteLocalFirstWarm(t *testing.T) {
 	p, _, _ := smartFixture(t)
 	m, note := p.AutoRoute(context.Background(), smallReq("fix the typo in main.go"))
-	if m != "local/tiel-a" || note != "routine" {
+	if m != "local/tiel-a" || tierOf(note) != "routine" || !strings.Contains(note, " conv:") {
 		t.Fatalf("want warm local tiel-a on routine, got %s %q", m, note)
 	}
 	// second turn of the same conversation is pinned and skips the classifier
 	m, note = p.AutoRoute(context.Background(), smallReq("fix the typo in main.go"))
-	if m != "local/tiel-a" || note != "routine·sticky" {
+	if m != "local/tiel-a" || tierOf(note) != "routine·sticky" {
 		t.Fatalf("want sticky pin, got %s %q", m, note)
 	}
 }
@@ -243,7 +251,7 @@ func TestSmartRouteStickyRevalidatesGates(t *testing.T) {
 		t.Fatalf("pinned model no longer fits → re-route, got %s %q", m, note)
 	}
 	// and the new pin is the cloud model
-	if m, note := p.AutoRoute(context.Background(), req); m != "cloud/terra" || note != "routine·sticky" {
+	if m, note := p.AutoRoute(context.Background(), req); m != "cloud/terra" || tierOf(note) != "routine·sticky" {
 		t.Fatalf("turn 3 should stick to cloud, got %s %q", m, note)
 	}
 }
@@ -254,7 +262,7 @@ func TestSmartClassifierPicksTier(t *testing.T) {
 	f.answer = "Hard"
 	f.mu.Unlock()
 	m, note := p.AutoRoute(context.Background(), smallReq("hello"))
-	if m != "cloud/fable" || note != "hard" {
+	if m != "cloud/fable" || tierOf(note) != "hard" {
 		t.Fatalf("classifier said hard → cloud/fable, got %s %q", m, note)
 	}
 }
@@ -288,7 +296,7 @@ func TestSmartHeuristicTier(t *testing.T) {
 	}
 	// the request path honours classify:"heuristic" — the fake classifier says routine, heuristic says hard
 	m, note := p.AutoRoute(context.Background(), smallReq("security audit of the login flow"))
-	if note != "hard" || m != "cloud/fable" {
+	if tierOf(note) != "hard" || m != "cloud/fable" {
 		t.Fatalf("heuristic hard → cloud/fable, got %s %q", m, note)
 	}
 }
@@ -456,5 +464,119 @@ func TestSmartRouteColdPrefillBudget(t *testing.T) {
 	}
 	if !prefixKnownOn(small, []string{"tiel-a"}) {
 		t.Fatal("winner's static prefix should be bound after routing")
+	}
+}
+
+// Seeding renders the body the proxy would forward (OpenAI dialect, provider
+// thinking default, one-token user turn) and posts it to kvxd's /v1/seed; the
+// dry-run probe uses the same render and turns a "cold prefill" verdict into
+// "prefix cached" when an artifact covers the prompt.
+func TestKVXSeedAndDryRunProbe(t *testing.T) {
+	var seedBodies, probeBodies [][]byte
+	var mu sync.Mutex
+	kvx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/seed":
+			seedBodies = append(seedBodies, b)
+			fmt.Fprint(w, `{"ok":true,"seeded":true,"tokens":7613,"slot":1,"admitted":"abc","stages":{"prefill":1.1},"seconds":7.3}`)
+		case "/v1/restore-for-prompt":
+			probeBodies = append(probeBodies, b)
+			fmt.Fprint(w, `{"ok":true,"restored":false,"would_restore":true,"covers_tokens":60000,"shared_tokens":60000}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(kvx.Close)
+	p, s, _ := smartFixture(t)
+	poolAffinity.reset()
+	prov, _ := s.ProviderByName("local")
+	prov.ReasoningEffort = "medium"
+	s.SaveProvider(&prov)
+	s.SetSetting("kvx_restore", `{"enabled":true,"url":"`+kvx.URL+`","provider":"local"}`)
+
+	// seed from a recorded prefix (with the old glued billing header, which must go)
+	sp := SeedPrefix{Client: "claude-code", Fingerprint: "deadbeefcafe0000", system: billingHead.ReplaceAllString(
+		"x-anthropic-billing-header: cc_version=2.1.259.467; cc_entrypoint=cli;You are Claude Code.", ""),
+		tools: []wire.Tool{{Name: "bash", Description: "run", Params: json.RawMessage(`{"type":"object"}`)}}}
+	if sp.system != "You are Claude Code." {
+		t.Fatalf("billing head not stripped: %q", sp.system)
+	}
+	res, err := p.KVXSeed(context.Background(), "local/tiel-a", []SeedPrefix{sp}, "")
+	if err != nil || len(res) != 1 || !res[0].Seeded || res[0].Tokens != 7613 || res[0].Slot != 1 {
+		t.Fatalf("seed: %v %+v", err, res)
+	}
+	var body map[string]json.RawMessage
+	json.Unmarshal(seedBodies[0], &body)
+	if string(body["model"]) != `"tiel-a"` || string(body["reasoning_effort"]) != `"medium"` || string(body["user_turn"]) != `"seed"` {
+		t.Fatalf("seed body: %s", seedBodies[0])
+	}
+	var msgs []map[string]any
+	json.Unmarshal(body["messages"], &msgs)
+	if len(msgs) != 2 || msgs[0]["role"] != "system" || msgs[0]["content"] != "You are Claude Code." || msgs[1]["content"] != "seed" {
+		t.Fatalf("seed messages: %s", body["messages"])
+	}
+	if !strings.Contains(string(body["tools"]), `"bash"`) {
+		t.Fatalf("tools missing: %s", body["tools"])
+	}
+	for _, k := range []string{"max_tokens", "stream", "temperature"} {
+		if _, ok := body[k]; ok {
+			t.Fatalf("generation param %s must not reach kvxd", k)
+		}
+	}
+
+	// the probe: 67k new conversation, naive estimate 67 s → over budget → ask kvxd
+	req := &wire.Request{System: "You are Claude Code.", Tools: sp.tools, Messages: []wire.Msg{{Role: "user", Content: "hey"}}}
+	pr := profileFacts(req)
+	pr.Tokens, pr.Tier = 67_000, tierRoutine
+	d := p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, pr, "")
+	c := findCand(d, "tiel-a")
+	if d.Chosen != "local/tiel-a" || !c.PrefixKnown || c.KVXShared != 60000 || c.ColdPrefillS > 10 {
+		t.Fatalf("kvx says 60k covered → local should win: %s %+v", d.Chosen, c)
+	}
+	if len(probeBodies) == 0 || !strings.Contains(string(probeBodies[0]), `"dry_run":true`) {
+		t.Fatalf("probe must be a dry run: %d %s", len(probeBodies), probeBodies)
+	}
+	// a pool is refused as a seed target with a helpful message
+	s.SetSetting("model_pools", `{"tp":["tiel-a","tiel-b"],"tiel-a":["tiel-a","tiel-b"]}`)
+	if _, err := p.KVXSeed(context.Background(), "local/tp", []SeedPrefix{sp}, ""); err == nil || !strings.Contains(err.Error(), "pool") {
+		t.Fatalf("pool seed should be refused: %v", err)
+	}
+	// a member that is also a pool key (fred's ornith-kvx-w6800) is a runtime and seeds fine
+	if _, err := p.KVXSeed(context.Background(), "local/tiel-a", []SeedPrefix{sp}, ""); err != nil {
+		t.Fatalf("member-as-pool-key should seed: %v", err)
+	}
+}
+
+func TestRouteTrajectoriesGroupByConversation(t *testing.T) {
+	p, s, _ := smartFixture(t)
+	now := time.Now().UnixMilli()
+	add := func(off int64, model, note string, prompt, cached int, status int) {
+		s.AddTrace(&store.Trace{TS: now + off, Provider: "local", Model: model, Inbound: "anthropic", Status: status,
+			LatencyMS: 1000 + off, PromptTokens: prompt, CachedTokens: cached, Note: note})
+	}
+	add(0, "tiel-a", "auto→routine→local/tiel-a pool→x kvx→restored 60,000 (slot 1, 2.7s) conv:aaaa1111", 67000, 60000, 200)
+	add(1, "tiel-a", "auto→routine·sticky→local/tiel-a conv:aaaa1111", 67100, 67000, 200)
+	add(2, "terra", "auto→routine→cloud/terra conv:aaaa1111", 130000, 0, 200) // outgrew local
+	add(3, "tiel-a", "auto→careful→local/tiel-a conv:bbbb2222", 8000, 0, 500)
+	add(4, "tiel-a", "pool→tiel-a (conversation)", 8000, 7000, 200) // not auto-routed: ignored
+	ts, err := p.RouteTrajectories(100, 10)
+	if err != nil || len(ts) != 2 {
+		t.Fatalf("%v %+v", err, ts)
+	}
+	b, a := ts[0], ts[1] // newest activity first: bbbb2222 (off 3) then aaaa1111 (off 2)
+	if b.Conv != "bbbb2222" || b.Errors != 1 || b.Tier != "careful" || a.Conv != "aaaa1111" {
+		t.Fatalf("order/errors: %+v %+v", b, a)
+	}
+	if a.Turns != 3 || a.Escalations != 1 || len(a.Hops) != 2 || a.Hops[0].Model != "local/tiel-a" || a.Hops[0].Turns != 2 || a.Hops[1].Model != "cloud/terra" {
+		t.Fatalf("hops: %+v", a)
+	}
+	if a.KVX != "kvx→restored" || a.CacheHitPct < 45 || a.CacheHitPct > 50 {
+		t.Fatalf("kvx/cache: %+v", a)
+	}
+	if txt := TrajectoriesText(ts); !strings.Contains(txt, "local/tiel-a×2 → cloud/terra") {
+		t.Fatalf("text:\n%s", txt)
 	}
 }

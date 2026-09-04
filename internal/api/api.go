@@ -211,6 +211,59 @@ func (a *API) Register(mux *http.ServeMux) {
 		})
 		writeJSON(w, 200, res)
 	})
+	// smart-router trajectories: one row per conversation routed through "auto"
+	inner.HandleFunc("GET /admin/api/route-trajectories", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		scan, _ := strconv.Atoi(q.Get("scan"))
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		ts, err := a.Proxy.RouteTrajectories(scan, limit)
+		if err != nil {
+			httpErr(w, 500, err.Error())
+			return
+		}
+		if ts == nil {
+			ts = []proxy.Trajectory{}
+		}
+		writeJSON(w, 200, ts)
+	})
+	// KV-Rosetta seeding: pin a harness's static prefix into a resident local model
+	inner.HandleFunc("GET /admin/api/kvx-seed/prefixes", func(w http.ResponseWriter, r *http.Request) {
+		ps, err := proxy.LoadSeedPrefixes(r.URL.Query().Get("client"))
+		if err != nil {
+			httpErr(w, 500, err.Error())
+			return
+		}
+		if ps == nil {
+			ps = []proxy.SeedPrefix{}
+		}
+		writeJSON(w, 200, ps)
+	})
+	inner.HandleFunc("POST /admin/api/kvx-seed", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Model  string `json:"model"`
+			Client string `json:"client"`
+			Newest int    `json:"newest"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Model == "" {
+			httpErr(w, 400, "model required")
+			return
+		}
+		ps, err := proxy.LoadSeedPrefixes(in.Client)
+		if err != nil {
+			httpErr(w, 500, err.Error())
+			return
+		}
+		if in.Newest <= 0 {
+			in.Newest = 1
+		}
+		ps = newestPerClient(ps, in.Newest)
+		res, err := a.Proxy.KVXSeed(r.Context(), in.Model, ps, "")
+		if err != nil {
+			httpErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, res)
+	})
 	inner.HandleFunc("GET /admin/api/provider-fallback", func(w http.ResponseWriter, r *http.Request) {
 		settingJSON(a, w, "provider_fallback", `{"enabled":false}`)
 	})
@@ -986,4 +1039,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func httpErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// newestPerClient keeps the n most recent prefixes of each harness.
+func newestPerClient(ps []proxy.SeedPrefix, n int) []proxy.SeedPrefix {
+	count := map[string]int{}
+	var out []proxy.SeedPrefix
+	for _, p := range ps {
+		if count[p.Client] < n {
+			count[p.Client]++
+			out = append(out, p)
+		}
+	}
+	return out
 }

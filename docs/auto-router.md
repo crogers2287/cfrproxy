@@ -78,6 +78,21 @@ Optional keys: `vision` (a list that replaces the tier for image requests), `pre
 `health_max_fail_rate` (0.5), `local_providers` / `cloud_providers`, `log` (default true).
 `routes.default` is the last resort when nothing in any tier qualifies.
 
+**Cold-prefill budget.** A new conversation whose static prefix no local instance has served is
+judged by `prompt tokens / measured prefill rate`; over `max_cold_prefill_seconds` (30) a viable
+cloud model wins. Before giving up on a local model the router asks kvxd (dry-run probe) whether
+a KV-Rosetta artifact already covers the prompt; a seeded harness prefix turns a 67 s cold prefill
+into a few seconds of tail. Seed the standing prefixes once per harness version:
+
+```bash
+cfrproxy kvx prefixes --client claude-code                       # recorded static prefixes
+cfrproxy kvx seed --model fred/ornith-kvx-w6800 --client claude-code   # render, prefill, admit, pin
+```
+
+**Is it working?** `cfrproxy route trajectories` (or the Routing activity panel) shows one row per
+conversation: model sequence, turns, cache-hit %, latency, escalations and the first turn's kvx
+verdict.
+
 **Why did it pick that?**
 
 ```bash

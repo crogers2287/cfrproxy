@@ -465,7 +465,13 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		routed, bucket := p.AutoRouteWith(r.Context(), req, rcfg)
 		if routed != "" {
 			reqModel = routed
-			autoNote += "auto→" + bucket + "→" + routed
+			// the smart router appends " conv:<id>" to its bucket; keep it as
+			// a trailing tag so the note still reads auto→tier→model
+			tag := ""
+			if i := strings.Index(bucket, " conv:"); i >= 0 {
+				bucket, tag = bucket[:i], bucket[i:]
+			}
+			autoNote += "auto→" + bucket + "→" + routed + tag
 			// A route may target a fusion ("code": "fusion:deep"). The
 			// pre-routing check above only saw the router id, so resolve it
 			// here too — otherwise the bucket would route to a model id no

@@ -208,6 +208,26 @@ nothing to restore; it captured that session afterwards (b2bc6bc33139, 67,082 to
   no user turn) so any new session matches, and a no-restore "would hit?" probe the router can
   consult. kvwarm.service is disabled with a stale target list; retire or hand over.
 
+#### Follow-up (same day): seeding, dry-run probe, trajectories (kv-rosetta REQ-113 answered)
+Source: relayed: "REQ-113 in ~/kv-rosetta/timeline.md has the answers … seed with
+POST /v1/seed"; plus "add tracking/trajectory so we can actually see how the autorouting is
+working for each task".
+- `internal/proxy/kvxseed.go`: `LoadSeedPrefixes` reads the recorded static prefixes
+  (`~/.cfrproxy/cache/<model>/<client>/<scope>/*.json`, newest first, one per client+system+tools,
+  old glued billing header stripped), `KVXSeed` renders the exact forwarded body (OpenAI dialect,
+  provider thinking default, one-token user turn) and POSTs `/v1/seed`; `kvxWouldRestore` is the
+  `dry_run:true` probe. Smart router: when the naive cold-prefill estimate is over budget and the
+  model is warm, the probe runs; `shared_tokens` shrinks the estimate and can flip the verdict to
+  `prefix cached` (facts show `kvx covers N`). `TestKVXSeedAndDryRunProbe`. A pool member that is
+  also a pool key (fred's `ornith-kvx-w6800`) seeds; a pure pool name is refused with the members.
+- CLI `cfrproxy kvx prefixes|seed`, admin `GET /admin/api/kvx-seed/prefixes`, `POST /admin/api/kvx-seed`.
+- Trajectories: the router tags each trace note with ` conv:<8 hex>`; `RouteTrajectories` groups
+  the trace buffer into conversations (turns, tier, model hops, escalations, cache-hit %, avg/max
+  latency, errors, first-turn kvx verdict). `cfrproxy route trajectories`,
+  `GET /admin/api/route-trajectories`, WebUI "Routing activity" panel (+ path-strip link).
+  `TestRouteTrajectoriesGroupByConversation`.
+- Live seeds into `fred/ornith-kvx-w6800` for claude-code, omp, openai-sdk (Hermes): see stamp below.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

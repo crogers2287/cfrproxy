@@ -392,6 +392,7 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
         <a class="stage" href="#providers" onclick="return jumpTo('sec-names')"><b>1 · Name</b><span>the <b>model map</b> rewrites names harnesses insist on (<code>claude-sonnet*</code> → anything)</span></a>
         <a class="stage" href="#providers" onclick="return jumpTo('sec-smart')"><b>2 · Virtual model?</b><span><code>auto</code> lets the <b>smart router</b> pick a real model per request; <code>auto:NAME</code> and <code>fusion:NAME</code> are your named setups</span></a>
         <a class="stage" href="#providers" onclick="return jumpTo('sec-providers')"><b>3 · Provider</b><span><code>provider/model</code> goes straight there; a bare name goes to the first <b>provider</b> by priority that serves it</span></a>
+        <a class="stage" href="#providers" onclick="return jumpTo('sec-trajectories')"><b>▶ Activity</b><span>what <code>auto</code> did to each conversation: route, cache hits, escalations</span></a>
         <a class="stage" href="#providers" onclick="return jumpTo('sec-fallback')"><b>4 · Can't serve?</b><span>quota, overload, overflow or an error → the <b>fallback chain</b> answers instead</span></a>
       </div>
       <p class="hint">Every name a harness can send — real models, <code>auto</code>, <code>auto:NAME</code>, <code>fusion</code>, <code>fusion:NAME</code> — is listed in <code>/v1/models</code>. To see exactly where a name lands, use the <b>Test a request</b> box below or <code>cfrproxy explain &lt;model&gt;</code> in a shell.</p>
@@ -462,6 +463,14 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
           <button class="b" onclick="testAutoRoute()">Test</button>
         </div>
         <div id="ar-test-out" style="margin-top:10px"></div></fieldset>
+    </div>
+  </div>
+
+  <div class="panel" id="sec-trajectories">
+    <div class="panel-head"><h2>Routing activity</h2><span id="traj-count" class="pill"></span><div class="spacer"></div><button class="b ghost" onclick="loadTrajectories()">Refresh</button></div>
+    <div class="panel-body">
+      <details class="help"><summary>What <code>auto</code> did to each conversation</summary><p>One row per conversation that went through the smart router (from the trace buffer, newest activity first). <b>Route</b> is the model sequence: <code>fred/ornith×12 → codex/gpt-5.6-terra</code> means twelve turns on Ornith, then an escalation (the conversation outgrew the local window, or the pinned model stopped qualifying). <b>Cache</b> is cached prompt tokens over all prompt tokens — a healthy local conversation sits above 90% after its first turn. <b>kvx</b> is the first turn's KV-Rosetta verdict: <code>restored</code> means the prefix was warm-loaded, <code>miss</code> means it prefilled cold, <code>timeout</code> means kvxd was too slow. Click a row to see the same chain in Live traces.</p></details>
+      <div class="table-wrap"><table id="trajtable"><thead><tr><th>conv</th><th>last</th><th>turns</th><th>tier</th><th>route</th><th>cache</th><th>latency avg / max</th><th>kvx</th><th>errors</th></tr></thead><tbody></tbody></table></div>
     </div>
   </div>
 
@@ -995,7 +1004,7 @@ function showTab(name){
   $$('nav button').forEach(x=>x.classList.remove('on'));btn.classList.add('on');
   $$('main > section').forEach(s=>s.classList.add('hidden'));
   $('#tab-'+name).classList.remove('hidden');
-  if(name==='providers'){renderLaunch();loadRouters();loadNamedFusions();loadGlobalFallback();loadAutoRoute();}
+  if(name==='providers'){renderLaunch();loadRouters();loadNamedFusions();loadGlobalFallback();loadAutoRoute();loadTrajectories();}
   if(name==='docs')refreshDocSel();
   if(name==='accounts')loadAccounts();
   if(name==='agents')loadAgents();
@@ -1458,6 +1467,25 @@ async function refreshTierStatus(){
       olSetVerdicts('ar-tier-'+t,verdicts);
     }catch(err){now.textContent='';}
   }
+}
+async function loadTrajectories(){
+  const tb=$('#trajtable tbody');if(!tb)return;
+  try{
+    const ts=await api('route-trajectories?limit=60');
+    $('#traj-count').textContent=ts.length?ts.length+' conversations':'';
+    if(!ts.length){tb.innerHTML='<tr><td colspan="9" class="sub" style="padding:14px">Nothing routed through <code>auto</code> in the trace buffer yet.</td></tr>';return}
+    const fmt=ms=>ms>=10000?(ms/1000).toFixed(0)+'s':ms>=1000?(ms/1000).toFixed(1)+'s':ms+'ms';
+    tb.innerHTML=ts.map(t=>{
+      const hops=t.hops.map(h=>`<code>${esc(h.model)}</code>${h.turns>1?'<span class="sub">×'+h.turns+'</span>':''}`).join(' <span class="sub">→</span> ');
+      const kv=t.kvx?t.kvx.replace('kvx→',''):'';
+      const kvCls=kv.startsWith('restored')?'on':(kv?'warn':'');
+      const cache=t.prompt_tokens?t.cache_hit_pct.toFixed(0)+'%':'—';
+      const cacheCls=t.prompt_tokens&&t.cache_hit_pct<50&&t.turns>1?' style="color:var(--warn)"':'';
+      return `<tr style="cursor:pointer" onclick="location.hash='traces';setTimeout(()=>{const f=$('#trace-filter');if(f){f.value='conv:${esc(t.conv)}';f.dispatchEvent(new Event('input'))}},50)">
+        <td class="mono">${esc(t.conv)}</td><td>${new Date(t.last_ts).toLocaleTimeString()}</td><td>${t.turns}</td><td>${esc(t.tier)}${t.escalations?' <span class="pill warn">+'+t.escalations+'</span>':''}</td>
+        <td>${hops}</td><td${cacheCls}>${cache}</td><td>${fmt(t.avg_latency_ms)} / ${fmt(t.max_latency_ms)}</td>
+        <td>${kv?'<span class="pill '+kvCls+'">'+esc(kv)+'</span>':''}</td><td>${t.errors?'<span class="pill warn">'+t.errors+'</span>':''}</td></tr>`}).join('');
+  }catch(err){toast('trajectories: '+err.message,true)}
 }
 function jumpTo(id){const el=document.getElementById(id);if(el){el.scrollIntoView({behavior:'smooth',block:'start'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1200)}return false}
 async function testAutoRoute(){
