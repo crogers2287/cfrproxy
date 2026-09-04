@@ -64,8 +64,8 @@ fred/qwen38-flash-next-kvx, ccbudget/deepseek/deepseek-v4-flash, codex/gpt-5.6-l
 move it to a local model); classic `routes` kept as the last resort.
 
 #### Deploy + verify
-- `make test` green (proxy 34.8 s). `make deploy` → rollback copy `cfrproxy.bak-20260904-142209`,
-  MainPID 3355308 active.
+- `make test` green (proxy 34.8 s). Commit `8df8026` (pushed master + main); `make deploy` →
+  rollback copy `cfrproxy.bak-20260904-142345`, `/api/version` → `8df8026`.
 - Dry runs (scratch binary, live DB):
   - `explain auto --tier routine --tokens 8000 --tools 20` → **fred/tiel-kvx-w6800** chosen
     (`local, warm, 1/2 slots busy, ctx 131072, vision, 28/322 failed`); ornith, flash-next-kvx,
