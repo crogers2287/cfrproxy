@@ -106,6 +106,26 @@ def hermes_entry(name):
     return e
 
 
+# Virtual providers: not rows in cfrproxy's providers table, but mounts that
+# list the router ids ("auto", "auto:NAME") and the fusion panels. Without
+# them the Telegram picker can only ever show real providers, so the smart
+# router — the thing most agents should be pointed at — was unreachable.
+VIRTUAL = [
+    ("auto", "cfrproxy-auto", "Smart router — auto picks the model per request"),
+    ("fusion", "cfrproxy-fusion", "Fusion panels — several models draft, a judge answers"),
+]
+
+
+def virtual_entries():
+    return [{
+        "name": vname,
+        "base_url": f"{DATA_HOST}/p/{vname}/v1",
+        "api_key": "cfrproxy",
+        "api_mode": "chat_completions",
+        "discover_models": True,
+    } for _, vname, _ in VIRTUAL]
+
+
 def sync_profile(cfg_path, providers):
     yaml = YAML()
     yaml.preserve_quotes = True
@@ -120,7 +140,7 @@ def sync_profile(cfg_path, providers):
     # drop any prior cfrproxy-managed entries (single 'cfrproxy' or 'cfrproxy-*')
     kept = [e for e in cps
             if not str((e or {}).get("name", "")).lower().startswith("cfrproxy")]
-    new_entries = [hermes_entry(p["name"]) for p in providers]
+    new_entries = virtual_entries() + [hermes_entry(p["name"]) for p in providers]
     doc["custom_providers"] = new_entries + kept
     shutil.copy(cfg_path, cfg_path + f".bak-cfrsync-{int(time.time())}")
     with open(cfg_path, "w") as f:
@@ -133,7 +153,9 @@ def patch_provider_groups(providers):
     PROVIDER_GROUPS, placed between the dict literal and _SLUG_TO_GROUP so the
     reverse index picks it up automatically."""
     src = open(MODELS_PY).read()
-    slugs = [f"custom:cfrproxy-{p['name'].strip().lower()}" for p in providers]
+    # the virtual mounts go first so "auto" is the top pick in the group
+    slugs = [f"custom:{vname}" for _, vname, _ in VIRTUAL] + \
+        [f"custom:cfrproxy-{p['name'].strip().lower()}" for p in providers]
     block = (
         f"{BEGIN}\n"
         f"PROVIDER_GROUPS[{GROUP_ID!r}] = (\n"
@@ -199,7 +221,7 @@ def main():
     # the name goes into base_url verbatim, so a rename that only changes case
     # still has to re-sync — lowercasing here hid exactly that and left stale
     # entries in place.
-    sig = ",".join(sorted(n.strip() for n in names))
+    sig = ",".join([v for _, v, _ in VIRTUAL] + sorted(n.strip() for n in names))
     prev = ""
     try:
         prev = open(STATE_FILE).read().strip()

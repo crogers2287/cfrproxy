@@ -154,6 +154,9 @@ func (p *Proxy) scopedModelIDs(ctx context.Context, provider string, all bool) [
 	if isFusionMount(provider) {
 		return p.fusionModelIDs(true)
 	}
+	if isAutoMount(provider) {
+		return p.autoModelIDs()
+	}
 	prov, ok := p.Store.ProviderByName(provider)
 	if !ok {
 		return nil
@@ -332,7 +335,7 @@ func (p *Proxy) peerTrusted(r *http.Request) bool {
 // whichever other provider happened to fuzzy-match the model id. An unknown
 // provider is now a 404 rather than a silent reroute.
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope string) {
-	if scope != "" && !isFusionMount(scope) {
+	if scope != "" && !isFusionMount(scope) && !isAutoMount(scope) {
 		prov, ok := p.Store.ProviderByName(scope)
 		if !ok {
 			httpErr(w, inbound, 404, "unknown provider mount: "+scope)
@@ -393,7 +396,12 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	// scoped mount forces the provider; a bare model id is qualified to it, and
 	// a "provider/model" that names a different provider is corrected.
 	reqModel := req.Model
-	if scope != "" {
+	switch {
+	case isAutoMount(scope):
+		// the virtual router mount: "auto", "auto:NAME" … pass through bare so
+		// the router switch below recognises them
+		reqModel = p.stripProviderPrefix(reqModel)
+	case scope != "":
 		reqModel = scope + "/" + p.stripProviderPrefix(reqModel)
 	}
 	// share-endpoint model policy: force overrides; otherwise the requested

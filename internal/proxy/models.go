@@ -472,7 +472,7 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 			ids = append(ids, id)
 		}
 	}
-	if c := p.AutoRouterConfig(); c.Enabled && len(c.Routes) > 0 {
+	if c := p.AutoRouterConfig(); c.Enabled && (len(c.Routes) > 0 || c.Smart.on()) {
 		add("auto") // virtual task-routing model, listed first
 		if c.Planner != "" {
 			add("auto-plan") // plan stage + routed execution
@@ -536,6 +536,37 @@ func (p *Proxy) AllModelIDs(ctx context.Context) []string {
 	}
 	if len(ids) == 0 {
 		ids = []string{"default"}
+	}
+	return ids
+}
+
+// isAutoMount reports whether a /p/{name} mount addresses the virtual router
+// provider. Like the fusion mount (fusion.go), it exists because a harness
+// picker such as Hermes/Telegram can only show what some provider lists, and
+// "auto" belongs to no configured provider — so it never appeared there.
+func isAutoMount(scope string) bool {
+	return strings.EqualFold(scope, "auto") || strings.EqualFold(scope, "cfrproxy-auto")
+}
+
+// autoModelIDs lists the router ids a scoped /p/cfrproxy-auto mount serves:
+// the default router, its plan variant, and every enabled named router.
+func (p *Proxy) autoModelIDs() []string {
+	var ids []string
+	if c := p.AutoRouterConfig(); c.Enabled && (len(c.Routes) > 0 || c.Smart.on()) {
+		ids = append(ids, "auto")
+		if c.Planner != "" {
+			ids = append(ids, "auto-plan")
+		}
+	}
+	if routers, err := p.Store.Routers(); err == nil {
+		for _, rt := range routers {
+			if rt.Enabled {
+				ids = append(ids, "auto:"+rt.Name)
+				if rt.Planner != "" {
+					ids = append(ids, "auto-plan:"+rt.Name)
+				}
+			}
+		}
 	}
 	return ids
 }

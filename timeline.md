@@ -142,6 +142,22 @@ Providers, Model map (stage 1), Fallback chain (stage 4, same list editor), Name
 one panel), and Launch last. Verified with a headless Chromium against a throwaway copy of the
 live store on :18420 (desktop 1280 and phone 420; no JS errors); preview data removed.
 
+#### Follow-up (same day): `auto` in the Telegram picker
+Source: chat: "theres no option showing up in the telegram model selector to choose the auto router".
+Cause: `sync_hermes_cfrproxy.py` registers one Hermes custom provider per **real** cfrproxy
+provider (`/p/<name>/v1`), and `auto` belongs to no provider, so no picker entry could list it
+(fusions already had a virtual `/p/cfrproxy-fusion` mount; routers did not).
+- `internal/proxy`: virtual mount `/p/cfrproxy-auto/v1` (`isAutoMount`, `autoModelIDs`) lists
+  `auto`, `auto-plan`, `auto:NAME`, `auto-plan:NAME`; requests through it pass the id bare so the
+  router switch recognises `auto:NAME`; the mount guard admits it. `auto` is also listed when smart
+  mode is on with an empty legacy `routes`. `TestAutoMountListsAndRoutesRouters` (listing over
+  HTTP + a request via the mount landing on the named router's route).
+- `scripts/sync_hermes_cfrproxy.py`: `VIRTUAL` entries `cfrproxy-auto` and `cfrproxy-fusion`
+  are added to every profile's `custom_providers` and put FIRST in the `cfrproxy` picker group;
+  included in the change signature so the timer re-synced and restarted the gateways by itself
+  (16:36 run). Live: `/p/cfrproxy-auto/v1/models` → `auto, auto-plan, auto:auto-sol,
+  auto-plan:auto-sol, auto:budget, auto-plan:budget`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

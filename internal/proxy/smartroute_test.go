@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -353,5 +354,48 @@ func TestSmartRouteAccountWideHealth(t *testing.T) {
 	d = p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, RouteProfile{Tier: tierRoutine, Tokens: 120_000}, "")
 	if c := findCand(d, "terra"); c.Verdict != "chosen" || c.HealthFrom != "" || c.Requests != 25 {
 		t.Fatalf("terra's own clean record should win: %+v", c)
+	}
+}
+
+// The /p/cfrproxy-auto mount is how a harness picker (Hermes/Telegram) gets to
+// see the routers at all: it lists them as bare ids and routes them unscoped.
+func TestAutoMountListsAndRoutesRouters(t *testing.T) {
+	p, s, _ := smartFixture(t)
+	s.SaveRouter(&store.Router{Name: "budget", Enabled: true, Classifier: "local/tiel-a", Planner: "local/tiel-a", Routes: []byte(`{"default":"cloud/terra"}`)})
+	ids := p.scopedModelIDs(context.Background(), "cfrproxy-auto", false)
+	want := []string{"auto", "auto:budget", "auto-plan:budget"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("auto mount listing = %v want %v", ids, want)
+	}
+	mux := http.NewServeMux()
+	p.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	req, _ := http.NewRequest("GET", srv.URL+"/p/cfrproxy-auto/v1/models", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Data []struct{ ID string } `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if len(out.Data) != 3 || out.Data[1].ID != "auto:budget" {
+		t.Fatalf("scoped listing over HTTP: %+v", out.Data)
+	}
+	// and a request through the mount reaches the named router: classic
+	// buckets, so "default" → cloud/terra (the fake cloud 404s the completion,
+	// which is fine — we only need the trace to show where it was routed)
+	body := strings.NewReader(`{"model":"auto:budget","messages":[{"role":"user","content":"hi"}],"max_tokens":4}`)
+	r2, err := http.Post(srv.URL+"/p/cfrproxy-auto/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, _ := io.ReadAll(r2.Body)
+	r2.Body.Close()
+	traces, _ := s.Traces(0, 5)
+	if len(traces) == 0 || traces[0].Provider != "cloud" || traces[0].Model != "terra" || !strings.Contains(traces[0].Note, "auto→default→cloud/terra") {
+		t.Fatalf("auto:budget via the mount should route to cloud/terra; HTTP %d %s; traces=%+v", r2.StatusCode, rb, traces)
 	}
 }
