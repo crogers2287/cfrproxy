@@ -45,6 +45,13 @@ type Provider struct {
 	// "default_context_length" setting. Harnesses read this off /v1/models to
 	// size their compaction; guessing from a renamed model id gets it wrong.
 	ContextLength int `json:"context_length"`
+	// ReasoningEffort is the thinking level sent to this provider's models when
+	// the client did not choose one: off|low|medium|high|xhigh, "" = leave the
+	// request alone. Local chat templates (Qwen3.8) default to xhigh when the
+	// request carries nothing, which is rarely what an agent harness wants.
+	// ReasoningForce makes it override a level the client DID send.
+	ReasoningEffort string `json:"reasoning_effort"`
+	ReasoningForce  bool   `json:"reasoning_force"`
 	// Caveman enables payload compression of bulky tool results sent to this
 	// provider. Off by default; see internal/proxy/caveman.go.
 	Caveman bool `json:"caveman"`
@@ -379,8 +386,12 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 	// handed to someone else should not spend on providers the recipient was
 	// never granted. Default 0 keeps existing behaviour.
 	s.db.Exec(`ALTER TABLE providers ADD COLUMN no_fallback INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE providers ADD COLUMN reasoning_force INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN no_fallback INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN context_length INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE endpoints ADD COLUMN reasoning_force INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE usage_daily ADD COLUMN absorbed INTEGER NOT NULL DEFAULT 0`)
 	// usage_daily: durable per-day/provider/model accounting. `traces` is a
 	// rolling 5000-row buffer (~22 h at current volume), which is useless for
@@ -532,7 +543,7 @@ func (s *Store) decrypt(blob []byte) (string, error) {
 // ---- provider registry ----
 
 func (s *Store) reload() error {
-	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,no_fallback,models_filter,context_length,headers FROM providers`)
+	rows, err := s.db.Query(`SELECT id,name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,no_fallback,models_filter,context_length,headers,reasoning_effort,reasoning_force FROM providers`)
 	if err != nil {
 		return err
 	}
@@ -542,10 +553,12 @@ func (s *Store) reload() error {
 		var p Provider
 		var enc []byte
 		var enabled, inject, cave, nofb int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &cave, &nofb, &p.ModelsFilter, &p.ContextLength, &p.Headers); err != nil {
+		var rforce int
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enc, &p.DefaultModel, &p.Priority, &enabled, &p.DocURL, &p.DocMarkdown, &inject, &p.Models, &p.Fallback, &p.PinnedModels, &cave, &nofb, &p.ModelsFilter, &p.ContextLength, &p.Headers, &p.ReasoningEffort, &rforce); err != nil {
 			return err
 		}
 		p.Enabled, p.InjectDocs, p.Caveman, p.NoFallback = enabled == 1, inject == 1, cave == 1, nofb == 1
+		p.ReasoningForce = rforce == 1
 		if p.APIKey, err = s.decrypt(enc); err != nil {
 			return fmt.Errorf("provider %s: %w", p.Name, err)
 		}
@@ -703,6 +716,11 @@ func (s *Store) Resolve(model string) (Provider, string, error) {
 }
 
 func (s *Store) SaveProvider(p *Provider) error {
+	lvl, err := NormalizeReasoning(p.ReasoningEffort)
+	if err != nil {
+		return err
+	}
+	p.ReasoningEffort = lvl
 	if !ValidTypes[p.Type] {
 		return fmt.Errorf("invalid provider type %q (want openai|anthropic|ollama)", p.Type)
 	}
@@ -721,8 +739,8 @@ func (s *Store) SaveProvider(p *Provider) error {
 		if p.Priority == 0 {
 			p.Priority = int(time.Now().Unix() % 1000000) // append at end
 		}
-		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,no_fallback,models_filter,context_length,headers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers)
+		res, err := s.db.Exec(`INSERT INTO providers(name,type,base_url,api_key_enc,default_model,priority,enabled,doc_url,doc_markdown,inject_docs,models,fallback,pinned_models,caveman,no_fallback,models_filter,context_length,headers,reasoning_effort,reasoning_force) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ReasoningEffort, b2i(p.ReasoningForce))
 		if err != nil {
 			return err
 		}
@@ -730,11 +748,11 @@ func (s *Store) SaveProvider(p *Provider) error {
 	} else {
 		// empty APIKey on update = keep existing key
 		if p.APIKey == "" {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,no_fallback=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,no_fallback=?,models_filter=?,context_length=?,headers=?,reasoning_effort=?,reasoning_force=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ReasoningEffort, b2i(p.ReasoningForce), p.ID)
 		} else {
-			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,no_fallback=?,models_filter=?,context_length=?,headers=? WHERE id=?`,
-				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ID)
+			_, err = s.db.Exec(`UPDATE providers SET name=?,type=?,base_url=?,api_key_enc=?,default_model=?,priority=?,enabled=?,doc_url=?,doc_markdown=?,inject_docs=?,models=?,fallback=?,pinned_models=?,caveman=?,no_fallback=?,models_filter=?,context_length=?,headers=?,reasoning_effort=?,reasoning_force=? WHERE id=?`,
+				p.Name, p.Type, p.BaseURL, enc, p.DefaultModel, p.Priority, b2i(p.Enabled), p.DocURL, p.DocMarkdown, b2i(p.InjectDocs), p.Models, p.Fallback, p.PinnedModels, b2i(p.Caveman), b2i(p.NoFallback), p.ModelsFilter, p.ContextLength, p.Headers, p.ReasoningEffort, b2i(p.ReasoningForce), p.ID)
 		}
 		if err != nil {
 			return err
@@ -1273,6 +1291,35 @@ type Endpoint struct {
 	// would let a harness build prompts no slot can accept -- the exact failure
 	// this exists to prevent. 0 means "no cap, use the derived value".
 	ContextLength int `json:"context_length"`
+	// ReasoningEffort / ReasoningForce: the thinking level for this share, same
+	// semantics as the provider fields; the share setting wins over the
+	// provider's when both are set.
+	ReasoningEffort string `json:"reasoning_effort"`
+	ReasoningForce  bool   `json:"reasoning_force"`
+}
+
+// ReasoningLevels are the accepted thinking levels, lowest first. "off"
+// disables thinking where the dialect can express that; the others map to the
+// OpenAI reasoning_effort vocabulary that llama.cpp, vLLM and the cloud
+// providers all read.
+var ReasoningLevels = []string{"off", "low", "medium", "high", "xhigh"}
+
+// NormalizeReasoning validates a thinking level from the UI/CLI/API. "" means
+// "not set"; "none" is accepted as a spelling of "off".
+func NormalizeReasoning(v string) (string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "", nil
+	}
+	if v == "none" {
+		v = "off"
+	}
+	for _, l := range ReasoningLevels {
+		if v == l {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("reasoning_effort %q: want one of %s", v, strings.Join(ReasoningLevels, "|"))
 }
 
 // Endpoints returns the cached share-endpoint list (see maybeReload). Keys
@@ -1287,7 +1334,7 @@ func (s *Store) Endpoints() ([]Endpoint, error) {
 }
 
 func (s *Store) loadEndpoints() ([]Endpoint, error) {
-	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length FROM endpoints ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length,reasoning_effort,reasoning_force FROM endpoints ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1296,11 +1343,12 @@ func (s *Store) loadEndpoints() ([]Endpoint, error) {
 	for rows.Next() {
 		var e Endpoint
 		var enc []byte
-		var en, cave, nofb int
-		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave, &nofb, &e.ContextLength); err != nil {
+		var en, cave, nofb, rforce int
+		if err := rows.Scan(&e.ID, &e.Name, &enc, &e.Models, &e.ForceModel, &en, &e.Note, &cave, &nofb, &e.ContextLength, &e.ReasoningEffort, &rforce); err != nil {
 			return nil, err
 		}
 		e.Enabled, e.Caveman, e.NoFallback = en == 1, cave == 1, nofb == 1
+		e.ReasoningForce = rforce == 1
 		e.APIKey, _ = s.decrypt(enc)
 		out = append(out, e)
 	}
@@ -1319,6 +1367,11 @@ func (s *Store) EndpointByName(name string) (Endpoint, bool) {
 
 // SaveEndpoint persists e and refreshes the in-memory caches.
 func (s *Store) SaveEndpoint(e *Endpoint) error {
+	lvl, err := NormalizeReasoning(e.ReasoningEffort)
+	if err != nil {
+		return err
+	}
+	e.ReasoningEffort = lvl
 	if err := s.saveEndpoint(e); err != nil {
 		return err
 	}
@@ -1338,8 +1391,8 @@ func (s *Store) saveEndpoint(e *Endpoint) error {
 		return err
 	}
 	if e.ID == 0 {
-		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length) VALUES(?,?,?,?,?,?,?,?,?)`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength)
+		res, err := s.db.Exec(`INSERT INTO endpoints(name,api_key_enc,models,force_model,enabled,note,caveman,no_fallback,context_length,reasoning_effort,reasoning_force) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ReasoningEffort, b2i(e.ReasoningForce))
 		if err != nil {
 			return err
 		}
@@ -1347,11 +1400,11 @@ func (s *Store) saveEndpoint(e *Endpoint) error {
 		return nil
 	}
 	if e.APIKey == "" { // keep existing key on blank
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=?,context_length=? WHERE id=?`,
-			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=?,context_length=?,reasoning_effort=?,reasoning_force=? WHERE id=?`,
+			e.Name, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ReasoningEffort, b2i(e.ReasoningForce), e.ID)
 	} else {
-		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=?,context_length=? WHERE id=?`,
-			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ID)
+		_, err = s.db.Exec(`UPDATE endpoints SET name=?,api_key_enc=?,models=?,force_model=?,enabled=?,note=?,caveman=?,no_fallback=?,context_length=?,reasoning_effort=?,reasoning_force=? WHERE id=?`,
+			e.Name, enc, e.Models, e.ForceModel, b2i(e.Enabled), e.Note, b2i(e.Caveman), b2i(e.NoFallback), e.ContextLength, e.ReasoningEffort, b2i(e.ReasoningForce), e.ID)
 	}
 	return err
 }

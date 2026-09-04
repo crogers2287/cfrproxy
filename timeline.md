@@ -4,6 +4,39 @@
 > home network were moved to `~/homelab-notes/timeline.md` on 2026-09-02 (REQ-094). A REQ id
 > referenced here but absent lives there; ids were kept, so the sequence has gaps.
 
+## 2026-09-04
+
+### REQ-102 — Per-share / per-provider thinking level (local models were running at xhigh)
+
+Source: chat: "can we add the option to pass the thinking level via the endpoint? for some reason
+right now when i check the calls in llamaswap, it seems like everything is set to xhigh for the
+local models"
+
+**Finding.** cfrproxy was not sending any reasoning field (llama-swap capture 204: body keys =
+messages/model/stream/stream_options/tools/repetition_detection). The Flash-Next chat template
+resolves `reasoning_effort|default('xhigh')` and renders "Reasoning effort is set to xhigh…" as the
+first system line, so every harness turn that sent nothing ran at xhigh. Verified against the live
+server's `/apply-template`: top-level `reasoning_effort` is honoured (low/medium/xhigh; high→xhigh),
+`"none"` is ignored, and thinking off needs `chat_template_kwargs.enable_thinking=false`.
+
+**Fix.** New `reasoning_effort` (`off|low|medium|high|xhigh`) + `reasoning_force` on endpoints and
+providers (store columns, API, CLI `provider add/edit --reasoning/--reasoning-force`, Share and
+Provider dialogs, card badges). `internal/proxy/reasoning.go` applies it to the FINAL outbound body
+on both the passthrough and translated paths (and on the caveman-rescue rebuild): share wins over
+provider; the client's own level survives unless forced. Per dialect: openai `reasoning_effort`
+(off → `chat_template_kwargs.enable_thinking=false`), responses `reasoning.effort`, anthropic
+`thinking` with budget clamped under `max_tokens`, ollama `think`. `cfrproxy explain` reports the
+level and source; traces note `thinking=<level>`.
+
+**Verify.** `make test` green (4 packages; new `TestApplyReasoningPerDialect`,
+`TestReasoningForPrecedence`, `TestNormalizeReasoning`, `TestShareReasoningLevelReachesUpstream`).
+Deployed f3f2a6e-dirty 2026-09-04T11:35Z. Provider `fred` set to `medium` (not forced). Live
+request `fred/qwen38-flash-next-kvx` → trace note `thinking=medium`; llama-swap capture 31 body
+`reasoning_effort=medium`; `cfrproxy explain fred/qwen3.8-flash-next --endpoint w6800-test` →
+`thinking: level medium from provider fred, when the client sends none`.
+
+**REQ-102 status: COMPLETE.**
+
 ## 2026-09-03
 
 ### REQ-101 — Skill lazy-load 401 when the model re-types the skill name

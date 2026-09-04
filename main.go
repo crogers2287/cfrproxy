@@ -146,6 +146,8 @@ Usage:
                    [--key K] [--model M] [--models a,b] [--fallback P/M] [--pinned m1,m2] [--doc-url U]
                    [--doc-file F.md] [--inject-docs] [--models-filter 'claude-*,!claude-*-thinking']
                    [--context-length 262144]   advertised context window; 0 = auto-detect
+                   [--reasoning off|low|medium|high|xhigh] [--reasoning-force]
+                   thinking level for these models when the client sends none (force: always)
                    [--headers '{"User-Agent":"...","Authorization":"@file:/path"}']
                    extra outbound headers; @file: reads the value live each request
   cfrproxy provider list | rm --name N | edit --name N [flags]
@@ -263,7 +265,7 @@ func cmdTUI(args []string) {
 
 func providerFlags(fs *flag.FlagSet) map[string]*string {
 	m := map[string]*string{}
-	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned", "models-filter", "context-length", "headers"} {
+	for _, f := range []string{"name", "preset", "type", "base-url", "key", "model", "models", "doc-url", "doc-file", "fallback", "pinned", "models-filter", "context-length", "headers", "reasoning"} {
 		m[f] = fs.String(f, "", "")
 	}
 	return m
@@ -278,6 +280,7 @@ func cmdProvider(args []string) {
 	data := fs.String("data", defaultDataDir(), "data directory")
 	f := providerFlags(fs)
 	inject := fs.Bool("inject-docs", false, "inject docs as system context")
+	reasoningForce := fs.Bool("reasoning-force", false, "apply --reasoning even when the client sends its own level")
 	disabled := fs.Bool("disabled", false, "add in disabled state")
 	fs.Parse(rest)
 	// Which flags the user actually typed. Optional fields are applied when the
@@ -346,6 +349,16 @@ func cmdProvider(args []string) {
 		applyOptional("pinned", &p.PinnedModels)
 		applyOptional("models-filter", &p.ModelsFilter)
 		applyOptional("headers", &p.Headers)
+		if *f["reasoning"] != "" || passed["reasoning"] {
+			lvl, err := store.NormalizeReasoning(*f["reasoning"])
+			if err != nil {
+				fatal(err.Error())
+			}
+			p.ReasoningEffort = lvl
+		}
+		if passed["reasoning-force"] {
+			p.ReasoningForce = *reasoningForce
+		}
 		if *f["context-length"] != "" || passed["context-length"] {
 			n, err := strconv.Atoi(strings.TrimSpace(*f["context-length"]))
 			if err != nil || n < 0 {

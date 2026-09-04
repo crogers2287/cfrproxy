@@ -754,6 +754,10 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
       <div class="field"><label>Context window cap <span class="sub">— optional; only lowers</span></label>
         <input type="number" id="e-ctx" min="0" step="1024" placeholder="0 = use the model's own window">
         <div class="help" id="e-ctx-hint"></div></div>
+      <div class="field"><label>Thinking level <span class="sub">— reasoning effort sent for this share; overrides the provider's default</span></label>
+        <select id="e-reasoning"><option value="">— leave to the client / model —</option><option value="off">off — no thinking</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
+        <div class="help">Local Qwen3.8 templates run at <b>xhigh</b> when a request carries no level. "off" needs a llama.cpp / vLLM style server.</div></div>
+      <div class="check"><input type="checkbox" id="e-reasoning-force"><span>Force it <span>(also replace a level the client sends)</span></span></div>
     </fieldset>
     <div class="field"><label>Note <span class="sub">— optional</span></label><input type="text" id="e-note" placeholder="Bob — gpt + claude only"></div>
     <div class="check"><input type="checkbox" id="e-enabled" checked><span>Enabled</span></div>
@@ -813,6 +817,9 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
       <div class="field"><label>Aliases <span class="sub">— bare names that route here</span></label><input type="text" id="p-models" placeholder="glm-5.2, my-fast-model"></div>
       <div class="field"><label>Context window override <span class="sub">— tokens harnesses are told these models hold; blank = auto-detect</span></label>
         <input type="text" id="p-ctxlen" placeholder="262144" inputmode="numeric"></div>
+      <div class="field"><label>Thinking level <span class="sub">— reasoning effort for these models when the client sends none</span></label>
+        <select id="p-reasoning"><option value="">— leave to the client / model —</option><option value="off">off — no thinking</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
+      <div class="check"><input type="checkbox" id="p-reasoning-force"><span>Force it <span>(also replace a level the client sends)</span></span></div>
     </fieldset>
     <fieldset class="group"><legend>Routing</legend>
       <div class="field"><label>Fallback <span class="sub">— provider/model; only used when "honour each provider's own fallback" is on</span></label><select id="p-fallback"></select></div>
@@ -971,6 +978,7 @@ async function loadProviders(){
       pins?`<b>${pins}</b> pinned`:'',
       p.models_filter?(()=>{const n=p.models_filter.split(',').filter(x=>x.trim()).length;return `<span title="${esc(p.models_filter)}">filter <b>${n>2?n+' patterns':esc(p.models_filter)}</b></span>`})():'',
       p.context_length?`ctx <b>${(p.context_length/1024).toFixed(0)}k</b>`:'',
+      p.reasoning_effort?`thinking <b>${esc(p.reasoning_effort)}${p.reasoning_force?' (forced)':''}</b>`:'',
       p.inject_docs?'<span class="badge-ok">docs → system</span>':'',
       p.caveman?'caveman':'', p.no_fallback?'no fallback':''
     ].filter(Boolean).join('<span style="opacity:.4"> · </span>');
@@ -1054,6 +1062,7 @@ function openProviderDialog(id){
   $('#p-url').value=p.base_url||'';$('#p-key').value='';$('#p-model').value=p.default_model||'';
   $('#p-models').value=p.models||'';$('#p-filter').value=p.models_filter||'';
   $('#p-ctxlen').value=p.context_length?String(p.context_length):'';
+  $('#p-reasoning').value=p.reasoning_effort||'';$('#p-reasoning-force').checked=!!p.reasoning_force;
   $('#p-fallback').innerHTML='<option value="">— none —</option>'+allModels.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
   if(p.fallback&&!allModels.includes(p.fallback))$('#p-fallback').insertAdjacentHTML('beforeend',`<option value="${esc(p.fallback)}">${esc(p.fallback)}</option>`);
   $('#p-fallback').value=p.fallback||'';
@@ -1067,6 +1076,7 @@ async function saveProvider(e){
   const id=$('#p-id').value;
   const body={name:$('#p-name').value,type:$('#p-type').value,base_url:$('#p-url').value,
     api_key:$('#p-key').value,default_model:$('#p-model').value,models:$('#p-models').value,fallback:$('#p-fallback').value,pinned_models:$('#p-pinned').value,models_filter:$('#p-filter').value,context_length:parseInt($('#p-ctxlen').value,10)||0,
+    reasoning_effort:$('#p-reasoning').value,reasoning_force:$('#p-reasoning-force').checked,
     doc_url:$('#p-docurl').value,inject_docs:$('#p-inject').checked,caveman:$('#p-caveman').checked,no_fallback:$('#p-nofb').checked,enabled:$('#p-enabled').checked};
   try{
     const r=await api(id?'providers/'+id:'providers',{method:id?'PUT':'POST',body:JSON.stringify(body)});
@@ -1911,7 +1921,7 @@ async function loadEndpoints(){
                              : 'ALL models');
       const card=document.createElement('div');
       card.className='card'+(e.enabled?'':' off');card.style.cursor='default';
-      card.innerHTML=`<div class="head"><h3>${esc(e.name)}</h3>${e.enabled?'':'<span class="type">off</span>'}${e.no_fallback?'<span class="type">no fallback</span>':''}${e.context_length?'<span class="type">ctx '+(e.context_length/1024).toFixed(0)+'k</span>':''}</div>
+      card.innerHTML=`<div class="head"><h3>${esc(e.name)}</h3>${e.enabled?'':'<span class="type">off</span>'}${e.no_fallback?'<span class="type">no fallback</span>':''}${e.context_length?'<span class="type">ctx '+(e.context_length/1024).toFixed(0)+'k</span>':''}${e.reasoning_effort?'<span class="type">thinking '+esc(e.reasoning_effort)+(e.reasoning_force?' forced':'')+'</span>':''}</div>
         <div class="meta">${policy}${e.note?' · '+esc(e.note):''}</div>
         <div class="kv">URL</div><div class="copyline"><code>${esc(epURL(e.name))}</code><button class="b" type="button" data-copy="${esc(epURL(e.name))}">Copy</button></div>
         <div class="kv">Key</div><div class="copyline"><code>${esc(e.api_key)}</code><button class="b" type="button" data-copy="${esc(e.api_key)}">Copy</button></div>
@@ -1944,6 +1954,7 @@ function openEndpointDialog(id){
   const allowed=(e.models||'').split(',').map(x=>x.trim()).filter(Boolean);
   [...ms.options].forEach(o=>o.selected=allowed.includes(o.value));
   $('#e-ctx').value=e.context_length||'';
+  $('#e-reasoning').value=e.reasoning_effort||'';$('#e-reasoning-force').checked=!!e.reasoning_force;
   fs.onchange=updateCtxHint; $('#e-ctx').oninput=updateCtxHint;
   updateCtxHint();
   if(!id&&!$('#e-key').value)genEpKey();
@@ -1968,7 +1979,8 @@ async function saveEndpoint(ev){
   const models=[...$('#e-models').selectedOptions].map(o=>o.value).join(',');
   const body={name:$('#e-name').value,api_key:$('#e-key').value,force_model:$('#e-force').value,
     models:$('#e-force').value?'':models,note:$('#e-note').value,caveman:$('#e-caveman').checked,no_fallback:$('#e-nofb').checked,enabled:$('#e-enabled').checked,
-    context_length:parseInt($('#e-ctx').value||'0',10)||0};
+    context_length:parseInt($('#e-ctx').value||'0',10)||0,
+    reasoning_effort:$('#e-reasoning').value,reasoning_force:$('#e-reasoning-force').checked};
   try{
     await api(id?'endpoints/'+id:'endpoints',{method:id?'PUT':'POST',body:JSON.stringify(body)});
     edlg.close();toast('endpoint saved');loadEndpoints();

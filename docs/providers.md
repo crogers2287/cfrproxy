@@ -79,3 +79,18 @@ cfrproxy transform add --name pin-temp --phase request --provider mygateway \
 ```
 
 Everything here is also editable in the WebUI with no restart.
+
+## Thinking level
+
+`reasoning_effort` on a provider (`off|low|medium|high|xhigh`, UI "Thinking level", CLI
+`--reasoning`) is the reasoning effort sent to that provider's models when the client did not
+choose one; `reasoning_force` (`--reasoning-force`) applies it even when the client did. A share
+endpoint's own level wins over the provider's. Why it exists: a request with no reasoning field is
+not "thinking off" — the model's chat template decides, and the Qwen3.8 family resolves
+`reasoning_effort|default('xhigh')`, so an agent harness that never sets a level runs every turn at
+the most expensive setting. Per dialect the proxy writes `reasoning_effort` (OpenAI-compatible,
+which llama.cpp forwards to the template), `reasoning.effort` (Responses), `thinking` with a budget
+kept under `max_tokens` (Anthropic) or `think` (Ollama). `off` on an OpenAI-compatible provider
+becomes `chat_template_kwargs.enable_thinking=false`, which only llama.cpp / vLLM style servers
+accept — do not set `off` on a cloud provider. `cfrproxy explain <model> --endpoint <share>` prints
+the resolved level and where it came from; the trace note carries `thinking=<level>` when applied.

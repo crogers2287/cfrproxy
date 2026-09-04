@@ -103,6 +103,12 @@ func (p *Proxy) Explain(ctx context.Context, q ExplainRequest) ExplainResult {
 		if e.ContextLength > 0 {
 			extra += fmt.Sprintf(", context capped at %d", e.ContextLength)
 		}
+		if e.ReasoningEffort != "" {
+			extra += ", thinking " + e.ReasoningEffort
+			if e.ReasoningForce {
+				extra += " (forced)"
+			}
+		}
 		res.step("endpoint", "/e/%s: %s%s", e.Name, policy, extra)
 	}
 	if q.Scope != "" {
@@ -243,6 +249,17 @@ func (p *Proxy) Explain(ctx context.Context, q ExplainRequest) ExplainResult {
 	}
 	if prov.ContextLength > 0 {
 		res.step("context", "provider advertises %d tokens", prov.ContextLength)
+	}
+	if lvl, force := reasoningFor(ep, prov); lvl != "" {
+		how := "when the client sends none"
+		if force {
+			how = "overriding whatever the client sends"
+		}
+		src := "provider " + prov.Name
+		if ep != nil && ep.ReasoningEffort != "" {
+			src = "share /e/" + ep.Name
+		}
+		res.step("thinking", "level %s from %s, %s", lvl, src, how)
 	}
 	return res
 }

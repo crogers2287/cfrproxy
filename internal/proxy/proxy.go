@@ -744,6 +744,17 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			}
 			outBody = transform.Apply(outBody, reqRules)
 		}
+		// Thinking level (reasoning.go). Applied to the FINAL body, whichever
+		// path built it, so a passthrough request gets it too. The share
+		// setting wins over the provider's; neither touches a level the
+		// client chose unless "force" is on. Without this, a local Qwen3.8
+		// template silently runs every harness turn at xhigh.
+		if lvl, force := reasoningFor(ep, c.prov); lvl != "" {
+			if nb, changed := applyReasoning(outBody, otype, lvl, force); changed {
+				outBody = nb
+				tr.Note = strings.TrimSpace(tr.Note + " thinking=" + lvl)
+			}
+		}
 		// KV-Rosetta request-time restore (kvxrestore.go). A NEW conversation
 		// on the local llama-swap pool is about to make llama.cpp evict an LRU
 		// slot and prefill cold; ask kvxd to restore the best attachment into
@@ -826,6 +837,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 						if cm := CavemanCompress(&creq, true); cm.Msgs > 0 {
 							if nb, berr := buildOutbound(otype, &creq); berr == nil {
 								outBody = transform.Apply(nb, reqRules)
+								if lvl, force := reasoningFor(ep, c.prov); lvl != "" {
+									outBody, _ = applyReasoning(outBody, otype, lvl, force)
+								}
 								cavemanRescued, paramRetry = true, true
 								maxAttempts++
 								tr.CMMsgs += cm.Msgs
