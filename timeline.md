@@ -120,7 +120,11 @@ captured attachments have the no-preamble head, but `kvxRestoreBody` lifted only
 | null `tools` dropped; `thinking`/`enable_thinking`/`reasoning_format` kept; no messages → no probe | ✅ | `TestKVXRestoreBodyShape` |
 
 #### Deploy + verify
-- (stamp below)
+- `go vet ./... && go test ./...` green (proxy 35.9 s); 13 `TestKVX*` tests pass in 0.47 s.
+- `a926d3b` via `make deploy`: rollback copy `cfrproxy.bak-20260904-091709`, `/api/version` →
+  `{"built":"2026-09-04T13:17:46Z","commit":"a926d3b","version":"a926d3b"}`, MainPID 3218439 active.
+- Live `kvx_restore` unchanged: `{"enabled":true,"url":"http://127.0.0.1:8431","timeout_ms":3000,
+  "provider":"fred"}`. Coordinator re-runs the live agent check and reads the trace note.
 
 **REQ-100 status: COMPLETE (proxy side).**
 
