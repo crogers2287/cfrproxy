@@ -6,6 +6,39 @@
 
 ## 2026-09-04
 
+### REQ-104 — kvx_restore probe must carry the template-affecting fields (reasoning_effort et al.)
+
+Source: coordinator, after eight consecutive live misses on an agent whose conversation kvxd holds.
+Measured on Qwen3.8-Flash-Next `/apply-template`: a render WITHOUT `reasoning_effort` starts
+`<|im_start|>system\nReasoning effort is set to xhigh…` (template default), a render WITH
+`reasoning_effort:"medium"` starts `<|im_start|>system\n# Tools…`; longest common prefix 3 tokens.
+cfrproxy's `thinking=medium` transform sets `reasoning_effort` on every forwarded request, so the
+captured attachments have the no-preamble head, but `kvxRestoreBody` lifted only `messages` and
+`tools` — kvxd rendered without the field and matched 3 tokens every time.
+
+#### What changed
+- `internal/proxy/kvxrestore.go` — `kvxRestoreBody` now copies, verbatim as `json.RawMessage`, the
+  top-level fields llama.cpp's template consumes when present and non-null:
+  `tools`, `reasoning_effort`, `chat_template_kwargs`, `enable_thinking`, `reasoning_format`,
+  `thinking` (`kvxTemplateFields`). Generation params (`max_tokens`, `temperature`, `stream`, …) are
+  never forwarded. kvxd's side (accepting and passing these to `/apply-template`) shipped in
+  parallel.
+
+| Item | Status | Evidence |
+|---|---|---|
+| kvxd receives `reasoning_effort`/`chat_template_kwargs` equal to what went upstream | ✅ | `TestKVXRestoreForwardsTemplateFieldsOnly` (compares kvxd body to the upstream body field by field) |
+| `max_tokens`/`temperature`/`stream` absent from the probe | ✅ | same test |
+| null `tools` dropped; `thinking`/`enable_thinking`/`reasoning_format` kept; no messages → no probe | ✅ | `TestKVXRestoreBodyShape` |
+
+#### Deploy + verify
+- `go vet ./... && go test ./...` green (proxy 35.9 s); 13 `TestKVX*` tests pass in 0.47 s.
+- `a926d3b` via `make deploy`: rollback copy `cfrproxy.bak-20260904-091709`, `/api/version` →
+  `{"built":"2026-09-04T13:17:46Z","commit":"a926d3b","version":"a926d3b"}`, MainPID 3218439 active.
+- Live `kvx_restore` unchanged: `{"enabled":true,"url":"http://127.0.0.1:8431","timeout_ms":3000,
+  "provider":"fred"}`. Coordinator re-runs the live agent check and reads the trace note.
+
+**REQ-104 status: COMPLETE (proxy side).**
+
 ### REQ-103 — Advertise image input in /v1/models (omp showed local vision models as text-only)
 
 Source: chat: "its currently not advertising that vision is available inside of the OMP harness" +
@@ -94,39 +127,6 @@ haxor-homelab, direct ha-mcp (12 skills).
 Tests: `TestSkillLoadURLAuthorizesItself` (typo'd paths), `TestSkillGroupsAPIRoundTrip` (partial save).
 
 **REQ-101 status: COMPLETE.**
-
-### REQ-100 — kvx_restore probe must carry the template-affecting fields (reasoning_effort et al.)
-
-Source: coordinator, after eight consecutive live misses on an agent whose conversation kvxd holds.
-Measured on Qwen3.8-Flash-Next `/apply-template`: a render WITHOUT `reasoning_effort` starts
-`<|im_start|>system\nReasoning effort is set to xhigh…` (template default), a render WITH
-`reasoning_effort:"medium"` starts `<|im_start|>system\n# Tools…`; longest common prefix 3 tokens.
-cfrproxy's `thinking=medium` transform sets `reasoning_effort` on every forwarded request, so the
-captured attachments have the no-preamble head, but `kvxRestoreBody` lifted only `messages` and
-`tools` — kvxd rendered without the field and matched 3 tokens every time.
-
-#### What changed
-- `internal/proxy/kvxrestore.go` — `kvxRestoreBody` now copies, verbatim as `json.RawMessage`, the
-  top-level fields llama.cpp's template consumes when present and non-null:
-  `tools`, `reasoning_effort`, `chat_template_kwargs`, `enable_thinking`, `reasoning_format`,
-  `thinking` (`kvxTemplateFields`). Generation params (`max_tokens`, `temperature`, `stream`, …) are
-  never forwarded. kvxd's side (accepting and passing these to `/apply-template`) shipped in
-  parallel.
-
-| Item | Status | Evidence |
-|---|---|---|
-| kvxd receives `reasoning_effort`/`chat_template_kwargs` equal to what went upstream | ✅ | `TestKVXRestoreForwardsTemplateFieldsOnly` (compares kvxd body to the upstream body field by field) |
-| `max_tokens`/`temperature`/`stream` absent from the probe | ✅ | same test |
-| null `tools` dropped; `thinking`/`enable_thinking`/`reasoning_format` kept; no messages → no probe | ✅ | `TestKVXRestoreBodyShape` |
-
-#### Deploy + verify
-- `go vet ./... && go test ./...` green (proxy 35.9 s); 13 `TestKVX*` tests pass in 0.47 s.
-- `a926d3b` via `make deploy`: rollback copy `cfrproxy.bak-20260904-091709`, `/api/version` →
-  `{"built":"2026-09-04T13:17:46Z","commit":"a926d3b","version":"a926d3b"}`, MainPID 3218439 active.
-- Live `kvx_restore` unchanged: `{"enabled":true,"url":"http://127.0.0.1:8431","timeout_ms":3000,
-  "provider":"fred"}`. Coordinator re-runs the live agent check and reads the trace note.
-
-**REQ-100 status: COMPLETE (proxy side).**
 
 ### REQ-099 — kvx_restore fires for unpooled local models too (new conversation by fingerprint)
 
