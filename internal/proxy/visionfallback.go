@@ -127,7 +127,7 @@ func (p *Proxy) visionCapableFor(ctx context.Context, prov store.Provider, model
 	if sees, known := p.lookupVisionMeta(prov.Name, model); known {
 		return sees
 	}
-	if p.visionCapable(model) {
+	if p.visionCapable(prov.Name + "/" + model) {
 		return true
 	}
 	// The name told us nothing. One scan (60s-cached) populates capability for
@@ -142,27 +142,113 @@ func (p *Proxy) visionCapableFor(ctx context.Context, prov store.Provider, model
 // Matches the bare upstream id (provider scope stripped) against the
 // configured/default glob list.
 func (p *Proxy) visionCapable(model string) bool {
-	raw := strings.TrimSpace(p.Store.Setting("vision_models"))
-	if raw == "-" {
+	include, exclude, _, disabled := p.visionRules()
+	if disabled {
 		// kill-switch: treat every model as capable, which disables proactive
 		// routing without touching the on-error vision chain
 		return true
 	}
-	pats := DefaultVisionModels
-	if raw != "" {
-		pats = splitList(raw)
+	if p.visionExcluded(model, exclude) {
+		return false
 	}
-	m := model
-	if i := strings.LastIndex(m, "/"); i >= 0 {
-		m = m[i+1:]
-	}
-	lm := strings.ToLower(m)
-	for _, pat := range pats {
-		if matchGlob(strings.ToLower(strings.TrimSpace(pat)), lm) {
+	for _, pat := range include {
+		if matchVisionPat(pat, model) {
 			return true
 		}
 	}
 	return false
+}
+
+// visionRules parses the "vision_models" setting:
+//
+//	""         built-in DefaultVisionModels
+//	"-"        disabled: every model is treated as capable
+//	"a,b"      replaces the defaults
+//	"+a,b"     extends the defaults (the local llama-swap aliases that never
+//	           match a naming convention live here without retyping the list)
+//	"!pat"     excludes; wins over any include
+//
+// A pattern containing "/" matches the full provider/model id, so a local
+// alias like fred/deepseek-v4-flash can be marked capable without also
+// marking a cloud provider's model of the same bare name.
+func (p *Proxy) visionRules() (include, exclude []string, custom, disabled bool) {
+	raw := strings.TrimSpace(p.Store.Setting("vision_models"))
+	if raw == "-" {
+		return nil, nil, false, true
+	}
+	if raw == "" {
+		return DefaultVisionModels, nil, false, false
+	}
+	extend := strings.HasPrefix(raw, "+")
+	if extend {
+		include = append(include, DefaultVisionModels...)
+	}
+	for _, pat := range splitList(strings.TrimPrefix(raw, "+")) {
+		pat = strings.TrimSpace(pat)
+		switch {
+		case pat == "":
+		case strings.HasPrefix(pat, "!"):
+			exclude = append(exclude, strings.TrimPrefix(pat, "!"))
+		default:
+			include = append(include, pat)
+		}
+	}
+	return include, exclude, true, false
+}
+
+func (p *Proxy) visionExcluded(model string, exclude []string) bool {
+	for _, pat := range exclude {
+		if matchVisionPat(pat, model) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchVisionPat matches one glob against a model id that may or may not be
+// provider-qualified. Bare patterns see the bare model name; patterns with a
+// "/" see the whole id.
+func matchVisionPat(pat, model string) bool {
+	pat = strings.ToLower(strings.TrimSpace(pat))
+	lm := strings.ToLower(model)
+	if strings.Contains(pat, "/") {
+		return matchGlob(pat, lm)
+	}
+	if i := strings.LastIndex(lm, "/"); i >= 0 {
+		lm = lm[i+1:]
+	}
+	return matchGlob(pat, lm)
+}
+
+// visionAdvertised is what the /v1/models listing says about image input for
+// one listed id. It is deliberately three-valued: a provider's own declaration
+// (llama-swap isVision) or a glob hit is a known answer either way, but an id
+// that matches nothing is UNKNOWN and gets no field at all — harnesses such as
+// omp then fall back to their own registry, which knows more about cloud
+// models than a glob list does. Emitting ["text"] there would downgrade them.
+func (p *Proxy) visionAdvertised(scope, id string) (sees, known bool) {
+	prov, model, ok := p.listedTarget(scope, id)
+	if !ok {
+		if p.visionCapable(id) {
+			return true, true
+		}
+		return false, false
+	}
+	if s, k := p.lookupVisionMeta(prov.Name, model); k {
+		return s, true
+	}
+	full := prov.Name + "/" + model
+	_, exclude, _, disabled := p.visionRules()
+	if disabled {
+		return false, false
+	}
+	if p.visionExcluded(full, exclude) {
+		return false, true
+	}
+	if p.visionCapable(full) {
+		return true, true
+	}
+	return false, false
 }
 
 // VisionCapable is visionCapable for callers outside the package — the
@@ -180,14 +266,12 @@ func (p *Proxy) VisionCapableFor(ctx context.Context, prov store.Provider, model
 // VisionModelPatterns returns the effective capability globs and whether they
 // came from the "vision_models" setting rather than the built-in defaults.
 func (p *Proxy) VisionModelPatterns() (pats []string, custom bool, disabled bool) {
-	raw := strings.TrimSpace(p.Store.Setting("vision_models"))
-	if raw == "-" {
-		return nil, false, true
+	include, exclude, custom, disabled := p.visionRules()
+	pats = append(pats, include...)
+	for _, e := range exclude {
+		pats = append(pats, "!"+e)
 	}
-	if raw != "" {
-		return splitList(raw), true, false
-	}
-	return DefaultVisionModels, false, false
+	return pats, custom, disabled
 }
 
 // dialectCarriesImages reports whether buildOutbound preserves image parts when
@@ -475,34 +559,37 @@ func (p *Proxy) ContextLengthFor(prov store.Provider, model string) int {
 func (p *Proxy) AdvertisedContext(scope, id string) int { return p.advertisedContext(scope, id) }
 
 func (p *Proxy) advertisedContext(scope, id string) int {
-	if scope != "" {
-		prov, ok := p.Store.ProviderByName(scope)
-		if !ok {
-			return 0
-		}
-		return p.ContextLengthFor(prov, id)
-	}
-	i := strings.IndexByte(id, '/')
-	if i <= 0 {
-		// An unqualified id can still be an operator-declared model_map alias,
-		// which resolves to a real provider/model. It has to advertise THAT
-		// model's window: a harness left to guess is exactly how REQ-086's
-		// 395k-into-262k overflow happened, and REQ-089 found the same class of
-		// bug again in llama-swap's own metadata.
-		if mapped := p.Store.ModelMapLookup(id, MatchMapPattern); mapped != "" {
-			if j := strings.IndexByte(mapped, '/'); j > 0 {
-				if prov, ok := p.Store.ProviderByName(mapped[:j]); ok {
-					return p.ContextLengthFor(prov, mapped[j+1:])
-				}
-			}
-		}
-		return 0
-	}
-	prov, ok := p.Store.ProviderByName(id[:i])
+	prov, model, ok := p.listedTarget(scope, id)
 	if !ok {
 		return 0
 	}
-	return p.ContextLengthFor(prov, id[i+1:])
+	return p.ContextLengthFor(prov, model)
+}
+
+// listedTarget resolves an id as it appears in a models listing to the
+// provider and bare model it stands for: the mount's provider under a scope,
+// the "provider/" prefix otherwise, and for an unqualified id the model_map
+// alias it may be. An alias has to advertise THAT model's properties: a harness
+// left to guess is exactly how REQ-086's 395k-into-262k overflow happened, and
+// REQ-089 found the same class of bug again in llama-swap's own metadata.
+func (p *Proxy) listedTarget(scope, id string) (store.Provider, string, bool) {
+	if scope != "" {
+		prov, ok := p.Store.ProviderByName(scope)
+		return prov, id, ok
+	}
+	i := strings.IndexByte(id, '/')
+	if i <= 0 {
+		if mapped := p.Store.ModelMapLookup(id, MatchMapPattern); mapped != "" {
+			if j := strings.IndexByte(mapped, '/'); j > 0 {
+				if prov, ok := p.Store.ProviderByName(mapped[:j]); ok {
+					return prov, mapped[j+1:], true
+				}
+			}
+		}
+		return store.Provider{}, "", false
+	}
+	prov, ok := p.Store.ProviderByName(id[:i])
+	return prov, id[i+1:], ok
 }
 
 // lastByteReader stamps the moment the upstream last produced data, so

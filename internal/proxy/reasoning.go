@@ -37,13 +37,13 @@ var anthropicBudget = map[string]int{"low": 2048, "medium": 8192, "high": 16384,
 // every upstream.
 //
 //   - openai:     reasoning_effort (llama.cpp forwards it to the template;
-//                 OpenAI/vLLM read it natively). "off" cannot be said with
-//                 that field — llama.cpp ignores "none" — so it becomes
-//                 chat_template_kwargs.enable_thinking=false, which only a
-//                 llama.cpp/vLLM-style server understands.
+//     OpenAI/vLLM read it natively). "off" cannot be said with
+//     that field — llama.cpp ignores "none" — so it becomes
+//     chat_template_kwargs.enable_thinking=false, which only a
+//     llama.cpp/vLLM-style server understands.
 //   - responses:  reasoning.effort ("none" for off).
 //   - anthropic:  thinking {enabled, budget_tokens} / {disabled}, budget kept
-//                 under max_tokens because the API rejects the reverse.
+//     under max_tokens because the API rejects the reverse.
 //   - ollama:     think true/false.
 func applyReasoning(body []byte, otype, level string, force bool) ([]byte, bool) {
 	var m map[string]json.RawMessage

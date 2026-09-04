@@ -203,6 +203,20 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request, scope strin
 			m["context_length"] = n
 			m["context_window"] = n
 		}
+		// Advertise image input where it is KNOWN (provider metadata or the
+		// vision_models globs), in the spellings harnesses read: omp/pi take
+		// input_modalities or architecture.input_modalities, LiteLLM-style
+		// readers take supports_vision. Unknown ids get no field so the
+		// harness keeps its own registry's answer — see visionAdvertised.
+		if sees, known := p.visionAdvertised(scope, id); known {
+			mods := []string{"text"}
+			if sees {
+				mods = append(mods, "image")
+			}
+			m["input_modalities"] = mods
+			m["architecture"] = map[string]any{"input_modalities": mods, "output_modalities": []string{"text"}}
+			m["supports_vision"] = sees
+		}
 		data = append(data, m)
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})

@@ -6,6 +6,37 @@
 
 ## 2026-09-04
 
+### REQ-103 — Advertise image input in /v1/models (omp showed local vision models as text-only)
+
+Source: chat: "its currently not advertising that vision is available inside of the OMP harness" +
+screenshot of omp's inspect_image: "Resolved model cfrproxy/fred/ornith-35b does not support image
+input" / "its not a text only model though, it supports vision in llamaswap, works directly".
+
+**Finding.** omp's `openai-models-list` discovery marks a model image-capable only when the listing
+entry carries `input`/`input_modalities`/`architecture.input_modalities` (or `supports_vision`);
+cfrproxy emitted none, so every local id fell back to text-only. Underneath, cfrproxy itself
+classified Flash-Next, Ornith and Tiel as BLIND: their runners load an `--mmproj` (live `/props`
+report vision:true on all three) but the llama-swap entries carry no `isVision` metadata, and no
+built-in glob matches names like `ornith-35b`. omp also caches discovery for 24 h.
+
+**Fix.** (1) Listing: `input_modalities`, `architecture.input_modalities`, `supports_vision` on every
+id whose capability is known (provider metadata, then globs); unknown ids get no field so the
+harness keeps its own registry's answer. (2) `vision_models` setting: `+` extends the defaults,
+`!pat` excludes, a pattern with `/` matches `provider/model` (no bleed onto a cloud model with the
+same bare name). (3) Setting applied on fred for the kvx aliases, ornith*, tiel-kvx aliases, with
+the vision-off warmer and ruashots excluded. `docs/providers.md` "Vision" section.
+
+**Verify.** `make test` green (new `TestVisionRulesExtendExcludeQualified`,
+`TestModelsListingAdvertisesModalities`). Deployed 2026-09-04T12:36Z. `cfrproxy vision`: kvx, ornith-35b,
+tiel-coder SEE; warmer / 27b-agg / ccbudget deepseek-v4-flash BLIND. `/v1/models`: 108 of 227 ids carry
+`input_modalities` with image, `fred/k2-horizon` has no field. `omp models refresh` then
+`omp models --json`: `fred/ornith-35b`, `fred/qwen38-flash-next-kvx`, `fred/tiel-coder` → input
+`[text, image]`; the warmer → `[text]`. Live image request to flash-next through cfrproxy earlier in
+the session answered correctly ("Red"). Follow-up for the next llama-swap reload window: add
+`metadata: isVision: true` to the kvx, ornith and tiel entries so the provider declares it itself.
+
+**REQ-103 status: COMPLETE.**
+
 ### REQ-102 — Per-share / per-provider thinking level (local models were running at xhigh)
 
 Source: chat: "can we add the option to pass the thinking level via the endpoint? for some reason

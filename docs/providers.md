@@ -94,3 +94,32 @@ kept under `max_tokens` (Anthropic) or `think` (Ollama). `off` on an OpenAI-comp
 becomes `chat_template_kwargs.enable_thinking=false`, which only llama.cpp / vLLM style servers
 accept — do not set `off` on a cloud provider. `cfrproxy explain <model> --endpoint <share>` prints
 the resolved level and where it came from; the trace note carries `thinking=<level>` when applied.
+
+## Vision: what the listing advertises
+
+`/v1/models` carries `input_modalities` (`["text"]` or `["text","image"]`), the same under
+`architecture`, and `supports_vision` for every id whose image capability is KNOWN. Harnesses
+read exactly those fields: omp/pi take `input_modalities`, LiteLLM-style readers take
+`supports_vision`. An id nobody can classify gets no field, so the harness keeps its own
+registry's answer rather than being told "text only".
+
+Known comes from two places, in order: the provider's own declaration (llama-swap
+`meta.llamaswap.isVision`), then the `vision_models` setting / built-in globs:
+
+```
+cfrproxy config set vision_models '+fred/*flash-next*,fred/ornith*,!fred/qwen38-flash-next-warmer'
+```
+
+- `+` prefix extends the built-in list; without it the list REPLACES the defaults.
+- `!pat` excludes and wins over any include.
+- A pattern containing `/` matches the full `provider/model`, so a local alias such as
+  `fred/deepseek-v4-flash` can be marked without also marking a cloud provider's model of the
+  same bare name.
+- `-` disables the proactive gate entirely.
+
+`cfrproxy vision <id>...` prints how each id is classified. The same classification drives the
+proactive vision gate: a BLIND model never receives an image, the request goes to the vision
+fallback chain instead. Local llama-swap entries whose runner loads an `--mmproj` but whose
+config carries no `isVision` metadata are the usual reason a capable model shows as BLIND; the
+durable fix is `metadata: isVision: true` on the entry, the immediate one is the setting above.
+
