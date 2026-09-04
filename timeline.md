@@ -79,6 +79,16 @@ move it to a local model); classic `routes` kept as the last resort.
   → answered by `tiel-kvx-w6800`; trace 168808 `fred|tiel-kvx-w6800|200|3676ms|auto→routine→fred/tiel-kvx-w6800 thinking=medium`.
   `route-decisions.jsonl` row: tier routine (classifier), chosen fred/tiel-kvx-w6800, 5 candidates with verdicts.
 
+#### Follow-up (same day): WebUI
+Source: chat: "did you fix the ui to match? so we can adjust the profiles if we need to?" — it had not,
+and the classic Save button rebuilt the JSON without `smart`, which would have wiped the block on
+the next save. Auto router panel now has a **Smart mode** section: enabled, local max tokens,
+tier grading (classifier / heuristic), one textarea per tier (routine / careful / hard) plus the
+optional vision override, and **Test a request** (tier or "ask classifier", tokens, tools, image,
+text) that calls `/admin/api/explain?model=auto…` and renders every candidate with verdict + facts.
+Save merges the form into the loaded `smart` object so keys the form does not edit survive.
+`TestAutoRouteSaveKeepsSmartBlock` proves the PUT→GET round-trip.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

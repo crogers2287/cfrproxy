@@ -422,9 +422,38 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
       <div class="check"><input type="checkbox" id="ar-sticky"><span>Sticky routing <span>— keep a conversation on the model it was first routed to (recommended)</span></span></div>
       <div class="field"><label>Sticky window <span class="sub">— minutes a conversation stays pinned; blank = 30</span></label>
         <input type="number" id="ar-sticky-ttl" min="1" max="1440" placeholder="30" style="max-width:160px"></div>
-      <div class="field"><label>Routes per task bucket</label>
+      <div class="field"><label>Classic routes per task bucket <span class="sub">— with smart mode on, only <code>default</code> is used (last resort)</span></label>
         <div class="table-wrap"><table id="artable"><thead><tr><th>Task bucket</th><th>→ provider/model</th></tr></thead><tbody></tbody></table></div></div>
+
+      <div class="panel-head" style="margin-top:22px;padding:0"><h2 style="font-size:15px">Smart mode</h2><span id="ar-smart-state" class="pill"></span></div>
+      <details class="help"><summary>Profile → live registry → local-first pick</summary><p>The classifier grades each request <b>routine / careful / hard</b>; cfrproxy measures tokens, depth, tools and images itself. The tier's list is walked <b>in the order you write it</b> (put local models first) and every entry is checked against live facts: served, loaded in llama-swap (warm), free slots, context window, vision, and recent failure rate. The first entry that passes wins; busy, cold or unhealthy models are last resorts. Entries are <code>provider/model</code>, a pool name, or a glob like <code>fred/*flash-next*</code> — so a renamed or unloaded local model just drops out instead of breaking the route. Use <b>Test a request</b> below to see exactly what would be picked and why.</p></details>
+      <div class="check"><input type="checkbox" id="ar-smart-enabled"><span>Smart routing enabled</span></div>
+      <div class="pair">
+        <div class="field"><label>Local max tokens <span class="sub">— above this, local models are skipped; blank = 150000</span></label>
+          <input type="number" id="ar-smart-maxtok" min="1000" step="1000" placeholder="150000"></div>
+        <div class="field"><label>Tier grading</label>
+          <select id="ar-smart-classify"><option value="">Classifier model (heuristic if it fails)</option><option value="heuristic">Heuristic only — never calls a model</option></select></div>
+      </div>
+      <div class="field"><label>Routine <span class="sub">— short answers, small edits, simple tool calls · one entry per line, first wins</span></label>
+        <textarea id="ar-tier-routine" rows="4" placeholder="fred/tiel-kvx-w6800&#10;fred/ornith&#10;ccbudget/deepseek/deepseek-v4-flash"></textarea></div>
+      <div class="field"><label>Careful <span class="sub">— multi-file changes, debugging with evidence, a mistake costs rework</span></label>
+        <textarea id="ar-tier-careful" rows="4"></textarea></div>
+      <div class="field"><label>Hard <span class="sub">— architecture, deep debugging, proofs, security, long-horizon planning</span></label>
+        <textarea id="ar-tier-hard" rows="3"></textarea></div>
+      <div class="field"><label>Vision override <span class="sub">— optional; replaces the tier list when the request carries an image</span></label>
+        <textarea id="ar-tier-vision" rows="2"></textarea></div>
       <div class="toolbar"><button class="b primary" onclick="saveAutoRoute()">Save auto router</button></div>
+
+      <div class="field"><label>Test a request <span class="sub">— dry run against the live registry, nothing is sent upstream</span></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="ar-test-tier" style="max-width:150px"><option value="routine">routine</option><option value="careful">careful</option><option value="hard">hard</option><option value="">ask classifier</option></select>
+          <input type="number" id="ar-test-tokens" placeholder="tokens" value="8000" style="max-width:120px">
+          <input type="number" id="ar-test-tools" placeholder="tools" value="10" style="max-width:100px">
+          <label class="check" style="margin:0"><input type="checkbox" id="ar-test-image"><span>image</span></label>
+          <input type="text" id="ar-test-text" placeholder="last user message (only needed for 'ask classifier')" style="flex:1;min-width:200px">
+          <button class="b" onclick="testAutoRoute()">Test</button>
+        </div>
+        <div id="ar-test-out" style="margin-top:10px"></div></div>
     </div>
   </div>
 
@@ -1336,7 +1365,32 @@ async function loadAutoRoute(){
     $('#ar-sticky').checked=(c.sticky===undefined||c.sticky===null)?true:!!c.sticky;
     $('#ar-sticky-ttl').value=c.sticky_ttl_minutes||'';
     const pill=$('#ar-state');pill.textContent=c.enabled?'on':'off';pill.classList.toggle('on',!!c.enabled);
+    // smart mode: keep the whole block so keys the form does not edit survive a save
+    arSmart=c.smart||{};
+    $('#ar-smart-enabled').checked=!!arSmart.enabled;
+    $('#ar-smart-maxtok').value=arSmart.local_max_tokens||'';
+    $('#ar-smart-classify').value=arSmart.classify==='heuristic'?'heuristic':'';
+    const tiers=arSmart.tiers||{};
+    for(const t of ['routine','careful','hard'])$('#ar-tier-'+t).value=(tiers[t]||[]).join('\n');
+    $('#ar-tier-vision').value=(arSmart.vision||[]).join('\n');
+    const sp=$('#ar-smart-state');sp.textContent=arSmart.enabled?'on':'off';sp.classList.toggle('on',!!arSmart.enabled);
   }catch(err){toast('autoroute: '+err.message,true)}
+}
+let arSmart={};
+const arLines=id=>$('#'+id).value.split('\n').map(x=>x.trim()).filter(Boolean);
+async function testAutoRoute(){
+  const out=$('#ar-test-out');out.innerHTML='<span class="sub">testing…</span>';
+  const q=new URLSearchParams({model:'auto',tier:$('#ar-test-tier').value,tokens:$('#ar-test-tokens').value||0,tools:$('#ar-test-tools').value||0,
+    image:$('#ar-test-image').checked?'1':'0',text:$('#ar-test-text').value});
+  try{
+    const r=await api('explain?'+q.toString());
+    const steps=(r.steps||[]).map(s=>`<div><b>${esc(s.stage)}:</b> ${esc(s.detail)}</div>`).join('');
+    const rows=(r.candidates||[]).map((c,i)=>{
+      const cls=c.why.startsWith('chosen')?'on':(c.why==='viable'?'':'warn');
+      return `<tr><td>${i+1}</td><td><code>${esc(c.provider+'/'+c.model)}</code></td><td><span class="pill ${cls}">${esc(c.why)}</span></td><td class="sub">${esc(c.facts||'')}</td></tr>`}).join('');
+    out.innerHTML=`<div style="font-size:13px;line-height:1.6">${steps}<div><b>result:</b> <code>${esc(r.resolved||'')}</code>${r.error?' <span class="pill warn">'+esc(r.error)+'</span>':''}</div></div>`+
+      (rows?`<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>#</th><th>candidate</th><th>verdict</th><th>facts</th></tr></thead><tbody>${rows}</tbody></table></div>`:'');
+  }catch(err){out.innerHTML='';toast('explain: '+err.message,true)}
 }
 async function loadFusion(){
   try{
@@ -1360,8 +1414,13 @@ async function saveFusion(){
 async function saveAutoRoute(){
   const routes={};
   AR_BUCKETS.forEach(b=>{const v=getPair('ar-'+b);if(v)routes[b]=v});
+  const tiers={};
+  for(const t of ['routine','careful','hard']){const l=arLines('ar-tier-'+t);if(l.length)tiers[t]=l}
+  const smart={...arSmart,enabled:$('#ar-smart-enabled').checked,tiers,local_max_tokens:parseInt($('#ar-smart-maxtok').value,10)||0,
+    classify:$('#ar-smart-classify').value||undefined};
+  const vis=arLines('ar-tier-vision');if(vis.length)smart.vision=vis;else delete smart.vision;
   const body={enabled:$('#ar-enabled').checked,classifier:getPair('ar-classifier'),planner:getPair('ar-planner'),routes,
-    sticky:$('#ar-sticky').checked,sticky_ttl_minutes:parseInt($('#ar-sticky-ttl').value,10)||0};
+    sticky:$('#ar-sticky').checked,sticky_ttl_minutes:parseInt($('#ar-sticky-ttl').value,10)||0,smart};
   try{await api('autoroute',{method:'PUT',body:JSON.stringify(body)});toast('auto router saved');loadAutoRoute()}
   catch(err){toast(err.message,true)}
 }
