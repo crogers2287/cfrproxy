@@ -198,7 +198,7 @@ func TestKVXRestoreOnlyForNewConversations(t *testing.T) {
 	if !strings.Contains(note, "pool→ornith-kvx-w6800 (cold/inflight)") {
 		t.Fatalf("expected a cold pool pick, note=%q", note)
 	}
-	if !strings.Contains(note, "kvx→restored 29,601 (slot 1)") {
+	if !strings.Contains(note, "kvx→restored 29,601 (slot 1, 0.8s)") {
 		t.Fatalf("expected the restore note, note=%q", note)
 	}
 	var sent struct {
@@ -365,7 +365,7 @@ func TestKVXRestoreUnpooledNewConversation(t *testing.T) {
 		t.Fatalf("new unpooled conversation: kvxd called %d times, want 1", n)
 	}
 	note := kvxLastNote(t, s)
-	if !strings.Contains(note, "kvx→restored 29,601 (slot 1)") || strings.Contains(note, "pool→") {
+	if !strings.Contains(note, "kvx→restored 29,601 (slot 1, 0.8s)") || strings.Contains(note, "pool→") {
 		t.Fatalf("note=%q: want the restore note and no pool note", note)
 	}
 	var sent struct {
@@ -493,5 +493,29 @@ func TestKVXRestoreBodyShape(t *testing.T) {
 				t.Fatalf("got %s\nwant %s", got, c.want)
 			}
 		})
+	}
+}
+
+// A restored slot must be the slot the request is served in: llama.cpp would
+// otherwise seat it by its own similarity/LRU rule and could prefill cold in the
+// other slot right next to a warm restore. A miss pins nothing.
+func TestKVXRestorePinsIDSlotOnForwardedBody(t *testing.T) {
+	kvx := newKVXStub(t, kvxHit)
+	up := kvxUpstream(t)
+	_, mux := kvxProxyPools(t, "fred", up.URL, kvxSetting(kvx.URL, ""), "")
+	kvxSend(t, mux, kvxUnpooledBody("fix the parser"))
+	var fwd map[string]json.RawMessage
+	if err := json.Unmarshal(up.last(), &fwd); err != nil {
+		t.Fatal(err)
+	}
+	if string(fwd["id_slot"]) != "1" {
+		t.Fatalf("forwarded body should carry id_slot=1 after a restore into slot 1, got %s", up.last())
+	}
+	miss := newKVXStub(t, `{"restored":false,"reason":"no attachment shares at least 1024 tokens"}`)
+	up2 := kvxUpstream(t)
+	_, mux2 := kvxProxyPools(t, "fred", up2.URL, kvxSetting(miss.URL, ""), "")
+	kvxSend(t, mux2, kvxUnpooledBody("fix the parser"))
+	if strings.Contains(string(up2.last()), "id_slot") {
+		t.Fatalf("a miss must not pin a slot: %s", up2.last())
 	}
 }

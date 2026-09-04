@@ -158,6 +158,25 @@ provider (`/p/<name>/v1`), and `auto` belongs to no provider, so no picker entry
   (16:36 run). Live: `/p/cfrproxy-auto/v1/models` → `auto, auto-plan, auto:auto-sol,
   auto-plan:auto-sol, auto:budget, auto-plan:budget`.
 
+#### Follow-up (same day): why the first `auto` turn prefilled cold despite a kvx artifact
+Source: chat: "why is that prompt cold loading? it should be pulling from its kvx artifact. check
+aise and the kv-rosetta session. work with that session to fix".
+Evidence: kvxd log `16:37:56 [restore-for-prompt] ornith-kvx-w6800: restored 40,876 tokens into
+slot 1` immediately followed by `unhandled error on /v1/restore-for-prompt` = BrokenPipeError in
+`_send`: cfrproxy's probe timeout is 3 s, the restore took 5-8 s, so cfrproxy had already forwarded
+the request (trace 169049 `kvx→timeout`, cache log 70,765 in / 0 cached / 89 s) and hung up.
+Same pattern at 14:34, 16:22, 16:30, 16:38. Every kvx verdict on ornith since 14:34 is a timeout.
+cfrproxy also never pinned the restored slot, so llama.cpp could seat the request elsewhere.
+- `kvxrestore.go`: `kvxRestore` returns the restored slot; the forwarded body gets `id_slot=<slot>`
+  (`setJSONInt`); the note carries kvxd's `seconds` (`kvx→restored 40,876 (slot 1, 6.2s)`).
+  `TestKVXRestorePinsIDSlotOnForwardedBody` (hit pins, miss does not).
+- Setting `kvx_restore.timeout_ms` 3000 → 15000: a restore that saves 60-90 s of prefill is worth
+  waiting for; misses answer well under that.
+- Messaged the kv-rosetta session (kv-rosetta-12) with the evidence and four asks: per-stage
+  timings in the daemon log, don't finish/duplicate a restore after the caller disconnects (two
+  restores 8 s apart landed in different slots), the timeout it wants cfrproxy to hold, and
+  anything else to pin besides id_slot. Awaiting reply.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

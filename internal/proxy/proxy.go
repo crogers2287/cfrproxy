@@ -790,7 +790,12 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// parsed — llama-swap speaks nothing else. kvxWhy (set with the pool
 		// decision above) says whether this is a new conversation.
 		if otype == "openai" && kvxRestoreWanted(kcfg, prov, c, kvxWhy, creq.System, len(creq.Tools)) {
-			tr.Note = strings.TrimSpace(tr.Note + " " + kvxRestore(r.Context(), kcfg, c.model, outBody))
+			note, slot := kvxRestore(r.Context(), kcfg, c.model, outBody)
+			tr.Note = strings.TrimSpace(tr.Note + " " + note)
+			if slot >= 0 {
+				// seat the request in the slot that now holds its prefix
+				outBody = setJSONInt(outBody, "id_slot", slot)
+			}
 		}
 		// maxAttempts is 2 (one transient retry). Dropping a provider-rejected
 		// parameter buys one extra attempt, so the recovery never eats the

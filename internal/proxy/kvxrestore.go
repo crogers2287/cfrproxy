@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -184,56 +185,63 @@ func isJSONNull(v json.RawMessage) bool {
 // settings are irrelevant for a loopback daemon.
 var kvxRestoreClient = &http.Client{}
 
-// kvxRestore calls kvxd synchronously and returns the trace note. It never
-// returns an error: every failure mode is a note, and the caller forwards the
-// request regardless.
-func kvxRestore(ctx context.Context, cfg KVXRestore, model string, outBody []byte) string {
+// kvxRestore calls kvxd synchronously and returns the trace note plus the
+// slot the attachment was restored into (-1 on any miss). It never returns an
+// error: every failure mode is a note, and the caller forwards the request
+// regardless — pinning id_slot to the restored slot when there is one, so
+// llama.cpp cannot seat the request in the other slot and prefill cold next
+// to a warm restore.
+func kvxRestore(ctx context.Context, cfg KVXRestore, model string, outBody []byte) (string, int) {
 	body := kvxRestoreBody(model, outBody)
 	if body == nil {
-		return "kvx→miss: no messages in outbound body"
+		return "kvx→miss: no messages in outbound body", -1
 	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.baseURL()+kvxRestorePath, bytes.NewReader(body))
 	if err != nil {
-		return "kvx→error: " + err.Error()
+		return "kvx→error: " + err.Error(), -1
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := kvxRestoreClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
-			return "kvx→timeout"
+			return "kvx→timeout", -1
 		}
-		return "kvx→error: " + trimErr(err.Error())
+		return "kvx→error: " + trimErr(err.Error()), -1
 	}
 	defer resp.Body.Close()
 	rb, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "kvx→timeout"
+			return "kvx→timeout", -1
 		}
-		return "kvx→error: " + trimErr(err.Error())
+		return "kvx→error: " + trimErr(err.Error()), -1
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("kvx→error: HTTP %d %s", resp.StatusCode, trimErr(string(rb)))
+		return fmt.Sprintf("kvx→error: HTTP %d %s", resp.StatusCode, trimErr(string(rb))), -1
 	}
 	var ans struct {
-		Restored     bool   `json:"restored"`
-		CoversTokens int    `json:"covers_tokens"`
-		Slot         int    `json:"slot"`
-		Reason       string `json:"reason"`
+		Restored     bool    `json:"restored"`
+		CoversTokens int     `json:"covers_tokens"`
+		Slot         int     `json:"slot"`
+		Reason       string  `json:"reason"`
+		Seconds      float64 `json:"seconds"`
 	}
 	if err := json.Unmarshal(rb, &ans); err != nil {
-		return "kvx→error: bad answer: " + trimErr(err.Error())
+		return "kvx→error: bad answer: " + trimErr(err.Error()), -1
 	}
 	if !ans.Restored {
 		reason := strings.TrimSpace(ans.Reason)
 		if reason == "" {
 			reason = "no reason given"
 		}
-		return "kvx→miss: " + trimErr(reason)
+		return "kvx→miss: " + trimErr(reason), -1
 	}
-	return fmt.Sprintf("kvx→restored %s (slot %d)", commaInt(ans.CoversTokens), ans.Slot)
+	if ans.Seconds > 0 {
+		return fmt.Sprintf("kvx→restored %s (slot %d, %.1fs)", commaInt(ans.CoversTokens), ans.Slot, ans.Seconds), ans.Slot
+	}
+	return fmt.Sprintf("kvx→restored %s (slot %d)", commaInt(ans.CoversTokens), ans.Slot), ans.Slot
 }
 
 // trimErr keeps a note readable: one line, bounded length.
@@ -263,4 +271,20 @@ func commaInt(n int) string {
 		return "-" + b.String()
 	}
 	return b.String()
+}
+
+// setJSONInt sets a top-level integer field on a JSON object body, leaving
+// every other byte's meaning intact. A body that is not an object is returned
+// unchanged: it will fail upstream on its own terms.
+func setJSONInt(body []byte, key string, n int) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	m[key] = json.RawMessage(strconv.Itoa(n))
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
