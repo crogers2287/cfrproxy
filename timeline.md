@@ -226,7 +226,11 @@ working for each task".
   latency, errors, first-turn kvx verdict). `cfrproxy route trajectories`,
   `GET /admin/api/route-trajectories`, WebUI "Routing activity" panel (+ path-strip link).
   `TestRouteTrajectoriesGroupByConversation`.
-- Live seeds into `fred/ornith-kvx-w6800` for claude-code, omp, openai-sdk (Hermes): see stamp below.
+- Live seeds into `fred/ornith-kvx-w6800` (23:00): claude-code `2b12226cb01d` → 53,682 tokens,
+  slot 1, 61.1 s (probe 0.64 + prefill 52.7 + save 0.8 + admit 6.9), **pinned** as 7bdbcffe5a7b;
+  omp `af9e0a6da0b4` → 29,585 tokens, 31.4 s, pinned as b040a348e6d1; openai-sdk (Hermes) →
+  "already held: 78cb359d553a shares 30,910 of 30,918" (0.4 s). Next new Claude Code / omp /
+  Hermes conversation on Ornith should read `kvx→restored` on its first turn.
 
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
