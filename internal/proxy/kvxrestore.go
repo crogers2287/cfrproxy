@@ -137,27 +137,46 @@ func kvxRestoreWanted(cfg KVXRestore, primary store.Provider, c candidate, why s
 // that is about to go upstream, so kvxd sees the messages and tools byte-for-
 // byte as llama.cpp will (docs/skills injected, caveman applied, transform
 // rules run). Returns nil when the body carries no messages.
+//
+// The chat template's render depends on more than messages+tools: on
+// Qwen3.8-Flash-Next, a request WITHOUT `reasoning_effort` renders a
+// "Reasoning effort is set to xhigh…" system preamble that a request WITH it
+// does not, and the two renders share only 3 tokens. cfrproxy sets
+// reasoning_effort on every forwarded request (the thinking=… transform), so
+// the captured attachments carry the no-preamble head — and a restore probe
+// rendered without the field could never match them (eight consecutive live
+// misses, 2026-09-04). Every template-affecting top-level field is therefore
+// forwarded verbatim; generation params (max_tokens, temperature, stream, …)
+// are not, since they never reach the template.
 func kvxRestoreBody(model string, outBody []byte) []byte {
-	var out struct {
-		Messages json.RawMessage `json:"messages"`
-		Tools    json.RawMessage `json:"tools,omitempty"`
-	}
-	if json.Unmarshal(outBody, &out) != nil || len(out.Messages) == 0 {
+	var out map[string]json.RawMessage
+	if json.Unmarshal(outBody, &out) != nil || isJSONNull(out["messages"]) {
 		return nil
 	}
-	if bytes.Equal(bytes.TrimSpace(out.Tools), []byte("null")) {
-		out.Tools = nil
+	req := map[string]json.RawMessage{"messages": out["messages"]}
+	if m, err := json.Marshal(model); err == nil {
+		req["model"] = m
 	}
-	req := struct {
-		Model    string          `json:"model"`
-		Messages json.RawMessage `json:"messages"`
-		Tools    json.RawMessage `json:"tools,omitempty"`
-	}{Model: model, Messages: out.Messages, Tools: out.Tools}
+	for _, k := range kvxTemplateFields {
+		if v, ok := out[k]; ok && !isJSONNull(v) {
+			req[k] = v
+		}
+	}
 	b, err := json.Marshal(req)
 	if err != nil {
 		return nil
 	}
 	return b
+}
+
+// kvxTemplateFields are the top-level request fields, besides messages, that
+// llama.cpp's /apply-template consumes. kvxd forwards them to the upstream
+// so the probe renders exactly as the captured request did.
+var kvxTemplateFields = []string{"tools", "reasoning_effort", "chat_template_kwargs", "enable_thinking", "reasoning_format", "thinking"}
+
+func isJSONNull(v json.RawMessage) bool {
+	v = bytes.TrimSpace(v)
+	return len(v) == 0 || bytes.Equal(v, []byte("null"))
 }
 
 // kvxRestoreClient is separate from the upstream client: the per-call

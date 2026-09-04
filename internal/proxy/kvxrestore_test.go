@@ -439,3 +439,59 @@ func TestKVXUnpooledWhyIsPerModel(t *testing.T) {
 		t.Fatalf("unfingerprintable request = %q", w)
 	}
 }
+
+// The template-affecting fields cfrproxy forwards (reasoning_effort et al.)
+// reach kvxd verbatim; generation params do not.
+func TestKVXRestoreForwardsTemplateFieldsOnly(t *testing.T) {
+	kvx := newKVXStub(t, kvxHit)
+	up := kvxUpstream(t)
+	s, mux := kvxProxyPools(t, "fred", up.URL, kvxSetting(kvx.URL, ""), "")
+
+	body := strings.Replace(kvxUnpooledBody("fix the parser"), `"model":"fred/tiel-kvx-w6800",`,
+		`"model":"fred/tiel-kvx-w6800","reasoning_effort":"medium","chat_template_kwargs":{"enable_thinking":true},"max_tokens":64,"temperature":0.2,"stream":false,`, 1)
+	kvxSend(t, mux, body)
+	if n := kvx.count(); n != 1 {
+		t.Fatalf("kvxd called %d times, want 1", n)
+	}
+	if note := kvxLastNote(t, s); !strings.Contains(note, "kvx→restored") {
+		t.Fatalf("note=%q", note)
+	}
+	var fwd, got map[string]json.RawMessage
+	if err := json.Unmarshal(up.last(), &fwd); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(kvx.last(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(fwd["reasoning_effort"]) != `"medium"` {
+		t.Fatalf("upstream did not receive reasoning_effort=medium: %s", up.last())
+	}
+	for _, k := range []string{"model", "messages", "tools", "reasoning_effort", "chat_template_kwargs"} {
+		if string(got[k]) != string(fwd[k]) {
+			t.Errorf("%s: kvxd got %s, upstream got %s", k, got[k], fwd[k])
+		}
+	}
+	for _, k := range []string{"max_tokens", "temperature", "stream"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s must not be forwarded to kvxd: %s", k, kvx.last())
+		}
+	}
+}
+
+func TestKVXRestoreBodyShape(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"no messages", `{"model":"m","max_tokens":1}`, ""},
+		{"messages only", `{"messages":[{"role":"user","content":"hi"}],"max_tokens":8}`,
+			`{"messages":[{"role":"user","content":"hi"}],"model":"tiel"}`},
+		{"null tools dropped, thinking kept", `{"messages":[],"tools":null,"thinking":{"type":"enabled"},"enable_thinking":false,"reasoning_format":"none","stream":true}`,
+			`{"enable_thinking":false,"messages":[],"model":"tiel","reasoning_format":"none","thinking":{"type":"enabled"}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := kvxRestoreBody("tiel", []byte(c.in))
+			if string(got) != c.want {
+				t.Fatalf("got %s\nwant %s", got, c.want)
+			}
+		})
+	}
+}

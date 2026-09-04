@@ -95,6 +95,35 @@ Tests: `TestSkillLoadURLAuthorizesItself` (typo'd paths), `TestSkillGroupsAPIRou
 
 **REQ-101 status: COMPLETE.**
 
+### REQ-100 — kvx_restore probe must carry the template-affecting fields (reasoning_effort et al.)
+
+Source: coordinator, after eight consecutive live misses on an agent whose conversation kvxd holds.
+Measured on Qwen3.8-Flash-Next `/apply-template`: a render WITHOUT `reasoning_effort` starts
+`<|im_start|>system\nReasoning effort is set to xhigh…` (template default), a render WITH
+`reasoning_effort:"medium"` starts `<|im_start|>system\n# Tools…`; longest common prefix 3 tokens.
+cfrproxy's `thinking=medium` transform sets `reasoning_effort` on every forwarded request, so the
+captured attachments have the no-preamble head, but `kvxRestoreBody` lifted only `messages` and
+`tools` — kvxd rendered without the field and matched 3 tokens every time.
+
+#### What changed
+- `internal/proxy/kvxrestore.go` — `kvxRestoreBody` now copies, verbatim as `json.RawMessage`, the
+  top-level fields llama.cpp's template consumes when present and non-null:
+  `tools`, `reasoning_effort`, `chat_template_kwargs`, `enable_thinking`, `reasoning_format`,
+  `thinking` (`kvxTemplateFields`). Generation params (`max_tokens`, `temperature`, `stream`, …) are
+  never forwarded. kvxd's side (accepting and passing these to `/apply-template`) shipped in
+  parallel.
+
+| Item | Status | Evidence |
+|---|---|---|
+| kvxd receives `reasoning_effort`/`chat_template_kwargs` equal to what went upstream | ✅ | `TestKVXRestoreForwardsTemplateFieldsOnly` (compares kvxd body to the upstream body field by field) |
+| `max_tokens`/`temperature`/`stream` absent from the probe | ✅ | same test |
+| null `tools` dropped; `thinking`/`enable_thinking`/`reasoning_format` kept; no messages → no probe | ✅ | `TestKVXRestoreBodyShape` |
+
+#### Deploy + verify
+- (stamp below)
+
+**REQ-100 status: COMPLETE (proxy side).**
+
 ### REQ-099 — kvx_restore fires for unpooled local models too (new conversation by fingerprint)
 
 Source: coordinator follow-up after the live check of REQ-098: `POST /v1/chat/completions
