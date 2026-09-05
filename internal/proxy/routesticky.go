@@ -3,6 +3,9 @@ package proxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -21,6 +24,13 @@ import (
 type stickyRoutes struct {
 	mu sync.Mutex
 	m  map[string]stickyEntry
+	// persistence (serve only; see EnablePins): the table is written to
+	// `path` shortly after every change and read back at startup. Both
+	// tables built on this type are what keep a conversation on the model
+	// and the instance that hold its KV — losing them on a restart (23 today)
+	// re-classified every live conversation and let it hop models.
+	path  string
+	dirty bool
 }
 
 type stickyEntry struct {
@@ -59,6 +69,85 @@ func (s *stickyRoutes) put(fp, model, bucket string) {
 		s.evictOldestLocked()
 	}
 	s.m[fp] = stickyEntry{model: model, bucket: bucket, at: time.Now()}
+	s.dirty = true
+}
+
+// ---- persistence ------------------------------------------------------------
+
+type pinFile map[string]struct {
+	Model  string    `json:"model"`
+	Bucket string    `json:"bucket"`
+	At     time.Time `json:"at"`
+}
+
+// load reads a table written by flush, dropping entries older than maxAge.
+func (s *stickyRoutes) load(path string, maxAge time.Duration) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var pf pinFile
+	if json.Unmarshal(b, &pf) != nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for fp, e := range pf {
+		if fp == "" || e.Model == "" || time.Since(e.At) > maxAge {
+			continue
+		}
+		s.m[fp] = stickyEntry{model: e.Model, bucket: e.Bucket, at: e.At}
+		n++
+	}
+	s.path = path
+	return n
+}
+
+// flush writes the table when it changed. Atomic (temp + rename) so a crash
+// mid-write leaves the previous file.
+func (s *stickyRoutes) flush() {
+	s.mu.Lock()
+	if s.path == "" || !s.dirty {
+		s.mu.Unlock()
+		return
+	}
+	pf := make(pinFile, len(s.m))
+	for fp, e := range s.m {
+		pf[fp] = struct {
+			Model  string    `json:"model"`
+			Bucket string    `json:"bucket"`
+			At     time.Time `json:"at"`
+		}{e.model, e.bucket, e.at}
+	}
+	s.dirty = false
+	path := s.path
+	s.mu.Unlock()
+	b, err := json.Marshal(pf)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		os.Rename(tmp, path)
+	}
+}
+
+// EnablePins loads the sticky-route and pool-affinity tables from dataDir and
+// keeps them written back every few seconds. Called by `serve` only: tests
+// and one-shot CLI commands must not touch the live files.
+func EnablePins(dataDir string) (routes, affinity int) {
+	routes = routeCache.load(filepath.Join(dataDir, "route-pins.json"), stickyDefaultTTL*4)
+	affinity = poolAffinity.load(filepath.Join(dataDir, "pool-affinity.json"), poolAffinityTTL)
+	routeCache.path = filepath.Join(dataDir, "route-pins.json")
+	poolAffinity.path = filepath.Join(dataDir, "pool-affinity.json")
+	go func() {
+		for range time.Tick(3 * time.Second) {
+			routeCache.flush()
+			poolAffinity.flush()
+		}
+	}()
+	return
 }
 
 // evictOldestLocked drops the least recently pinned quarter of the table.

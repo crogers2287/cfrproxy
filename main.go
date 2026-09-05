@@ -213,6 +213,9 @@ func cmdServe(args []string) {
 	defer s.Close()
 	proxy.Version, proxy.Commit, proxy.BuildDate = version, commit, buildDate
 	p := proxy.New(s)
+	if r, a := proxy.EnablePins(*data); r+a > 0 {
+		fmt.Printf("  pins       : %d route pins, %d pool bindings restored\n", r, a)
+	}
 	a := &api.API{Store: s, Proxy: p}
 	user, fresh, err := a.EnsureCredentials()
 	if err != nil {

@@ -531,7 +531,9 @@ func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, pr RoutePr
 			// already covers most of this prompt (render + scan, no slot
 			// touched, ~0.5 s). A seeded harness prefix turns a 67 s cold
 			// prefill into a few seconds of tail, and the router should know.
-			if c.ColdPrefillS > cfg.coldPrefillBudget() && cfg.coldPrefillBudget() > 0 && c.Warm == "warm" {
+			ctxLimit := p.ContextLengthFor(prov, members[0])
+			fits := ctxLimit <= 0 || int(float64(pr.Tokens)*smartHeadroom) <= ctxLimit
+			if fits && c.ColdPrefillS > cfg.coldPrefillBudget() && cfg.coldPrefillBudget() > 0 && c.Warm == "warm" {
 				if shared := p.kvxWouldRestore(ctx, prov, members[0], pr.req); shared > 0 {
 					c.KVXShared = shared
 					rest := pr.Tokens - shared
@@ -627,6 +629,26 @@ func (p *Proxy) smartSelect(ctx context.Context, cfg *SmartRouterConfig, pr Rout
 		d.Tier, list = cfg.tierList(pr.Tier)
 	}
 	health := p.modelHealth(cfg)
+	// Sticky fast path: a pinned conversation only needs its own model
+	// re-checked. Describing every entry would probe kvxd for each local
+	// candidate on every turn of a conversation that is not moving anyway
+	// (measured: three ~1.2 s dry-run probes per turn on a 120k Claude Code
+	// session pinned to a cloud model).
+	if pinned != "" {
+		if i := strings.IndexByte(pinned, '/'); i > 0 {
+			if prov, ok := p.Store.ProviderByName(pinned[:i]); ok && prov.Enabled {
+				m := pinned[i+1:]
+				c := p.describe(ctx, cfg, pr, pinned, prov, m, health)
+				p.judge(cfg, pr, &c, p.isServed(ctx, prov, m))
+				if c.soft <= 2 {
+					c.Verdict = "chosen (pinned)"
+					d.Candidates = []RouteCandidate{c}
+					d.Chosen = pinned
+					return d
+				}
+			}
+		}
+	}
 	for _, entry := range list {
 		prov, models, ok := p.expandEntry(ctx, entry)
 		if !ok {

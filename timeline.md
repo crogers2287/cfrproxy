@@ -266,6 +266,28 @@ budget, verdict truncated in the pill) and the first cloud entry won. Correct, b
   has the same "prefix cached" checkbox. Dry runs: careful 40k cached → flash-next chosen;
   never seen → ccbudget deepseek.
 
+#### Follow-up (same day): live iteration under a running Claude Code session
+Source: chat: "watch the logs of the current run, lets iterate and fix in real time" / "steer that
+session and watch it build".
+- **Sticky turns probed kvxd three times per turn.** A 120k Claude Code conversation pinned to
+  ccbudget still had every local candidate described (dry-run probe ~1.2 s each on Ornith, Tiel,
+  Flash-Next, for windows that could not fit 120k anyway). `smartSelect` now re-validates only
+  the pinned model and returns `chosen (pinned)` when it still qualifies; the probe also never
+  runs for a model whose window cannot fit the prompt. Test additions in
+  `TestKVXSeedAndDryRunProbe`. Decision log after deploy: `sticky … -> ccbudget … [chosen (pinned)]`.
+- **Pins and pool affinity survive restarts** (23 restarts today; each one re-classified every
+  live conversation and let it hop models). `stickyRoutes` gains `load`/`flush` (atomic JSON,
+  3 s writer, only when dirty); `proxy.EnablePins(dataDir)` in `serve` restores
+  `route-pins.json` (≤ 2 h old) and `pool-affinity.json` (≤ pool TTL). `TestStickyRoutesPersistAcrossRestart`.
+  Live: both files present after the first routed request post-deploy.
+- Peer session (crogers2287-c1, on `cfrproxy/auto`) closed out: its task was a plan, not a build;
+  no wrong tool names or truncation; **2/2 Claude Code WebSearch calls returned no sources**.
+  Cause: Claude Code's WebSearch is a sub-request carrying the Anthropic server tool
+  `web_search_20250305` (trace 169443, routed routine → ornith); no model behind cfrproxy can run a
+  server tool, and the wire layer has no emulation. Options for the user: emulate the server tool
+  in cfrproxy (function tool + SearXNG loop, ~2 h) or route search sub-requests to a provider with
+  native search. Not built.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

@@ -539,6 +539,32 @@ func TestKVXSeedAndDryRunProbe(t *testing.T) {
 	if len(probeBodies) == 0 || !strings.Contains(string(probeBodies[0]), `"dry_run":true`) {
 		t.Fatalf("probe must be a dry run: %d %s", len(probeBodies), probeBodies)
 	}
+	// a conversation pinned to a cloud model re-validates only that model: no probes
+	mu.Lock()
+	probeBodies = nil
+	mu.Unlock()
+	d = p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, pr, "cloud/terra")
+	if d.Chosen != "cloud/terra" || len(d.Candidates) != 1 || d.Candidates[0].Verdict != "chosen (pinned)" {
+		t.Fatalf("pinned fast path: %s %+v", d.Chosen, d.Candidates)
+	}
+	mu.Lock()
+	np := len(probeBodies)
+	mu.Unlock()
+	if np != 0 {
+		t.Fatalf("a pinned cloud conversation must not probe local candidates, got %d probes", np)
+	}
+	// a pinned local model whose window no longer fits is re-routed (and never probed)
+	pr.Tokens = 300_000
+	d = p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, pr, "local/tiel-a")
+	if d.Chosen != "cloud/terra" {
+		t.Fatalf("outgrown pin should re-route: %s", d.Chosen)
+	}
+	mu.Lock()
+	np = len(probeBodies)
+	mu.Unlock()
+	if np != 0 {
+		t.Fatalf("no probe for a model the prompt cannot fit, got %d", np)
+	}
 	// a pool is refused as a seed target with a helpful message
 	s.SetSetting("model_pools", `{"tp":["tiel-a","tiel-b"],"tiel-a":["tiel-a","tiel-b"]}`)
 	if _, err := p.KVXSeed(context.Background(), "local/tp", []SeedPrefix{sp}, ""); err == nil || !strings.Contains(err.Error(), "pool") {
