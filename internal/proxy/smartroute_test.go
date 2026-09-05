@@ -606,3 +606,82 @@ func TestRouteTrajectoriesGroupByConversation(t *testing.T) {
 		t.Fatalf("text:\n%s", txt)
 	}
 }
+
+// Hooks and search sub-requests are policy-routed to routine regardless of
+// what the classifier would say, and a stale pin under another tier is dropped.
+// A big new conversation that goes to cloud only because local was over the
+// cold-prefill budget gets its head seeded on the warm local runtime anyway.
+func TestSmartRouteSeedsColdLosers(t *testing.T) {
+	var mu sync.Mutex
+	var seeds []string
+	kvx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case kvxSeedPath:
+			mu.Lock()
+			seeds = append(seeds, string(b))
+			mu.Unlock()
+			fmt.Fprint(w, `{"ok":true,"seeded":true,"tokens":60000,"slot":1}`)
+		default: // dry-run probe: nothing held
+			fmt.Fprint(w, `{"ok":true,"restored":false,"would_restore":false}`)
+		}
+	}))
+	t.Cleanup(kvx.Close)
+	p, s, _ := smartFixture(t)
+	poolAffinity.reset()
+	autoSeedDebounce.mu.Lock()
+	autoSeedDebounce.m = map[string]time.Time{}
+	autoSeedDebounce.mu.Unlock()
+	s.SetSetting("kvx_restore", `{"enabled":true,"url":"`+kvx.URL+`","provider":"local","auto_seed_min_tokens":1}`)
+	req := &wire.Request{System: strings.Repeat("You are a security monitor. ", 2000), Tools: []wire.Tool{{Name: "bash"}},
+		Messages: []wire.Msg{{Role: "user", Content: "review"}}}
+	m, _ := p.AutoRoute(context.Background(), req) // ~15k chars → est tokens small; force big via profile? use tokens from text
+	_ = m
+	pr := profileFacts(req)
+	pr.Tokens, pr.Tier = 67_000, tierRoutine
+	d := p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, pr, "")
+	if d.Chosen != "cloud/terra" {
+		t.Fatalf("expected cloud on cold prefill, got %s", d.Chosen)
+	}
+	p.seedColdLosers(req, d)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(seeds)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seeds) != 1 || !strings.Contains(seeds[0], `"model":"tiel-a"`) || !strings.Contains(seeds[0], `"user_turn":"seed"`) {
+		t.Fatalf("want one seed on the warm local loser tiel-a, got %d: %.200s", len(seeds), strings.Join(seeds, "|"))
+	}
+}
+
+func TestSmartRouteRoleTierOverride(t *testing.T) {
+	p, _, f := smartFixture(t)
+	f.mu.Lock()
+	f.answer = "hard" // the classifier would send this to cloud/fable
+	f.mu.Unlock()
+	hook := &wire.Request{System: "You are a security monitor for autonomous AI coding agents. Review the transcript.",
+		Messages: []wire.Msg{{Role: "user", Content: "review this"}}}
+	m, note := p.AutoRoute(context.Background(), hook)
+	if m != "local/tiel-a" || tierOf(note) != "routine" {
+		t.Fatalf("hook must be routine → local, got %s %q", m, note)
+	}
+	// a pin left over from a "hard" grade is replaced on the next turn
+	routeCache.put(conversationFingerprint(hook), "cloud/fable", tierHard)
+	m, note = p.AutoRoute(context.Background(), hook)
+	if m != "local/tiel-a" || strings.Contains(note, "sticky") {
+		t.Fatalf("stale hard pin should be dropped for a hook, got %s %q", m, note)
+	}
+	// the main agent is still graded by the classifier
+	main := &wire.Request{System: "You are Claude Code, Anthropic's official CLI for Claude.", Messages: []wire.Msg{{Role: "user", Content: "hi"}}}
+	if m, note := p.AutoRoute(context.Background(), main); m != "cloud/fable" || tierOf(note) != "hard" {
+		t.Fatalf("main agent should follow the classifier: %s %q", m, note)
+	}
+}

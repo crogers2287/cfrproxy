@@ -330,6 +330,19 @@ output tokens after a 13k cold prefill) and DeepSeek writing 7-14k-token answers
   latency, running/idle/done, errors), live from the stream; Auto router table gains sess, agent
   and route-ms columns. Live: `… conv:bd3dd20d r=194ms sess:eceba409 agent:main`.
 
+#### Follow-up (same day): hooks graded hard; cold-prefill losers never seeded
+Tagged stream showed session eceba409: main agent on DeepSeek plus a Claude Code hook (the
+"security monitor" prompt, 43-67k tokens) after every main turn, graded **hard** by the
+classifier and pinned to gpt-5.6-terra (3-8 s per turn on the most expensive model).
+- `smart.role_tiers` (default `{"hook":"routine","search":"routine"}`; explicit `{}` disables):
+  the role decides the tier before the classifier and a pin made under another grade is dropped.
+  `TestSmartRouteRoleTierOverride`. Live: next hook turn `auto→routine→ccbudget/deepseek …
+  agent:hook`, 6.5 s.
+- `seedColdLosers`: when the winner is cloud only because every local candidate was over the
+  cold-prefill budget, the first warm local loser's runtime gets the head seeded in the background
+  (no local request ever ran, so the restore hook / auto-seed could not fire). Next conversation
+  with that head probes as `kvx covers N` and goes local. `TestSmartRouteSeedsColdLosers`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

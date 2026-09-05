@@ -28,6 +28,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -71,6 +72,13 @@ type SmartRouterConfig struct {
 	// ~850 tok/s that is 79 s of silence before the first byte, and the harness
 	// gives up and retries. 0 = 30 s; negative = no budget.
 	MaxColdPrefillSeconds int `json:"max_cold_prefill_seconds,omitempty"`
+	// RoleTiers pins a tier by the request's role within a harness session
+	// (agentKind: main | sub | hook | search). A Claude Code hook — the
+	// "security monitor" prompt that runs after every main turn — was graded
+	// hard by the classifier and pinned to the most expensive model, adding
+	// 3-8 s to every turn. nil = {"hook":"routine","search":"routine"}; an
+	// explicit empty map disables the override.
+	RoleTiers map[string]string `json:"role_tiers,omitempty"`
 	// Classify: "llm" (default when a classifier is configured) asks the
 	// classifier model for the tier; "heuristic" never calls a model.
 	Classify string `json:"classify,omitempty"`
@@ -103,6 +111,18 @@ func (c *SmartRouterConfig) localMaxTokens() int {
 	return smartDefaultLocalMaxTokens
 }
 func (c *SmartRouterConfig) preferWarm() bool { return c.PreferWarm == nil || *c.PreferWarm }
+func (c *SmartRouterConfig) roleTier(role string) string {
+	if role == "" {
+		return ""
+	}
+	if c.RoleTiers == nil {
+		if role == "hook" || role == "search" {
+			return tierRoutine
+		}
+		return ""
+	}
+	return parseTier(c.RoleTiers[role])
+}
 func (c *SmartRouterConfig) coldPrefillBudget() float64 {
 	switch {
 	case c.MaxColdPrefillSeconds < 0:
@@ -713,6 +733,14 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 			pr.Tier, pr.Source = strings.TrimSuffix(tier, "·sticky"), "sticky"
 		}
 	}
+	// A role's tier is decided by policy, not by the classifier — and a pin
+	// made under the old grade is dropped so the conversation re-routes.
+	if rt := cfg.Smart.roleTier(agentKind(req)); rt != "" {
+		if pr.Tier != "" && pr.Tier != rt {
+			pinned = ""
+		}
+		pr.Tier, pr.Source = rt, "role:"+agentKind(req)
+	}
 	if pr.Tier == "" {
 		pr = p.classifyTier(ctx, req, cfg, pr)
 	}
@@ -731,6 +759,7 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 		routeCache.put(fp, d.Chosen, d.Tier)
 	}
 	rememberPrefix(req, d)
+	p.seedColdLosers(req, d)
 	if fp != "" {
 		// grouped into per-conversation trajectories by RouteTrajectories;
 		// r= is the router's own cost (classifier + selection, probes included)
@@ -856,4 +885,47 @@ func (p *Proxy) logDecision(cfg *SmartRouterConfig, conv string, d smartDecision
 		f.Write(append(line, '\n'))
 		f.Close()
 	}()
+}
+
+// seedColdLosers: when the winner is a cloud model only because every local
+// candidate was over the cold-prefill budget, nothing local ever serves this
+// head, so the restore hook never runs and auto-seed never fires — the
+// conversation (a Claude Code hook, a sub-agent) stays on cloud forever.
+// Seed the first such local candidate's runtime in the background; the next
+// conversation with this head then probes as "kvx covers N" and goes local.
+func (p *Proxy) seedColdLosers(req *wire.Request, d smartDecision) {
+	if req == nil || d.Chosen == "" {
+		return
+	}
+	for _, c := range d.Candidates {
+		if c.Provider+"/"+c.Model == d.Chosen && c.Local {
+			return // local won; the restore hook + auto-seed handle it
+		}
+	}
+	for _, c := range d.Candidates {
+		if !c.Local || !strings.HasPrefix(c.Verdict, "cold prefill") || c.Warm != "warm" {
+			continue
+		}
+		prov, ok := p.Store.ProviderByName(c.Provider)
+		if !ok {
+			return
+		}
+		model := c.Model
+		if spec := p.poolSpecFor(model); spec != nil && len(spec.Members) > 0 {
+			model = spec.Members[0]
+		}
+		out, err := buildOutbound("openai", req)
+		if err != nil {
+			return
+		}
+		if lvl, force := reasoningFor(nil, prov); lvl != "" {
+			if nb, changed := applyReasoning(out, "openai", lvl, force); changed {
+				out = nb
+			}
+		}
+		if p.autoSeedAfterMiss(p.KVXRestoreConfig(), model, out) {
+			slog.Info("kvx autoseed queued (router: local lost on cold prefill)", "model", model, "chosen", d.Chosen)
+		}
+		return
+	}
 }
