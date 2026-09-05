@@ -744,3 +744,24 @@ func TestSmartRouteCapsEffortByTier(t *testing.T) {
 		t.Fatalf("hard keeps its thinking budget: %s %q", hard.Thinking, note)
 	}
 }
+
+// The provider's prompt count from the previous turn overrides the byte
+// estimate, so a conversation that grew past local_max_tokens re-routes even
+// though its bytes/4 estimate still looks small.
+func TestSmartRouteUsesActualPromptTokens(t *testing.T) {
+	p, _, _ := smartFixture(t)
+	req := &wire.Request{System: "sys", Messages: []wire.Msg{{Role: "user", Content: "small"}}}
+	m, note := p.AutoRoute(context.Background(), req)
+	if m != "local/tiel-a" {
+		t.Fatalf("turn 1: %s", m)
+	}
+	fp := conversationFingerprint(req)
+	noteConvTokens(convTagOf(note), 117_000) // what the provider billed for that turn
+	if knownConvTokens(fp) != 117_000 {
+		t.Fatalf("conv tokens not recorded: %d", knownConvTokens(fp))
+	}
+	m, note = p.AutoRoute(context.Background(), req)
+	if m != "cloud/terra" || strings.Contains(note, "sticky") {
+		t.Fatalf("117k actual tokens exceed local_max_tokens 100k → re-route, got %s %q", m, note)
+	}
+}

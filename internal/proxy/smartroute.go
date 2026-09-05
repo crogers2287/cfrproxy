@@ -793,6 +793,9 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 	pinned := ""
 	if cfg.sticky() {
 		fp = conversationFingerprint(req)
+		if n := knownConvTokens(fp); n > pr.Tokens {
+			pr.Tokens = n // the provider's count from the last turn beats bytes/4
+		}
 		if m, tier, ok := routeCache.get(fp, cfg.stickyTTL()); ok {
 			pinned = m
 			pr.Tier, pr.Source = strings.TrimSuffix(tier, "·sticky"), "sticky"
@@ -1033,4 +1036,46 @@ func (p *Proxy) probeCandidates(ctx context.Context, cfg *SmartRouterConfig, pr 
 		}(&group[i])
 	}
 	wg.Wait()
+}
+
+// ---- actual prompt size per conversation --------------------------------------
+//
+// estTokens is bytes/4, which undercounts JSON-heavy agent prompts by half:
+// a Claude Code conversation the provider billed at 117k tokens estimated as
+// ~60k, sailed under local_max_tokens and pinned a W6800 model to a 20 tok/s
+// crawl. The provider's own count from the previous turn is the truth for
+// the next one; the estimate only ever raises it, never lowers.
+var convTokens = struct {
+	mu sync.Mutex
+	m  map[string]int
+}{m: map[string]int{}}
+
+func noteConvTokens(conv8 string, tokens int) {
+	if conv8 == "" || tokens <= 0 {
+		return
+	}
+	convTokens.mu.Lock()
+	if len(convTokens.m) > 8192 {
+		convTokens.m = map[string]int{}
+	}
+	convTokens.m[conv8] = tokens
+	convTokens.mu.Unlock()
+}
+
+func knownConvTokens(fp string) int {
+	if len(fp) < 8 {
+		return 0
+	}
+	convTokens.mu.Lock()
+	defer convTokens.mu.Unlock()
+	return convTokens.m[fp[:8]]
+}
+
+// convTagOf extracts the conv:<id8> tag from a trace note.
+func convTagOf(note string) string {
+	i := strings.Index(note, "conv:")
+	if i < 0 || len(note) < i+13 {
+		return ""
+	}
+	return note[i+5 : i+13]
 }

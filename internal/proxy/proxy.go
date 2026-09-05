@@ -534,6 +534,9 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 		// after AddTrace so a slow/failed log write can never delay the trace
 		writeCacheRecord(tr)
 		recordPrefix(prefixSnap, tr)
+		if tr.Status > 0 && tr.Status < 400 {
+			noteConvTokens(convTagOf(tr.Note), tr.PromptTokens)
+		}
 		if afterResponse != nil && tr.Status > 0 && tr.Status < 400 {
 			afterResponse()
 		}

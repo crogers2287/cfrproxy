@@ -404,6 +404,21 @@ Code sat on "Waiting for API response": `WriteAnthropicStream` never emitted `De
   BuildOpenAIRequest) is lowered to the tier's cap only when it asks for MORE; noted as
   `effort=<lvl>` on the trace. `TestSmartRouteCapsEffortByTier`.
 
+#### Follow-up (same day): the main conversation crawled on Ornith at 117k tokens
+Source: chat: "it keeps showing waiting for API response in Claude code thirty seconds plus".
+Traces 23:30-23:40: the main agent (`conv:9fd6bd14`) was on `fred/ornith-kvx-w6800` at 110-118k
+tokens: 105-180 s per turn (one 180 s turn returned nothing). Cause: the router judged it under
+`local_max_tokens` (150k) because `estTokens` = bytes/4 undercounts JSON-heavy prompts (~60k for
+a 117k-token turn), a seeded artifact made the prefix "cached", and prefill was budgeted but decode
+was not — measured decode on a W6800 at >90k context is ~21 tok/s (ornith) vs ~140 on DeepSeek.
+Also verified: ccbudget DeepSeek returns no `reasoning_content` even at high effort, so the
+thinking-block work helps only providers that reason visibly.
+- Config: `smart.local_max_tokens` 150000 → **70000**.
+- `convTokens`: after every successful turn the provider's `prompt_tokens` is remembered per
+  conversation and used as the profile size on the next turn when it exceeds the estimate; the
+  sticky re-validation then sees the real size. `TestSmartRouteUsesActualPromptTokens`.
+- Live: next turn `auto→routine·sticky→ccbudget/deepseek …` TTFB 1.6 s, turns 2.2-5.9 s.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
