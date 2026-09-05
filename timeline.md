@@ -369,6 +369,14 @@ exist in the buffer: forks carry the main prompt verbatim, so the panel labelled
   conversation while the main is still active (< 2 min) is tagged `agent:sub` (fork); after the
   main goes quiet it is the compacted main. `TestSessionRoleDetectsForks`.
 
+#### Follow-up (same day): `fred/agents-a1` 400s — a stale model_map entry
+Source: screenshot: Live traces failure `fred/agents-a1 HTTP 400 could not find suitable inference
+handler for agents-a1`. The caller is Claude Code's security-monitor hook, which asks for
+`claude-sonnet-5` by name; `model_map` still had `claude-sonnet* → fred/agents-a1`, a llama-swap
+model that no longer exists (4 such 400s today, one per session start). Setting change:
+`claude-sonnet* → auto` and `claude-haiku* → auto` (`claude-opus*` left on claude/claude-opus-4-8).
+`cfrproxy explain claude-sonnet-4-5` → model_map → auto → routine → fred/ornith.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
