@@ -74,18 +74,18 @@ func (h *Hub) Publish(t store.Trace) {
 }
 
 type Proxy struct {
-	Store     *store.Store
-	Hub       *Hub
-	Client    *http.Client
-	models    modelCache
-	vision    visionMetaCache
-	ctxmeta   contextMetaCache
-	summaries summaryCache
-	inflight  inflightCounter
-	poolload  poolLoadCache
+	Store       *store.Store
+	Hub         *Hub
+	Client      *http.Client
+	models      modelCache
+	vision      visionMetaCache
+	ctxmeta     contextMetaCache
+	summaries   summaryCache
+	inflight    inflightCounter
+	poolload    poolLoadCache
 	inflightAll atomic.Int64 // every data-plane request currently being served (GET /api/inflight)
-	running   runningCache // smart router: llama-swap /running + /slots view per provider
-	health    healthCache  // smart router: usage_daily rollup per provider/model
+	running     runningCache // smart router: llama-swap /running + /slots view per provider
+	health      healthCache  // smart router: usage_daily rollup per provider/model
 }
 
 func New(s *store.Store) *Proxy {
