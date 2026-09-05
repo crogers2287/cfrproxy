@@ -248,8 +248,11 @@ func cmdServe(args []string) {
 		<-sig
 		// Let in-flight requests (streams included) finish before the process
 		// exits; systemd's default stop timeout is 90s, so 25s leaves room.
-		fmt.Fprintln(os.Stderr, "cfrproxy: shutting down, draining in-flight requests (up to 25s)")
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		// systemd's TimeoutStopSec is set above this in the unit; `make deploy`
+		// waits for GET /api/inflight to reach zero before restarting, so this
+		// window only matters for a restart that could not wait.
+		fmt.Fprintln(os.Stderr, "cfrproxy: shutting down, draining in-flight requests (up to 120s)")
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
 	}()

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/crogers2287/cfrproxy/internal/store"
@@ -82,6 +83,7 @@ type Proxy struct {
 	summaries summaryCache
 	inflight  inflightCounter
 	poolload  poolLoadCache
+	inflightAll atomic.Int64 // every data-plane request currently being served (GET /api/inflight)
 	running   runningCache // smart router: llama-swap /running + /slots view per provider
 	health    healthCache  // smart router: usage_daily rollup per provider/model
 }
@@ -133,6 +135,14 @@ func (p *Proxy) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /p/{provider}/skills", func(w http.ResponseWriter, r *http.Request) { p.handleProviderSkills(w, r) })
 	mux.HandleFunc("GET /p/{provider}/skills/{name}", func(w http.ResponseWriter, r *http.Request) { p.handleProviderSkill(w, r) })
 
+	// GET /api/inflight: how many requests are mid-flight. `make deploy` waits
+	// for zero before restarting — a restart drains for only a short window,
+	// and a 17-minute agent stream cut mid-response ("Connection lost
+	// mid-response") is exactly what four quick deploys did on 2026-09-04.
+	mux.HandleFunc("GET /api/inflight", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"inflight":%d}`, p.inflightAll.Load())
+	})
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"version": Version, "commit": Commit, "built": BuildDate})
 	})
@@ -349,6 +359,8 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, inbound, scope st
 
 func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scope string, ep *store.Endpoint) {
 	start := time.Now()
+	p.inflightAll.Add(1)
+	defer p.inflightAll.Add(-1)
 	if ep == nil && !p.publicKeyOK(r) { // share endpoints authenticate via their own key
 		// Record it. This rejection used to return before any trace was
 		// written, so a client configured without the key produced HTTP 401s

@@ -343,6 +343,18 @@ classifier and pinned to gpt-5.6-terra (3-8 s per turn on the most expensive mod
   (no local request ever ran, so the restore hook / auto-seed could not fire). Next conversation
   with that head probes as `kvx covers N` and goes local. `TestSmartRouteSeedsColdLosers`.
 
+#### Follow-up (same day): my deploys cut a 17-minute Claude Code stream (INCIDENT)
+Source: screenshot: "API Error: Connection lost mid-response … Brewed for 17m 46s · done 9:33 PM".
+Cause: `make deploy` restarts the service and the process drained in-flight requests for only
+25 s; I restarted it at 21:28, 21:33:17, 21:33:34, 21:35:48 and 21:35:52 while the user's session
+was mid-stream. Confirmed by the journal timestamps against the screenshot.
+- `GET /api/inflight` (unauthenticated, like /api/version): data-plane requests currently being
+  served (`Proxy.inflightAll`, counted around handleCore).
+- `make deploy` now waits until inflight is 0 before `systemctl restart` (poll 5 s, up to
+  `DRAIN_WAIT` 900 s; `FORCE=1` or `DRAIN_WAIT=0` skips), printing what it is waiting for.
+- Drain window 25 s → 120 s; unit gains `TimeoutStopSec=150` (daemon-reloaded).
+- Also: batch commits per deploy from here on instead of one restart per fix.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

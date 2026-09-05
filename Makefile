@@ -9,6 +9,7 @@
 
 BIN      := cfrproxy
 PREFIX   ?= $(HOME)/.local/bin
+PORT ?= 8420
 SERVICE  ?= cfrproxy
 ADDR     ?= http://127.0.0.1:8420
 KEEP     ?= 2
@@ -48,9 +49,23 @@ install: $(BIN)
 	install -m755 $(BIN) $(PREFIX)/.$(BIN).new
 	mv -f $(PREFIX)/.$(BIN).new $(PREFIX)/$(BIN)
 
+# A restart cuts every in-flight stream (agent turns run for minutes). deploy
+# waits until GET /api/inflight is 0 — up to DRAIN_WAIT seconds — unless
+# FORCE=1. `make deploy DRAIN_WAIT=0` is the old behaviour.
+DRAIN_WAIT ?= 900
 deploy: test
 	@if [ -x $(BIN) ]; then cp -p $(BIN) $(BIN).bak-$(STAMP); echo "rollback copy: $(BIN).bak-$(STAMP)"; fi
 	$(MAKE) --no-print-directory build install
+	@if [ "$(FORCE)" != "1" ]; then \
+	  waited=0; \
+	  while [ $$waited -lt $(DRAIN_WAIT) ]; do \
+	    n=$$(curl -s --max-time 2 localhost:$(PORT)/api/inflight | sed -n 's/.*"inflight":\([0-9]*\).*/\1/p'); \
+	    if [ -z "$$n" ] || [ "$$n" = "0" ]; then break; fi; \
+	    if [ $$waited -eq 0 ]; then echo "waiting for $$n in-flight request(s) to finish before restarting (FORCE=1 to skip)…"; fi; \
+	    sleep 5; waited=$$((waited+5)); \
+	  done; \
+	  if [ $$waited -ge $(DRAIN_WAIT) ]; then echo "still busy after $(DRAIN_WAIT)s — restarting anyway"; fi; \
+	fi
 	systemctl --user restart $(SERVICE)
 	$(MAKE) --no-print-directory health EXPECT=$(COMMIT)$(DIRTY)
 	@ls -t $(BIN).bak-* 2>/dev/null | tail -n +$$(( $(KEEP) + 1 )) | xargs -r rm -f
