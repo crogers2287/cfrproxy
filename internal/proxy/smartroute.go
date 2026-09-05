@@ -136,13 +136,14 @@ func (c *SmartRouterConfig) healthMaxFail() float64 {
 // RouteProfile is everything the selector knows about a request. It is the
 // classifier's whole output plus what cfrproxy measures itself.
 type RouteProfile struct {
-	Tier   string        `json:"tier"`   // routine | careful | hard
-	Source string        `json:"source"` // classifier | heuristic | sticky | override
-	Tokens int           `json:"tokens"` // estimated prompt tokens
-	Depth  int           `json:"depth"`  // messages in the conversation
-	Tools  int           `json:"tools"`
-	Image  bool          `json:"image"`
-	req    *wire.Request // request path only; nil in explain
+	Tier         string        `json:"tier"`   // routine | careful | hard
+	Source       string        `json:"source"` // classifier | heuristic | sticky | override
+	Tokens       int           `json:"tokens"` // estimated prompt tokens
+	Depth        int           `json:"depth"`  // messages in the conversation
+	Tools        int           `json:"tools"`
+	Image        bool          `json:"image"`
+	req          *wire.Request // request path only; nil in explain
+	prefixCached bool          // explain only: assume the head is cached locally
 }
 
 func (pr RouteProfile) String() string {
@@ -523,7 +524,7 @@ func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, pr RoutePr
 		}
 	}
 	if local {
-		c.PrefixKnown = prefixKnownOn(pr.req, members)
+		c.PrefixKnown = pr.prefixCached || prefixKnownOn(pr.req, members)
 		if !c.PrefixKnown && pr.Tokens > 0 {
 			c.ColdPrefillS = float64(pr.Tokens) / prefillRateFor(members[0])
 			// Over budget on the naive estimate: ask kvxd whether an artifact
@@ -584,7 +585,7 @@ func (p *Proxy) judge(cfg *SmartRouterConfig, pr RouteProfile, c *RouteCandidate
 	case c.Local && cfg.skipBusy() && c.Slots > 0 && c.Busy >= c.Slots:
 		c.Verdict, c.soft = "busy", 2
 	case c.Local && !c.PrefixKnown && cfg.coldPrefillBudget() > 0 && c.ColdPrefillS > cfg.coldPrefillBudget():
-		c.Verdict, c.soft = fmt.Sprintf("cold prefill ~%.0fs > %.0fs budget", c.ColdPrefillS, cfg.coldPrefillBudget()), 1
+		c.Verdict, c.soft = fmt.Sprintf("cold prefill ~%.0fs over the %.0fs budget — yields to a cached/cloud model", c.ColdPrefillS, cfg.coldPrefillBudget()), 1
 	default:
 		c.Verdict, c.soft = "viable", 0
 	}

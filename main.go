@@ -725,6 +725,7 @@ func cmdExplain(args []string) {
 	depth := fs.Int("depth", 0, "smart router: messages so far")
 	tier := fs.String("tier", "", "smart router: routine|careful|hard (skips the classifier)")
 	text := fs.String("text", "", "smart router: last user message to grade")
+	cached := fs.Bool("cached", false, "smart router: assume the static prefix is already cached locally (seeded)")
 	asJSON := fs.Bool("json", false, "print JSON instead of text")
 	var model string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -743,7 +744,7 @@ func cmdExplain(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	res := p.Explain(ctx, proxy.ExplainRequest{Model: model, Endpoint: *endpoint, Scope: *scope, Inbound: *inbound, Image: *image,
-		Tokens: *tokens, Tools: *tools, Depth: *depth, Tier: *tier, Text: *text})
+		Tokens: *tokens, Tools: *tools, Depth: *depth, Tier: *tier, Text: *text, PrefixCached: *cached})
 	if *asJSON {
 		b, _ := json.MarshalIndent(res, "", "  ")
 		fmt.Println(string(b))

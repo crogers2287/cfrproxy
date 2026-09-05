@@ -253,6 +253,19 @@ that just shows the auto router traces".
   same SSE stream: time, conv id, tier (·sticky), route, served-by, In, cached %, kvx verdict,
   status, latency; filter box (conv id / model / tier); the Routing-activity rows link into it.
 
+#### Follow-up (same day): tier status was simulating a never-seen 60k conversation
+Source: chat: "routing tab doesnt make sense with the auto router. it shows careful #1 at flash next,
+but for some reason number 5 is listed as chosen. why?" — the "Right now" probe ran explain with
+60k tokens and no request, so every local candidate was judged a full cold prefill (over the 30 s
+budget, verdict truncated in the pill) and the first cloud entry won. Correct, but unexplained.
+- `ExplainRequest.PrefixCached` (`--cached`, `?cached=1`): assume the head is cached locally;
+  explain prints an `assume:` step either way. Verdict text now reads "cold prefill ~40s over the
+  30s budget — yields to a cached/cloud model" and pills wrap instead of truncating.
+- WebUI: status toggle "assumes the harness prefix is already cached locally" (default ON, the
+  normal case with auto-seed), "Right now" line states the assumption, careful probe 40k, Test box
+  has the same "prefix cached" checkbox. Dry runs: careful 40k cached → flash-next chosen;
+  never seen → ccbudget deepseek.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

@@ -32,6 +32,10 @@ type ExplainRequest struct {
 	Depth  int    `json:"depth,omitempty"`  // messages so far
 	Tier   string `json:"tier,omitempty"`   // routine | careful | hard
 	Text   string `json:"text,omitempty"`   // last user message, for the classifier/heuristic
+	// PrefixCached assumes a local instance already holds this request's
+	// static head (seeded or served before), so the cold-prefill budget does
+	// not apply. Without a real request the dry run cannot know.
+	PrefixCached bool `json:"prefix_cached,omitempty"`
 }
 
 type ExplainStep struct {
@@ -279,7 +283,7 @@ func (p *Proxy) Explain(ctx context.Context, q ExplainRequest) ExplainResult {
 // classifier is only called when the caller gave text and no tier; with
 // neither, the heuristic grades an empty request as routine.
 func (p *Proxy) explainSmart(ctx context.Context, res ExplainResult, q ExplainRequest, cfg AutoRouterConfig) ExplainResult {
-	pr := RouteProfile{Tokens: q.Tokens, Tools: q.Tools, Depth: q.Depth, Image: q.Image}
+	pr := RouteProfile{Tokens: q.Tokens, Tools: q.Tools, Depth: q.Depth, Image: q.Image, prefixCached: q.PrefixCached}
 	req := &wire.Request{}
 	if q.Text != "" {
 		req.Messages = []wire.Msg{{Role: "user", Content: q.Text}}
@@ -294,6 +298,11 @@ func (p *Proxy) explainSmart(ctx context.Context, res ExplainResult, q ExplainRe
 	}
 	res.step("router", "smart: classifier %q grades the tier; sticky=%v local_max_tokens=%d", cfg.Classifier, cfg.sticky(), cfg.Smart.localMaxTokens())
 	res.step("profile", "%s", pr)
+	if q.PrefixCached {
+		res.step("assume", "static prefix already cached on local instances (seeded / served before); cold-prefill budget not applied")
+	} else if q.Tokens > 0 {
+		res.step("assume", "NEW conversation, no cached prefix anywhere: local candidates pay a full cold prefill (budget %.0fs)", cfg.Smart.coldPrefillBudget())
+	}
 	d := p.smartSelect(ctx, cfg.Smart, pr, "")
 	res.step("tier", "walking %q: %s", d.Tier, strings.Join(cfg.Tiers(d.Tier), ", "))
 	for _, c := range d.Candidates {

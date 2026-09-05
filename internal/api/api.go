@@ -208,6 +208,7 @@ func (a *API) Register(mux *http.ServeMux) {
 			Inbound: q.Get("inbound"), Image: q.Get("image") == "1" || q.Get("image") == "true",
 			Tokens: atoi("tokens"), Tools: atoi("tools"), Depth: atoi("depth"),
 			Tier: q.Get("tier"), Text: q.Get("text"),
+			PrefixCached: q.Get("cached") == "1" || q.Get("cached") == "true",
 		})
 		writeJSON(w, 200, res)
 	})
