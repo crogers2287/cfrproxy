@@ -1934,6 +1934,52 @@ func agentKind(req *wire.Request) string {
 	return ""
 }
 
+// sessionMains remembers, per harness session, which conversation is the
+// main agent right now. Claude Code's fork sub-agents carry the main agent's
+// system prompt verbatim, so by prompt alone they look like "main"; what
+// gives them away is a NEW conversation appearing while the main one is
+// still active. A new main-looking conversation after the old one went quiet
+// is the main agent after a compaction and takes the seat.
+var sessionMains = struct {
+	mu sync.Mutex
+	m  map[string]sessionMain
+}{m: map[string]sessionMain{}}
+
+type sessionMain struct {
+	fp   string
+	last time.Time
+}
+
+const sessionMainActive = 2 * time.Minute
+
+func sessionRole(req *wire.Request, kind string) string {
+	if kind != "main" || req == nil || req.SessionID == "" {
+		return kind
+	}
+	fp := conversationFingerprint(req)
+	if fp == "" {
+		return kind
+	}
+	now := time.Now()
+	sessionMains.mu.Lock()
+	defer sessionMains.mu.Unlock()
+	cur, ok := sessionMains.m[req.SessionID]
+	switch {
+	case !ok, cur.fp == fp, now.Sub(cur.last) > sessionMainActive:
+		sessionMains.m[req.SessionID] = sessionMain{fp: fp, last: now}
+		if len(sessionMains.m) > 2048 {
+			for k, v := range sessionMains.m {
+				if now.Sub(v.last) > time.Hour {
+					delete(sessionMains.m, k)
+				}
+			}
+		}
+		return "main"
+	default:
+		return "sub" // a fork: main is still active on another conversation
+	}
+}
+
 // sessionTags appends " sess:<id8> agent:<kind>" to a trace note when the
 // request identifies its harness session and role.
 func sessionTags(note string, req *wire.Request) string {
@@ -1947,7 +1993,7 @@ func sessionTags(note string, req *wire.Request) string {
 		}
 		note = strings.TrimSpace(note + " sess:" + id)
 	}
-	if k := agentKind(req); k != "" {
+	if k := sessionRole(req, agentKind(req)); k != "" {
 		note = strings.TrimSpace(note + " agent:" + k)
 	}
 	return note

@@ -683,3 +683,36 @@ func TestSmartRouteRoleTierOverride(t *testing.T) {
 		t.Fatalf("main agent should follow the classifier: %s %q", m, note)
 	}
 }
+
+// A fork sub-agent carries the main agent's system prompt; it is told apart
+// by starting a new conversation while the main one is still active. After
+// the main goes quiet, a new conversation is the main agent again (compaction).
+func TestSessionRoleDetectsForks(t *testing.T) {
+	sessionMains.mu.Lock()
+	sessionMains.m = map[string]sessionMain{}
+	sessionMains.mu.Unlock()
+	mk := func(first string) *wire.Request {
+		return &wire.Request{SessionID: "sess-1", System: "You are Claude Code, Anthropic's official CLI for Claude.",
+			Messages: []wire.Msg{{Role: "user", Content: first}}}
+	}
+	main := mk("<system-reminder>context</system-reminder>\nbuild M0")
+	fork := mk("<system-reminder>context</system-reminder>\nyou are a fork: explore the repo")
+	if r := sessionRole(main, "main"); r != "main" {
+		t.Fatalf("first conversation is main, got %s", r)
+	}
+	if r := sessionRole(fork, "main"); r != "sub" {
+		t.Fatalf("concurrent new conversation is a fork, got %s", r)
+	}
+	if r := sessionRole(main, "main"); r != "main" {
+		t.Fatalf("main stays main, got %s", r)
+	}
+	sessionMains.mu.Lock()
+	sessionMains.m["sess-1"] = sessionMain{fp: conversationFingerprint(main), last: time.Now().Add(-5 * time.Minute)}
+	sessionMains.mu.Unlock()
+	if r := sessionRole(fork, "main"); r != "main" {
+		t.Fatalf("after the main went quiet a new conversation is the compacted main, got %s", r)
+	}
+	if r := sessionRole(&wire.Request{System: "You are a security monitor for autonomous AI", SessionID: "sess-1"}, "hook"); r != "hook" {
+		t.Fatalf("non-main kinds pass through, got %s", r)
+	}
+}

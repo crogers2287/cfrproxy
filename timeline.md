@@ -355,6 +355,20 @@ was mid-stream. Confirmed by the journal timestamps against the screenshot.
 - Drain window 25 s → 120 s; unit gains `TimeoutStopSec=150` (daemon-reloaded).
 - Also: batch commits per deploy from here on instead of one restart per fix.
 
+#### Follow-up (same day): "sub-agents use the parent's model" — what the data says
+Source: chat: "it looks like it's using the same model that it uses to spawn sub-agents for the
+sub-agents … when DeepSeek calls a sub-agent, it needs to call the sub-agent via the auto router".
+Evidence (session eceba409): conv 5f0e1710 ran 21:27:51–21:32:51 concurrently with the main
+(bd3dd20d, which resumed at 21:36) and started at 104k tokens with the main's system prompt — a
+fork sub-agent. It WAS routed as its own conversation (classifier, routine, `r=6777ms`); every
+local candidate was a ~2 min cold prefill at 104k tokens, so ccbudget DeepSeek won and it hit 77%
+cache off the parent's prefix. Non-fork sub-requests in the same window were classified
+individually and 17 of them landed local (ornith/tiel). No "agent for Claude Code" system prompts
+exist in the buffer: forks carry the main prompt verbatim, so the panel labelled them "main".
+- `sessionRole`: per session, the active main conversation is remembered; a new main-looking
+  conversation while the main is still active (< 2 min) is tagged `agent:sub` (fork); after the
+  main goes quiet it is the compacted main. `TestSessionRoleDetectsForks`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
