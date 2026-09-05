@@ -405,6 +405,11 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	case scope != "":
 		reqModel = scope + "/" + p.stripProviderPrefix(reqModel)
 	}
+	// Anthropic server-side web search (Claude Code's WebSearch): the proxy
+	// runs the tool itself — see websearchtool.go.
+	if req.WebSearch != nil && p.handleWebSearch(w, r, inbound, req, reqModel, start) {
+		return
+	}
 	// share-endpoint model policy: force overrides; otherwise the requested
 	// model must be on the allow-list.
 	if ep != nil {

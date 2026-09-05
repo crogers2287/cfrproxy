@@ -25,6 +25,15 @@ type Request struct {
 	// Only dialects whose live protocol is known to accept a tool choice may
 	// emit it; the rest leave it alone rather than inventing a field.
 	ToolChoice json.RawMessage
+	// WebSearch is set when the inbound request carried an Anthropic server
+	// tool for web search (Claude Code's WebSearch). Not a function tool: the
+	// proxy runs it. nil = none requested.
+	WebSearch *WebSearchTool
+}
+
+// WebSearchTool describes a requested server-side web search.
+type WebSearchTool struct {
+	MaxUses int
 }
 
 type Msg struct {
@@ -66,6 +75,10 @@ type Response struct {
 	Content          string
 	ReasoningContent string // reasoning model thinking (deepseek et al.)
 	ToolCalls        []ToolCall
+	// Blocks are pre-built Anthropic content blocks emitted BEFORE the text
+	// (server_tool_use / web_search_tool_result from the search emulation).
+	// Only the Anthropic builders read them.
+	Blocks           []json.RawMessage
 	FinishReason     string // stop | tool_calls | length
 	PromptTokens     int
 	CompletionTokens int

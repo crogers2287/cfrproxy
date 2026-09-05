@@ -265,6 +265,12 @@ func (a *API) Register(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, res)
 	})
+	inner.HandleFunc("GET /admin/api/web-search", func(w http.ResponseWriter, r *http.Request) {
+		settingJSON(a, w, "web_search", `{"enabled":true,"searx":"http://127.0.0.1:9090","model":"","max_results":6,"max_uses":5}`)
+	})
+	inner.HandleFunc("PUT /admin/api/web-search", func(w http.ResponseWriter, r *http.Request) {
+		settingJSONSet(a, w, r, "web_search")
+	})
 	inner.HandleFunc("GET /admin/api/provider-fallback", func(w http.ResponseWriter, r *http.Request) {
 		settingJSON(a, w, "provider_fallback", `{"enabled":false}`)
 	})

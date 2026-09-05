@@ -57,6 +57,10 @@ type antTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	// Server tools (web_search_20250305 …) carry a type and no schema; the
+	// API executes them itself. Claude Code's WebSearch is one of these.
+	Type    string `json:"type,omitempty"`
+	MaxUses int    `json:"max_uses,omitempty"`
 }
 
 func antText(raw json.RawMessage) string {
@@ -199,6 +203,13 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 		}
 	}
 	for _, t := range in.Tools {
+		if strings.HasPrefix(t.Type, "web_search") {
+			// An Anthropic server tool: no provider behind the proxy can run it,
+			// so it is not forwarded as a function tool. The proxy emulates it
+			// (internal/proxy/websearchtool.go) when the request reaches it.
+			r.WebSearch = &WebSearchTool{MaxUses: t.MaxUses}
+			continue
+		}
 		r.Tools = append(r.Tools, Tool{Name: t.Name, Description: t.Description, Params: t.InputSchema})
 	}
 	return r, nil
@@ -314,7 +325,10 @@ func BuildAnthropicResponse(r *Response) []byte {
 	if id == "" {
 		id = fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	}
-	var content []map[string]any
+	var content []any
+	for _, b := range r.Blocks {
+		content = append(content, json.RawMessage(b))
+	}
 	if r.Content != "" || len(r.ToolCalls) == 0 {
 		content = append(content, map[string]any{"type": "text", "text": r.Content})
 	}
@@ -546,4 +560,53 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 		"usage": map[string]any{"input_tokens": pt, "output_tokens": ct}})
 	send("message_stop", map[string]any{"type": "message_stop"})
 	return nil
+}
+
+// WriteAnthropicOneShotStream emits an already-complete answer as an
+// Anthropic SSE stream: pre-built content blocks first (server_tool_use,
+// web_search_tool_result …), then the text as one block, then the usage.
+// Used by the web-search emulation, whose answer only exists once its tool
+// loop has finished.
+func WriteAnthropicOneShotStream(w http.ResponseWriter, model string, blocks []json.RawMessage, text string, promptTokens, completionTokens int) error {
+	var werr error
+	fl, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	id := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	send := func(event string, payload any) {
+		b, _ := json.Marshal(payload)
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil && werr == nil {
+			werr = err
+		}
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	send("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+		"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{},
+		"stop_reason": nil, "usage": map[string]any{"input_tokens": promptTokens, "output_tokens": 0}}})
+	idx := 0
+	for _, b := range blocks {
+		send("content_block_start", map[string]any{"type": "content_block_start", "index": idx, "content_block": json.RawMessage(b)})
+		send("content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
+		idx++
+	}
+	send("content_block_start", map[string]any{"type": "content_block_start", "index": idx, "content_block": map[string]any{"type": "text", "text": ""}})
+	for len(text) > 0 {
+		n := 2048
+		if n > len(text) {
+			n = len(text)
+		}
+		// never split a UTF-8 sequence
+		for n < len(text) && n > 0 && text[n]&0xC0 == 0x80 {
+			n--
+		}
+		send("content_block_delta", map[string]any{"type": "content_block_delta", "index": idx, "delta": map[string]any{"type": "text_delta", "text": text[:n]}})
+		text = text[n:]
+	}
+	send("content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
+	send("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": completionTokens}})
+	send("message_stop", map[string]any{"type": "message_stop"})
+	return werr
 }

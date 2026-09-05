@@ -288,6 +288,29 @@ session and watch it build".
   in cfrproxy (function tool + SearXNG loop, ~2 h) or route search sub-requests to a provider with
   native search. Not built.
 
+#### Follow-up (same day): Claude Code WebSearch — Anthropic server-tool emulation over SearXNG
+Source: chat: "https://github.com/SPThole/CoexistAI can we use this to route search through?"
+Finding: SearXNG already runs on 127.0.0.1:9090 (cfrproxy's round-table default; 25 results for the
+test query) and CoexistAI is a research layer on top of SearXNG + an LLM, so the missing piece was
+only the emulation of the Anthropic server tool. CoexistAI left as a possible richer backend.
+- `internal/wire`: `antTool.Type/MaxUses`; a tool typed `web_search*` sets `Request.WebSearch`
+  instead of becoming a function tool; `Response.Blocks` (pre-built Anthropic content blocks)
+  honoured by `BuildAnthropicResponse`; `WriteAnthropicOneShotStream` emits blocks + text + usage
+  as SSE.
+- `internal/proxy/websearchtool.go`: `handleWebSearch` (hooked in handleCore right after the scope
+  switch): picks the answering model (setting override, else the request's route — `auto` goes
+  through the smart router), offers the model a `web_search(query)` function tool, runs up to
+  `max_uses` SearXNG rounds, and if the model answers from memory without searching, runs the
+  user's question once and re-asks with results. Response = `server_tool_use` +
+  `web_search_tool_result` (real urls/titles) + text with a "Sources:" list; streaming or not.
+  Trace note `web_search×N auto→…`. Setting `web_search` {enabled (default on), searx, model,
+  max_results 6, max_uses 5}; admin GET/PUT `/admin/api/web-search`.
+- Tests: `TestWebSearchEmulationModelSearches` (tool loop, blocks, sources, trace),
+  `TestWebSearchEmulationForcesOneSearchAndStreams` (forced search, SSE shape, off switch).
+- Live (Claude Code-shaped sub-request via `auto`): routed routine → fred/ornith, one search,
+  results led by npmjs.com/package/colyseus, answer "latest colyseus on npm is 0.17.10", 11.2 s,
+  trace 169549 `web_search×1 auto→routine→fred/ornith`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
