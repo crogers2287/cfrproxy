@@ -579,13 +579,20 @@ td.desc{color:var(--text-2);font-size:12.5px;max-width:520px}
     </table></div>
   </div>
   <div class="panel">
+    <div class="panel-head"><h2>Sessions &amp; sub-agents</h2><span id="sess-count" class="pill"></span><div class="spacer"></div><span class="hint">live · a session is one harness run; its main agent, sub-agents, hooks and searches appear as they start</span></div>
+    <div class="panel-body">
+      <details class="help"><summary>How to read it</summary><p>Claude Code stamps every request of one CLI run with a session id, so the main agent and everything it spawns (Task sub-agents, hooks such as the security monitor, WebSearch sub-requests) group under one card. Each row is one conversation: its role, where the router sent it, turns so far, cache hit on the last turn, and whether a request is <b>running right now</b> (the proxy publishes a start marker before forwarding). A sub-agent that keeps showing <code>miss</code> or low cache on its first turn is one whose head has not been seeded yet; the router seeds it after that turn.</p></details>
+      <div id="sessions" class="grid"></div>
+    </div>
+  </div>
+  <div class="panel">
     <div class="panel-head"><h2>Auto router</h2><span id="artr-count" class="pill"></span><div class="spacer"></div>
       <input type="text" id="trace-filter" placeholder="filter: conv id, model, tier" style="max-width:260px" oninput="filterAutoRows()">
       <button class="b ghost" onclick="$('#artrtable tbody').innerHTML='';filterAutoRows()">Clear view</button></div>
     <div class="panel-body">
       <p class="hint">Only requests that went through <code>auto</code>, live. <b>conv</b> groups the turns of one conversation (same id = same chat); <b>tier</b> is the grade, <code>·sticky</code> means the pin was reused without re-grading; <b>kvx</b> is the KV-Rosetta verdict on that turn (<code>restored</code> = warm-loaded, <code>miss</code> = cold, then auto-seeded for next time). The full trajectory per conversation is on the Routing tab under <b>Routing activity</b>.</p>
       <div class="table-wrap"><table id="artrtable">
-        <thead><tr><th>Time</th><th>conv</th><th>tier</th><th>→ route</th><th>served by</th><th>In</th><th class="sec">Cached</th><th>kvx</th><th>Status</th><th>Latency</th></tr></thead>
+        <thead><tr><th>Time</th><th>sess</th><th>agent</th><th>conv</th><th>tier</th><th>→ route</th><th>served by</th><th>In</th><th class="sec">Cached</th><th>kvx</th><th title="router cost: classifier + selection (kvxd probes included)">route</th><th>Status</th><th>Latency</th></tr></thead>
         <tbody></tbody>
       </table></div>
     </div>
@@ -1699,9 +1706,10 @@ async function loadStats(){
 function fmtK(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
 // ---- auto-router view of the same stream ----
 const AR_NOTE=/auto→([a-z]+)(·sticky)?→([^ ]+)/;
+const noteTag=(note,k)=>(new RegExp('(?:^| )'+k+':([^ ]+)').exec(note||'')||[])[1]||'';
 function autoRouteRow(t){
   const m=AR_NOTE.exec(t.note||'');if(!m)return null;
-  const conv=(/conv:([0-9a-f]{8})/.exec(t.note)||[])[1]||'';
+  const conv=noteTag(t.note,'conv'), sess=noteTag(t.note,'sess'), agent=noteTag(t.note,'agent'), rms=(/ r=(\d+)ms/.exec(t.note||'')||[])[1];
   const kvm=/kvx→([a-z]+)([^ ]*(?: \([^)]*\))?)/.exec(t.note);
   const kv=kvm?kvm[1]+(kvm[1]==='restored'?kvm[2]:''):'';
   const kvCls=kv.startsWith('restored')?'on':(kv?'warn':'');
@@ -1711,12 +1719,48 @@ function autoRouteRow(t){
   tr.style.cursor='pointer';tr.title=t.note||'';
   tr.onclick=()=>{const d=$('#tracedetail');d.classList.remove('hidden');d.textContent='NOTE '+(t.note||'')+'\n\nREQUEST '+(t.req_snippet||'(empty)')+'\n\nRESPONSE '+(t.resp_snippet||t.err||'(empty)')};
   const cached=t.prompt_tokens?Math.round(100*(t.cached_tokens||0)/t.prompt_tokens)+'%':'·';
-  tr.innerHTML=`<td class="mono">${new Date(t.ts).toLocaleTimeString()}</td><td class="mono">${esc(conv)}</td>
+  tr.dataset.key+=' '+sess+' '+agent;
+  tr.innerHTML=`<td class="mono">${new Date(t.ts).toLocaleTimeString()}</td><td class="mono">${esc(sess)}</td><td>${agent?'<span class="tag">'+esc(agent)+'</span>':''}</td><td class="mono">${esc(conv)}</td>
     <td>${esc(m[1])}${m[2]?'<span class="sub">·sticky</span>':''}</td><td class="mono">${esc(m[3])}</td>
     <td class="mono">${esc(t.provider)}/${esc(t.model)}</td><td>${t.prompt_tokens||'·'}</td><td class="sec">${cached}</td>
-    <td>${kv?'<span class="pill '+kvCls+'">'+esc(kv)+'</span>':''}</td><td>${t.status}${t.err?' ⚠':''}</td><td>${t.latency_ms}ms</td>`;
+    <td>${kv?'<span class="pill '+kvCls+'">'+esc(kv)+'</span>':''}</td><td class="mono">${rms?rms+'ms':'·'}</td><td>${t.status}${t.err?' ⚠':''}</td><td>${t.latency_ms}ms</td>`;
   return tr;
 }
+// ---- sessions & sub-agents (built from the same trace stream) ----
+const SESSIONS={}; // sess -> {first, last, convs:{conv:{agent,route,served,turns,cached,last,running,kvx,lat}}}
+function noteSession(t,started){
+  const note=t.note||'';const m=AR_NOTE.exec(note);const ws=/web_search×(\d+)/.exec(note);
+  if(!m&&!ws)return;
+  const sess=noteTag(note,'sess')||('client:'+(t.client||t.inbound||'?'));
+  const conv=noteTag(note,'conv')||(ws?'search-'+t.ts:'?');
+  const S=SESSIONS[sess]||(SESSIONS[sess]={first:t.ts,last:t.ts,convs:{}});
+  const C=S.convs[conv]||(S.convs[conv]={agent:noteTag(note,'agent')||(ws?'search':''),turns:0,route:'',served:'',cached:null,last:t.ts,running:false,kvx:'',lat:0});
+  S.last=Math.max(S.last,t.ts);C.last=t.ts;
+  C.agent=noteTag(note,'agent')||C.agent;
+  C.route=m?m[3]:(ws?'web_search':C.route);C.served=(t.provider||'')+'/'+(t.model||'');
+  if(started){C.running=true;return}
+  C.running=false;C.turns++;C.lat=t.latency_ms||0;
+  C.cached=t.prompt_tokens?Math.round(100*(t.cached_tokens||0)/t.prompt_tokens):C.cached;
+  const kvm=/kvx→([a-z]+)/.exec(note);if(kvm&&C.turns===1)C.kvx=kvm[1];
+  if(t.status>=400)C.err=(C.err||0)+1;
+}
+function renderSessions(){
+  const box=$('#sessions');if(!box)return;
+  const now=Date.now();
+  const list=Object.entries(SESSIONS).filter(([,S])=>now-S.last<6*3600*1000).sort((a,b)=>b[1].last-a[1].last).slice(0,12);
+  $('#sess-count').textContent=list.length?list.length+' active':'';
+  if(!list.length){box.innerHTML='<div class="empty">No harness sessions through <code>auto</code> yet.</div>';return}
+  const order={main:0,sub:1,hook:2,search:3,'':4};
+  box.innerHTML=list.map(([sess,S])=>{
+    const rows=Object.entries(S.convs).sort((a,b)=>(order[a[1].agent]??4)-(order[b[1].agent]??4)||b[1].last-a[1].last).map(([conv,C])=>{
+      const st=C.running?'<span class="pill on">running</span>':(now-C.last<90000?'<span class="pill">idle</span>':'<span class="sub">done</span>');
+      return `<tr><td>${C.agent?'<span class="tag">'+esc(C.agent)+'</span>':''}</td><td class="mono">${esc(conv)}</td><td class="mono">${esc(C.route||C.served)}</td><td>${C.turns}</td><td>${C.cached==null?'·':C.cached+'%'}</td><td>${C.kvx?'<span class="pill '+(C.kvx==='restored'?'on':'warn')+'">'+esc(C.kvx)+'</span>':''}</td><td>${C.lat?(C.lat/1000).toFixed(1)+'s':'·'}</td><td>${st}${C.err?' <span class="pill warn">'+C.err+' err</span>':''}</td></tr>`}).join('');
+    const running=Object.values(S.convs).filter(c=>c.running).length;
+    return `<div class="card" style="cursor:default"><div class="head"><h3>session ${esc(sess)}</h3>${running?'<span class="pill on">'+running+' running</span>':''}<span class="type">${Object.keys(S.convs).length} agents</span></div>
+      <div class="meta">started ${new Date(S.first).toLocaleTimeString()} · last ${new Date(S.last).toLocaleTimeString()}</div>
+      <div class="table-wrap"><table><thead><tr><th>role</th><th>conv</th><th>route</th><th>turns</th><th>cache</th><th>kvx</th><th>last</th><th>state</th></tr></thead><tbody>${rows}</tbody></table></div></div>`}).join('');
+}
+setInterval(renderSessions,5000);
 function filterAutoRows(){
   const q=($('#trace-filter')?.value||'').trim().toLowerCase().replace(/^conv:/,'');
   const rows=[...$('#artrtable tbody').children];
@@ -1733,6 +1777,7 @@ async function loadTraces(){
   const ts=await api('traces?limit=300');
   trbody().innerHTML='';ts.slice(0,100).forEach(t=>trbody().appendChild(traceRow(t)));
   $('#artrtable tbody').innerHTML='';ts.forEach(t=>pushAutoRow(t,false));
+  ts.slice().reverse().forEach(t=>noteSession(t,false));renderSessions();
   // seed the errors panel from history (oldest→newest so newest ends up on top)
   $('#errlist').innerHTML='';errShown=0;
   ts.slice().reverse().filter(isErr).forEach(pushErr);
@@ -1749,7 +1794,10 @@ function connectSSE(){
   es.onopen=()=>{const p=$('#sse-state');p.textContent='live';p.classList.add('on');tickPulse()};
   es.onerror=()=>{const p=$('#sse-state');p.textContent='reconnecting…';p.classList.remove('on');setPulse(false,'reconnecting…')};
   let statsDebounce=null;
-  es.onmessage=e=>{const t=JSON.parse(e.data);trbody().prepend(traceRow(t));pushAutoRow(t,true);recent.push(Date.now());tickPulse();
+  es.onmessage=e=>{const t=JSON.parse(e.data);
+    if(t.status===0&&/ started$/.test(t.note||'')){noteSession(t,true);renderSessions();return}
+    noteSession(t,false);renderSessions();
+    trbody().prepend(traceRow(t));pushAutoRow(t,true);recent.push(Date.now());tickPulse();
     if(isErr(t))pushErr(t);
     while(trbody().children.length>200)trbody().lastChild.remove();
     clearTimeout(statsDebounce);statsDebounce=setTimeout(loadStats,1500)};

@@ -311,6 +311,25 @@ only the emulation of the Anthropic server tool. CoexistAI left as a possible ri
   results led by npmjs.com/package/colyseus, answer "latest colyseus on npm is 0.17.10", 11.2 s,
   trace 169549 `web_search×1 auto→routine→fred/ornith`.
 
+#### Follow-up (same day): where the wait goes + sessions/sub-agents view
+Source: chat: "i feel like we are constantly sitting waiting 60s for api response. is this the time
+its taking to route? … are the sub agents being spawned correctly? we need a subagents
+tracing/trace logs on the live traces page … see the sub agents running in real time".
+Measured: classifier grade luna 1.3 s / ornith 0.76 s / tiel 0.92 s; the router's own cost is now
+stamped on every auto trace (`r=<ms>`: classifier + selection incl. kvxd probes) — a sticky turn
+reads `r=194ms`. The long waits are generation on a ~30 tok/s W6800 model (ornith 41 s for 1,395
+output tokens after a 13k cold prefill) and DeepSeek writing 7-14k-token answers (TTFB 1.7 s,
+129 s for 14,144 tokens), not routing.
+- `wire`: Claude Code's `metadata.user_id` session_id → `Request.SessionID`.
+- `proxy`: `sessionTags` appends ` sess:<id8> agent:<main|sub|hook|search>` to trace notes
+  (agent kind from the system-prompt head; web-search sub-requests tagged too); a status-0
+  "started" copy of the trace is published to the SSE hub before forwarding (never stored) so the
+  UI can show a conversation as running; decision log carries `ms_classify`/`ms_select`.
+- WebUI Live traces: **Sessions & sub-agents** panel — one card per harness session (main agent,
+  sub-agents, hooks, searches as rows: role, conv, route, turns, cache, first-turn kvx, last
+  latency, running/idle/done, errors), live from the stream; Auto router table gains sess, agent
+  and route-ms columns. Live: `… conv:bd3dd20d r=194ms sess:eceba409 agent:main`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

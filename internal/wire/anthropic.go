@@ -51,6 +51,12 @@ type antReq struct {
 	Stop        []string        `json:"stop_sequences,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 	Thinking    json.RawMessage `json:"thinking,omitempty"`
+	// Claude Code stamps every request of one CLI session (main agent,
+	// sub-agents, hooks, web-search sub-requests) with the same session id
+	// inside metadata.user_id, a JSON string.
+	Metadata struct {
+		UserID string `json:"user_id"`
+	} `json:"metadata,omitempty"`
 }
 
 type antTool struct {
@@ -106,6 +112,14 @@ func ParseAnthropicRequest(body []byte) (*Request, error) {
 	}
 	r := &Request{Model: in.Model, System: antText(in.System), MaxTokens: in.MaxTokens,
 		Temperature: in.Temperature, TopP: in.TopP, Stop: in.Stop, Stream: in.Stream, Thinking: in.Thinking}
+	if in.Metadata.UserID != "" {
+		var meta struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(in.Metadata.UserID), &meta) == nil && meta.SessionID != "" {
+			r.SessionID = meta.SessionID
+		}
+	}
 	// Claude Code's Agent SDK injects system-role messages mid-conversation
 	// (session hooks, reminders). They cannot be emitted as system messages in
 	// the middle of the list: strict chat templates that require system-first

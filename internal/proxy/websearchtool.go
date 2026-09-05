@@ -357,7 +357,7 @@ func (p *Proxy) handleWebSearch(w http.ResponseWriter, r *http.Request, inbound 
 		text = b.String()
 	}
 	tr.PromptTokens, tr.CompletionTokens, tr.Status = pt, ct, 200
-	tr.Note = strings.TrimSpace(fmt.Sprintf("web_search×%d %s", len(rounds), routeNote))
+	tr.Note = sessionTags(strings.TrimSpace(fmt.Sprintf("web_search×%d %s", len(rounds), routeNote)), req)
 	if loopErr != nil {
 		tr.Err = "web_search: " + trimErr(loopErr.Error())
 		slog.Warn("web search emulation", "err", loopErr, "model", model)

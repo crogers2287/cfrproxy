@@ -225,6 +225,8 @@ type smartDecision struct {
 	Tier       string // tier list actually walked (may differ from the profile's when a list is empty)
 	Chosen     string // provider/model, "" when nothing at all qualified
 	Candidates []RouteCandidate
+	MsClassify int64 // classifier (or heuristic) wall time
+	MsSelect   int64 // registry walk incl. kvxd probes
 }
 
 // ---- profile -------------------------------------------------------------
@@ -700,6 +702,7 @@ func (p *Proxy) smartSelect(ctx context.Context, cfg *SmartRouterConfig, pr Rout
 // is what the trace records after "auto→"; ("", "") when nothing qualified so
 // the caller falls back to the classic default route.
 func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRouterConfig) (string, string) {
+	t0 := time.Now()
 	pr := profileFacts(req)
 	fp := ""
 	pinned := ""
@@ -713,7 +716,10 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 	if pr.Tier == "" {
 		pr = p.classifyTier(ctx, req, cfg, pr)
 	}
+	t1 := time.Now()
 	d := p.smartSelect(ctx, cfg.Smart, pr, pinned)
+	d.MsClassify = t1.Sub(t0).Milliseconds()
+	d.MsSelect = time.Since(t1).Milliseconds()
 	p.logDecision(cfg.Smart, fp, d)
 	if d.Chosen == "" {
 		return "", ""
@@ -726,9 +732,11 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 	}
 	rememberPrefix(req, d)
 	if fp != "" {
-		// grouped into per-conversation trajectories by RouteTrajectories
+		// grouped into per-conversation trajectories by RouteTrajectories;
+		// r= is the router's own cost (classifier + selection, probes included)
 		note += " conv:" + fp[:8]
 	}
+	note += fmt.Sprintf(" r=%dms", d.MsClassify+d.MsSelect)
 	return d.Chosen, note
 }
 
@@ -808,6 +816,8 @@ type routeDecisionRecord struct {
 	Tier       string           `json:"tier"`
 	Chosen     string           `json:"chosen"`
 	Candidates []RouteCandidate `json:"candidates"`
+	MsClassify int64            `json:"ms_classify"`
+	MsSelect   int64            `json:"ms_select"`
 }
 
 func routeLogPath() string {
@@ -832,7 +842,7 @@ func (p *Proxy) logDecision(cfg *SmartRouterConfig, conv string, d smartDecision
 		return
 	}
 	line, err := json.Marshal(routeDecisionRecord{TS: time.Now().UTC().Format(time.RFC3339Nano), Conv: conv,
-		Profile: d.Profile, Tier: d.Tier, Chosen: d.Chosen, Candidates: d.Candidates})
+		Profile: d.Profile, Tier: d.Tier, Chosen: d.Chosen, Candidates: d.Candidates, MsClassify: d.MsClassify, MsSelect: d.MsSelect})
 	if err != nil {
 		return
 	}

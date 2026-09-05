@@ -29,6 +29,10 @@ type Request struct {
 	// tool for web search (Claude Code's WebSearch). Not a function tool: the
 	// proxy runs it. nil = none requested.
 	WebSearch *WebSearchTool
+	// SessionID groups the requests of one harness session (Claude Code's
+	// metadata.user_id session_id): the main agent and every sub-agent it
+	// spawns share it. "" when the client sends none.
+	SessionID string
 }
 
 // WebSearchTool describes a requested server-side web search.

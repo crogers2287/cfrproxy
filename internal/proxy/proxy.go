@@ -474,7 +474,7 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 			// the smart router appends " conv:<id>" to its bucket; keep it as
 			// a trailing tag so the note still reads auto→tier→model
 			tag := ""
-			if i := strings.Index(bucket, " conv:"); i >= 0 {
+			if i := strings.Index(bucket, " "); i >= 0 { // " conv:<id> r=<ms>"
 				bucket, tag = bucket[:i], bucket[i:]
 			}
 			autoNote += "auto→" + bucket + "→" + routed + tag
@@ -498,7 +498,14 @@ func (p *Proxy) handleCore(w http.ResponseWriter, r *http.Request, inbound, scop
 	req.Model = model
 
 	tr := &store.Trace{TS: start.UnixMilli(), Provider: prov.Name, Model: model, Inbound: inbound,
-		Stream: req.Stream, ReqSnip: snip(body), Note: autoNote, Client: clientLabel(r)}
+		Stream: req.Stream, ReqSnip: snip(body), Note: sessionTags(autoNote, req), Client: clientLabel(r)}
+	if autoNote != "" {
+		// live "running" marker for the sessions panel: same trace, status 0,
+		// never stored — the completion trace replaces it
+		started := *tr
+		started.Note = strings.TrimSpace(started.Note + " started")
+		p.Hub.Publish(started)
+	}
 	lastUpstreamByte := func() time.Time { return time.Time{} }
 	var sniff *timingsSniffer      // set for streamed responses; see timingsSniffer
 	var prefixSnap *prefixSnapshot // static head of the request actually sent
@@ -1889,4 +1896,47 @@ func clientHint(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return "unknown"
+}
+
+// agentKind names what a request is within a harness session, from the head
+// of its system prompt. Claude Code's main agent, its sub-agents (Task tool),
+// its hooks and its web-search sub-requests all arrive as separate
+// conversations; without this a sessions view cannot tell them apart.
+func agentKind(req *wire.Request) string {
+	sys := req.System
+	if len(sys) > 200 {
+		sys = sys[:200]
+	}
+	switch {
+	case req.WebSearch != nil:
+		return "search"
+	case strings.HasPrefix(sys, "You are Claude Code"):
+		return "main"
+	case strings.HasPrefix(sys, "You are an agent for Claude Code"), strings.Contains(sys, "subagent"):
+		return "sub"
+	case strings.Contains(sys, "security monitor for autonomous AI"):
+		return "hook"
+	case strings.Contains(sys, "web search tool use"):
+		return "search"
+	}
+	return ""
+}
+
+// sessionTags appends " sess:<id8> agent:<kind>" to a trace note when the
+// request identifies its harness session and role.
+func sessionTags(note string, req *wire.Request) string {
+	if req == nil {
+		return note
+	}
+	if req.SessionID != "" {
+		id := req.SessionID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		note = strings.TrimSpace(note + " sess:" + id)
+	}
+	if k := agentKind(req); k != "" {
+		note = strings.TrimSpace(note + " agent:" + k)
+	}
+	return note
 }
