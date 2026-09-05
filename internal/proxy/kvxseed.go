@@ -275,11 +275,15 @@ var autoSeedDebounce = struct {
 
 const autoSeedWindow = 15 * time.Minute
 
+// autoSeedSlot serialises background seeds: two seeds prefilling on the same
+// GPU halve each other's speed and starve live turns.
+var autoSeedSlot = make(chan struct{}, 1)
+
 // seedBodyFromForwarded turns the body handleCore is forwarding into the seed
 // body for its static head: every leading system message, the tools, the
 // template fields — and a one-token user turn in place of the conversation.
 // Returns nil when the head is too small to be worth an artifact.
-func seedBodyFromForwarded(model string, outBody []byte, minTokens int) ([]byte, string) {
+func seedBodyFromForwarded(model string, outBody []byte, minTokens, maxTokens int) ([]byte, string) {
 	body := kvxRestoreBody(model, outBody)
 	if body == nil {
 		return nil, ""
@@ -304,7 +308,7 @@ func seedBodyFromForwarded(model string, outBody []byte, minTokens int) ([]byte,
 	for _, h := range head {
 		size += len(h)
 	}
-	if size/4 < minTokens {
+	if size/4 < minTokens || (maxTokens > 0 && size/4 > maxTokens) {
 		return nil, ""
 	}
 	user, _ := json.Marshal(map[string]string{"role": "user", "content": kvxSeedDefaultTurn})
@@ -329,7 +333,7 @@ func (p *Proxy) autoSeedAfterMiss(cfg KVXRestore, model string, outBody []byte) 
 	if !cfg.Enabled || !cfg.autoSeed() {
 		return false
 	}
-	body, key := seedBodyFromForwarded(model, outBody, cfg.autoSeedMin())
+	body, key := seedBodyFromForwarded(model, outBody, cfg.autoSeedMin(), cfg.autoSeedMax())
 	if body == nil {
 		return false
 	}
@@ -341,6 +345,8 @@ func (p *Proxy) autoSeedAfterMiss(cfg KVXRestore, model string, outBody []byte) 
 	autoSeedDebounce.m[key] = time.Now()
 	autoSeedDebounce.mu.Unlock()
 	go func() {
+		autoSeedSlot <- struct{}{}
+		defer func() { <-autoSeedSlot }()
 		ctx, cancel := context.WithTimeout(context.Background(), kvxSeedTimeout)
 		defer cancel()
 		started := time.Now()

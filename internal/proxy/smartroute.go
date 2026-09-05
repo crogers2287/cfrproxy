@@ -899,6 +899,11 @@ func (p *Proxy) seedColdLosers(req *wire.Request, d smartDecision) {
 	if req == nil || d.Chosen == "" {
 		return
 	}
+	// a fork sub-agent's head is the parent's whole conversation: unique,
+	// huge, never reused — seeding it only burns a GPU for two minutes
+	if sessionRole(req, agentKind(req)) == "sub" {
+		return
+	}
 	for _, c := range d.Candidates {
 		if c.Provider+"/"+c.Model == d.Chosen && c.Local {
 			return // local won; the restore hook + auto-seed handle it

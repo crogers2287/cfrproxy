@@ -587,3 +587,18 @@ func TestKVXAutoSeedAfterMiss(t *testing.T) {
 		t.Fatalf("auto_seed:false must not seed, got %d", len(seeds))
 	}
 }
+
+func TestKVXAutoSeedSkipsOversizedHeads(t *testing.T) {
+	big := strings.Repeat("x", 4*70_000) // ~70k tokens estimated
+	out := []byte(`{"model":"m","messages":[{"role":"system","content":"` + big + `"},{"role":"user","content":"hi"}]}`)
+	if body, _ := seedBodyFromForwarded("m", out, 1, 60_000); body != nil {
+		t.Fatal("a 70k head must not be seeded under the 60k cap")
+	}
+	if body, _ := seedBodyFromForwarded("m", out, 1, -1); body == nil {
+		t.Fatal("no cap → seeded")
+	}
+	small := []byte(`{"model":"m","messages":[{"role":"system","content":"` + strings.Repeat("y", 40_000) + `"},{"role":"user","content":"hi"}]}`)
+	if body, _ := seedBodyFromForwarded("m", small, 1, 60_000); body == nil {
+		t.Fatal("a 10k head is seeded")
+	}
+}

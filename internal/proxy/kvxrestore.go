@@ -65,6 +65,20 @@ type KVXRestore struct {
 	// AutoSeedMinTokens: heads smaller than this are not worth an artifact
 	// (estimate, ~4 chars/token). 0 = 4096.
 	AutoSeedMinTokens int `json:"auto_seed_min_tokens,omitempty"`
+	// AutoSeedMaxTokens: heads larger than this are not seeded. A 92k-token
+	// fork head took 122 s of prefill on a W6800 and starved a live restore
+	// on the same GPU (85 s instead of 3). 0 = 60000; negative = no cap.
+	AutoSeedMaxTokens int `json:"auto_seed_max_tokens,omitempty"`
+}
+
+func (c KVXRestore) autoSeedMax() int {
+	switch {
+	case c.AutoSeedMaxTokens < 0:
+		return 1 << 30
+	case c.AutoSeedMaxTokens == 0:
+		return 60_000
+	}
+	return c.AutoSeedMaxTokens
 }
 
 func (c KVXRestore) autoSeed() bool { return c.AutoSeed == nil || *c.AutoSeed }

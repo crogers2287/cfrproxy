@@ -377,6 +377,20 @@ model that no longer exists (4 such 400s today, one per session start). Setting 
 `claude-sonnet* → auto` and `claude-haiku* → auto` (`claude-opus*` left on claude/claude-opus-4-8).
 `cfrproxy explain claude-sonnet-4-5` → model_map → auto → routine → fred/ornith.
 
+#### Follow-up (same day): "why timeout on ornith?" — a background seed starved a live restore
+Source: screenshot (Sessions panel: hook row `timeout`, 80 s). Trace 169835 22:04:47: hook →
+ornith, `kvx→timeout`, status 0 after 80 s. kvxd: the restore of a 27,655-token artifact took
+85.6 s (`pristine_restore=70.19s`) because slot 1 of the same W6800 was prefilling a 92,671-token
+**seed** I had queued for a fork sub-agent's head (122 s); the 15 s probe budget expired, the
+request went cold and then hit the upstream deadline; kvxd finished the restore after the caller
+left ("caller hung up before the verdict").
+- `kvx_restore.auto_seed_max_tokens` (default 60,000; -1 = no cap): oversized heads are not seeded.
+- Fork sub-agent heads (`agent:sub`) are never seeded from the router path: unique per parent.
+- Background seeds are serialised (one at a time) so two prefills never share a GPU.
+- Asked kv-rosetta: abort a restore when the caller disconnects; refuse fast ("busy: seeding")
+  or make seeds yield when a live turn arrives on the same runtime.
+  `TestKVXAutoSeedSkipsOversizedHeads`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
