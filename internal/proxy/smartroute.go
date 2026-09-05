@@ -200,7 +200,10 @@ type RouteCandidate struct {
 	PrefixKnown  bool    `json:"prefix_known,omitempty"`
 	ColdPrefillS float64 `json:"cold_prefill_s,omitempty"`
 	KVXShared    int     `json:"kvx_shared,omitempty"` // tokens a kvx artifact would restore (dry-run probe)
-	soft         int     // 0 viable, 1 cold prefill, 2 busy, 3 cold, 4 unhealthy, 9 hard-skipped
+	needProbe    bool
+	probeProv    store.Provider
+	probeModel   string
+	soft         int // 0 viable, 1 cold prefill, 2 busy, 3 cold, 4 unhealthy, 9 hard-skipped
 }
 
 // Facts renders the registry row the way explain prints it.
@@ -556,15 +559,10 @@ func (p *Proxy) describe(ctx context.Context, cfg *SmartRouterConfig, pr RoutePr
 			ctxLimit := p.ContextLengthFor(prov, members[0])
 			fits := ctxLimit <= 0 || int(float64(pr.Tokens)*smartHeadroom) <= ctxLimit
 			if fits && c.ColdPrefillS > cfg.coldPrefillBudget() && cfg.coldPrefillBudget() > 0 && c.Warm == "warm" {
-				if shared := p.kvxWouldRestore(ctx, prov, members[0], pr.req); shared > 0 {
-					c.KVXShared = shared
-					rest := pr.Tokens - shared
-					if rest < 0 {
-						rest = 0
-					}
-					c.ColdPrefillS = float64(rest) / prefillRateFor(members[0])
-					c.PrefixKnown = c.ColdPrefillS <= cfg.coldPrefillBudget()
-				}
+				// probed later, concurrently with the other candidates (see
+				// probeCandidates): a 104k prompt renders+tokenizes in ~1.5 s
+				// per runtime and three runtimes in a row cost the router 6.8 s
+				c.needProbe, c.probeProv, c.probeModel = true, prov, members[0]
 			}
 		}
 	}
@@ -661,6 +659,7 @@ func (p *Proxy) smartSelect(ctx context.Context, cfg *SmartRouterConfig, pr Rout
 			if prov, ok := p.Store.ProviderByName(pinned[:i]); ok && prov.Enabled {
 				m := pinned[i+1:]
 				c := p.describe(ctx, cfg, pr, pinned, prov, m, health)
+				p.probeCandidates(ctx, cfg, pr, []RouteCandidate{c})
 				p.judge(cfg, pr, &c, p.isServed(ctx, prov, m))
 				if c.soft <= 2 {
 					c.Verdict = "chosen (pinned)"
@@ -680,8 +679,11 @@ func (p *Proxy) smartSelect(ctx context.Context, cfg *SmartRouterConfig, pr Rout
 		var group []RouteCandidate
 		for _, m := range models {
 			c := p.describe(ctx, cfg, pr, entry, prov, m, health)
-			p.judge(cfg, pr, &c, p.isServed(ctx, prov, m))
 			group = append(group, c)
+		}
+		p.probeCandidates(ctx, cfg, pr, group)
+		for i := range group {
+			p.judge(cfg, pr, &group[i], p.isServed(ctx, prov, group[i].Model))
 		}
 		// within one glob the operator expressed no order: best facts first
 		sort.SliceStable(group, func(i, j int) bool {
@@ -928,4 +930,36 @@ func (p *Proxy) seedColdLosers(req *wire.Request, d smartDecision) {
 		}
 		return
 	}
+}
+
+// smartProbeBudget bounds the concurrent kvxd dry-run probes of one decision.
+const smartProbeBudget = 3 * time.Second
+
+// probeCandidates runs the kvxd dry-run probe for every candidate describe()
+// marked, all at once, and folds the answers back into the estimate.
+func (p *Proxy) probeCandidates(ctx context.Context, cfg *SmartRouterConfig, pr RouteProfile, group []RouteCandidate) {
+	var wg sync.WaitGroup
+	pctx, cancel := context.WithTimeout(ctx, smartProbeBudget)
+	defer cancel()
+	for i := range group {
+		if !group[i].needProbe {
+			continue
+		}
+		wg.Add(1)
+		go func(c *RouteCandidate) {
+			defer wg.Done()
+			shared := p.kvxWouldRestore(pctx, c.probeProv, c.probeModel, pr.req)
+			if shared <= 0 {
+				return
+			}
+			c.KVXShared = shared
+			rest := pr.Tokens - shared
+			if rest < 0 {
+				rest = 0
+			}
+			c.ColdPrefillS = float64(rest) / prefillRateFor(c.probeModel)
+			c.PrefixKnown = c.ColdPrefillS <= cfg.coldPrefillBudget()
+		}(&group[i])
+	}
+	wg.Wait()
 }
