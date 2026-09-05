@@ -716,3 +716,31 @@ func TestSessionRoleDetectsForks(t *testing.T) {
 		t.Fatalf("non-main kinds pass through, got %s", r)
 	}
 }
+
+// A routine turn that asks for deep thinking is capped to low; a hard turn
+// keeps what it asked for; a request that asks for less is left alone.
+func TestSmartRouteCapsEffortByTier(t *testing.T) {
+	p, _, f := smartFixture(t)
+	f.mu.Lock()
+	f.answer = "routine"
+	f.mu.Unlock()
+	req := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "rename a variable"}},
+		Thinking: json.RawMessage(`{"type":"enabled","budget_tokens":16000}`)}
+	_, note := p.AutoRoute(context.Background(), req)
+	if req.ReasoningEffort != "low" || req.Thinking != nil || !strings.Contains(note, "effort=low") {
+		t.Fatalf("routine should cap high thinking to low: effort=%q thinking=%s note=%q", req.ReasoningEffort, req.Thinking, note)
+	}
+	low := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "rename a variable again"}}, ReasoningEffort: "off"}
+	_, note = p.AutoRoute(context.Background(), low)
+	if low.ReasoningEffort != "off" || strings.Contains(note, "effort=") {
+		t.Fatalf("a lower request is untouched: %q %q", low.ReasoningEffort, note)
+	}
+	f.mu.Lock()
+	f.answer = "hard"
+	f.mu.Unlock()
+	hard := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "prove the lemma"}}, Thinking: json.RawMessage(`{"type":"enabled","budget_tokens":16000}`)}
+	_, note = p.AutoRoute(context.Background(), hard)
+	if hard.Thinking == nil || strings.Contains(note, "effort=") {
+		t.Fatalf("hard keeps its thinking budget: %s %q", hard.Thinking, note)
+	}
+}

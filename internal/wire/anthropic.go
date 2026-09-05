@@ -479,9 +479,10 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 		"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{},
 		"stop_reason": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}}})
 
-	blockIdx := -1    // current anthropic content block index
-	textOpen := false // is a text block open
-	curTC := -1       // normalized tool-call index currently open as a block
+	blockIdx := -1     // current anthropic content block index
+	textOpen := false  // is a text block open
+	thinkOpen := false // is a thinking block open
+	curTC := -1        // normalized tool-call index currently open as a block
 	// Tool-call identity by normalized index. A tool call's argument
 	// fragments are streamed into ONE tool_use block; text that arrives while
 	// that block is open is held back and emitted after the block closes,
@@ -492,10 +493,34 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 	idents := map[int]tcIdent{}
 	var heldText strings.Builder
 	closeBlock := func() {
-		if blockIdx >= 0 && (textOpen || curTC >= 0) {
-			send("content_block_stop", map[string]any{"type": "content_block_stop", "index": blockIdx})
-			textOpen, curTC = false, -1
+		if blockIdx >= 0 && thinkOpen {
+			// the API closes a thinking block with a signature; clients accept
+			// an empty one and the proxy drops thinking blocks on the way back in
+			send("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIdx,
+				"delta": map[string]any{"type": "signature_delta", "signature": ""}})
 		}
+		if blockIdx >= 0 && (textOpen || thinkOpen || curTC >= 0) {
+			send("content_block_stop", map[string]any{"type": "content_block_stop", "index": blockIdx})
+			textOpen, thinkOpen, curTC = false, false, -1
+		}
+	}
+	// Reasoning from a thinking model (deepseek reasoning_content, Anthropic
+	// thinking_delta) is forwarded as a thinking block. Dropping it — which
+	// this writer used to do — left Claude Code showing "Waiting for API
+	// response" for the whole 30-60 s a 150k-context DeepSeek turn thinks.
+	emitThinking := func(text string) {
+		if text == "" {
+			return
+		}
+		if !thinkOpen {
+			closeBlock()
+			blockIdx++
+			thinkOpen = true
+			send("content_block_start", map[string]any{"type": "content_block_start", "index": blockIdx,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""}})
+		}
+		send("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIdx,
+			"delta": map[string]any{"type": "thinking_delta", "thinking": text}})
 	}
 	emitText := func(text string) {
 		if text == "" {
@@ -520,6 +545,9 @@ func WriteAnthropicStream(w http.ResponseWriter, model string, in <-chan Delta) 
 		if d.Err != nil {
 			send("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": d.Err.Error()}})
 			return d.Err
+		}
+		if d.Reasoning != "" && curTC < 0 {
+			emitThinking(d.Reasoning)
 		}
 		if d.Text != "" {
 			if curTC >= 0 {

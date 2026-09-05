@@ -391,6 +391,19 @@ left ("caller hung up before the verdict").
   or make seeds yield when a live turn arrives on the same runtime.
   `TestKVXAutoSeedSkipsOversizedHeads`.
 
+#### Follow-up (same day): "Waiting for API response 30 s+" — reasoning was dropped on the way back
+Source: chat. Session 5cc54cd0's main turns on DeepSeek had TTFB 1.7-3 s at the proxy, yet Claude
+Code sat on "Waiting for API response": `WriteAnthropicStream` never emitted `Delta.Reasoning`
+(`ReadOpenAIStream` maps `reasoning_content` into it), so the whole reasoning phase of a
+150k-context DeepSeek turn was silence to the client. Live probe: text at 1.3 s with a low budget.
+- `wire`: reasoning deltas stream as an Anthropic `thinking` block (`thinking_delta`, closed with
+  an empty `signature_delta`) ahead of the text; the proxy already drops thinking blocks on the way
+  back in. `TestAnthropicStreamForwardsReasoningAsThinking`.
+- `smart.tier_effort` (default `{"routine":"low","careful":"medium"}`; `{}` disables): the request's
+  thinking level (explicit `reasoning_effort`, or the Anthropic budget mapped like
+  BuildOpenAIRequest) is lowered to the tier's cap only when it asks for MORE; noted as
+  `effort=<lvl>` on the trace. `TestSmartRouteCapsEffortByTier`.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

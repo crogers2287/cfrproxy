@@ -79,6 +79,11 @@ type SmartRouterConfig struct {
 	// 3-8 s to every turn. nil = {"hook":"routine","search":"routine"}; an
 	// explicit empty map disables the override.
 	RoleTiers map[string]string `json:"role_tiers,omitempty"`
+	// TierEffort caps the thinking level by tier: a routine turn does not
+	// need a 150k-context model to reason for 40 s before its first visible
+	// token. Applied only when the request's own level would be HIGHER.
+	// nil = {"routine":"low","careful":"medium"}; explicit {} disables.
+	TierEffort map[string]string `json:"tier_effort,omitempty"`
 	// Classify: "llm" (default when a classifier is configured) asks the
 	// classifier model for the tier; "heuristic" never calls a model.
 	Classify string `json:"classify,omitempty"`
@@ -111,6 +116,64 @@ func (c *SmartRouterConfig) localMaxTokens() int {
 	return smartDefaultLocalMaxTokens
 }
 func (c *SmartRouterConfig) preferWarm() bool { return c.PreferWarm == nil || *c.PreferWarm }
+func (c *SmartRouterConfig) tierEffort(tier string) string {
+	if c.TierEffort == nil {
+		switch tier {
+		case tierRoutine:
+			return "low"
+		case tierCareful:
+			return "medium"
+		}
+		return ""
+	}
+	return strings.ToLower(c.TierEffort[tier])
+}
+
+var effortRank = map[string]int{"off": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+
+// requestedEffort is the level the request carries: an explicit
+// reasoning_effort, else the Anthropic thinking budget mapped the way
+// BuildOpenAIRequest maps it. "" when the request says nothing.
+func requestedEffort(req *wire.Request) string {
+	if req.ReasoningEffort != "" {
+		return strings.ToLower(req.ReasoningEffort)
+	}
+	if len(req.Thinking) == 0 {
+		return ""
+	}
+	var th struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens"`
+	}
+	if json.Unmarshal(req.Thinking, &th) != nil || th.Type == "disabled" {
+		return ""
+	}
+	switch {
+	case th.BudgetTokens <= 0:
+		return "medium" // "enabled" with no budget: providers default to medium-ish
+	case th.BudgetTokens <= 2048:
+		return "low"
+	case th.BudgetTokens <= 8192:
+		return "medium"
+	}
+	return "high"
+}
+
+// capEffort lowers the request's thinking level to the tier's cap when the
+// request asks for more. Returns the level applied, "" when untouched.
+func capEffort(req *wire.Request, cap string) string {
+	if cap == "" {
+		return ""
+	}
+	have := requestedEffort(req)
+	if have == "" || effortRank[have] <= effortRank[cap] {
+		return ""
+	}
+	req.ReasoningEffort = cap
+	req.Thinking = nil
+	return cap
+}
+
 func (c *SmartRouterConfig) roleTier(role string) string {
 	if role == "" {
 		return ""
@@ -768,6 +831,9 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 		note += " conv:" + fp[:8]
 	}
 	note += fmt.Sprintf(" r=%dms", d.MsClassify+d.MsSelect)
+	if lvl := capEffort(req, cfg.Smart.tierEffort(d.Tier)); lvl != "" {
+		note += " effort=" + lvl
+	}
 	return d.Chosen, note
 }
 

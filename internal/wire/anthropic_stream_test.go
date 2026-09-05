@@ -76,3 +76,31 @@ func TestAnthropicReaderForwardsThinking(t *testing.T) {
 		t.Fatalf("thinking not forwarded as reasoning_content:\n%s", out)
 	}
 }
+
+// Reasoning deltas become a thinking block that precedes the text, closed
+// with a signature_delta the way the API does — Claude Code then shows
+// "Thinking…" instead of "Waiting for API response" for the whole reasoning.
+func TestAnthropicStreamForwardsReasoningAsThinking(t *testing.T) {
+	in := make(chan Delta, 16)
+	in <- Delta{Reasoning: "Let me consider "}
+	in <- Delta{Reasoning: "the options."}
+	in <- Delta{Text: "The sky is blue."}
+	in <- Delta{Finish: "stop"}
+	close(in)
+	rec := httptest.NewRecorder()
+	if err := WriteAnthropicStream(rec, "m", in); err != nil {
+		t.Fatal(err)
+	}
+	out := rec.Body.String()
+	for _, want := range []string{`"content_block":{"thinking":"","type":"thinking"}`, `"thinking_delta"`, `"thinking":"Let me consider "`, `"signature_delta"`, `"text":"The sky is blue."`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, `"thinking_delta"`) > strings.Index(out, `"text_delta"`) {
+		t.Fatalf("thinking must precede text:\n%s", out)
+	}
+	if strings.Count(out, `"index":0`) < 3 || !strings.Contains(out, `"index":1`) {
+		t.Fatalf("thinking should be block 0 and text block 1:\n%s", out)
+	}
+}
