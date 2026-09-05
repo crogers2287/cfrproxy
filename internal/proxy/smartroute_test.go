@@ -636,8 +636,6 @@ func TestSmartRouteSeedsColdLosers(t *testing.T) {
 	s.SetSetting("kvx_restore", `{"enabled":true,"url":"`+kvx.URL+`","provider":"local","auto_seed_min_tokens":1}`)
 	req := &wire.Request{System: strings.Repeat("You are a security monitor. ", 2000), Tools: []wire.Tool{{Name: "bash"}},
 		Messages: []wire.Msg{{Role: "user", Content: "review"}}}
-	m, _ := p.AutoRoute(context.Background(), req) // ~15k chars → est tokens small; force big via profile? use tokens from text
-	_ = m
 	pr := profileFacts(req)
 	pr.Tokens, pr.Tier = 67_000, tierRoutine
 	d := p.smartSelect(context.Background(), p.AutoRouterConfig().Smart, pr, "")
