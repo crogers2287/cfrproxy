@@ -456,6 +456,22 @@ set to the muse alias, and then also the model i was using in another chat".
    `tiel-kvx-w6800`; llama-swap resolves it to the Tiel runner (listing displayName "Tiel Coder
    35B-A3B Q5"). If muse is meant to be Ornith, drop it from the tiel alias list.
 
+#### Follow-up (2026-09-06): photos to Haxor failed — vision chain had no sighted, available model
+Source: screenshot: Haxor "Couldn't pull that up right now" ×3 on photos at 18:55. Traces
+175672-175699: Haxor's session sits on the blind `ccbudget/meta/muse-spark-1.3-contributor`
+(142k ctx); `vision_fallback.targets` were only `codex/gpt-5.6-luna` (HTTP 429
+`usage_limit_reached`, plan prolite, resets 22:27 EDT) and `ccbudget-pro/poolside/laguna-s-2.1-free`
+(blind: "does not support multimodal", plus 503s) → global chain (deepseek/opencode blind, terra
+429) → 502 "no vision-capable model could serve this image".
+- Probed image support: fred/ornith ✅, commandcode/google/gemini-3.7-flash ✅, grok/grok-4.6 ❌
+  (invalid_image), claude/claude-haiku-4-5 ❌ 401 — the cli-proxy-api Claude OAuth token is
+  expired (restart did not help; needs a re-login).
+- `vision_fallback.targets` → `fred/ornith, fred/qwen38-27b, claude/claude-sonnet-5,
+  commandcode/google/gemini-3.7-flash, claude/claude-haiku-4-5, codex/gpt-5.6-luna`. Verified:
+  blind model + image → `failover from ccbudget … → fred/ornith` 200. For Haxor's 142k
+  conversation the local members are too small, so it lands on gemini-3.7-flash until Claude is
+  re-authenticated or the Codex limit resets.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
