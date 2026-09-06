@@ -439,6 +439,23 @@ per-tier level made routine heads unmatchable against seeded artifacts and other
   200 on `/search?format=json`); the "Authentication Fails, Your api key: ****JMjH is invalid"
   is DeepSeek's API error text from a fallback provider — not yet located in a session log.
 
+#### Follow-up (2026-09-06): `fred/muse` served by the 27B — two overrides in front of the alias
+Source: chat: "i have muse set as an alias in llamaswap, but … it's trying to use the model i have
+set to the muse alias, and then also the model i was using in another chat".
+1. `model_pools` still had `muse` (and `glimmer`, `muse-glimmer-30b`, `qwen-w6800`, `qwen38-w6800`,
+   `qwen-w6800-max`, `qwen-131k4`, `tiel-coder`, `tiel-coder-q5`, `tiel-w6800`, `tiel-coder-q5-w6800`)
+   as least-busy pools over `[tiel-coder-q5-w6800, tiel-b-w6800]` — both now aliases of ONE
+   runner (tiel-kvx-w6800), so the pools were pointless and they shadowed the llama-swap alias.
+   Removed (previous value saved in the scratchpad); the ornith pools stay. Replay of
+   `fred/muse` now answered by llama-swap's `muse`.
+2. dsh reaches cfrproxy through the share endpoint `/e/todd-api/v1`, whose `force_model` was
+   `fred/qwen38-27b`: every dsh request was overridden to the 27B regardless of the model dsh
+   picked. Cleared (`update endpoints set force_model='' where name='todd-api'`; was
+   `fred/qwen38-27b`). `explain fred/muse --endpoint todd-api` → fred/muse.
+3. Not changed (user's llama-swap config): `muse` is an alias on BOTH `ornith-kvx-w6800` and
+   `tiel-kvx-w6800`; llama-swap resolves it to the Tiel runner (listing displayName "Tiel Coder
+   35B-A3B Q5"). If muse is meant to be Ornith, drop it from the tiel alias list.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.
