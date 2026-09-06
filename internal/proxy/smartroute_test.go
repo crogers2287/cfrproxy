@@ -727,8 +727,19 @@ func TestSmartRouteCapsEffortByTier(t *testing.T) {
 	req := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "rename a variable"}},
 		Thinking: json.RawMessage(`{"type":"enabled","budget_tokens":16000}`)}
 	_, note := p.AutoRoute(context.Background(), req)
-	if req.ReasoningEffort != "low" || req.Thinking != nil || !strings.Contains(note, "effort=low") {
-		t.Fatalf("routine should cap high thinking to low: effort=%q thinking=%s note=%q", req.ReasoningEffort, req.Thinking, note)
+	if req.ReasoningEffort != "" || req.Thinking == nil || strings.Contains(note, "effort=") {
+		t.Fatalf("a LOCAL winner keeps the request's thinking (cache head must not vary by tier): effort=%q thinking=%s note=%q", req.ReasoningEffort, req.Thinking, note)
+	}
+	// the same routine request on a cloud winner is capped
+	poolAffinity.reset()
+	s2 := p.Store
+	s2.SetSetting("auto_router", strings.Replace(s2.Setting("auto_router"), `"routine":["local/tiel*","local/big","cloud/terra"]`, `"routine":["cloud/terra"]`, 1))
+	routeCache.reset()
+	req2 := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "rename a variable"}},
+		Thinking: json.RawMessage(`{"type":"enabled","budget_tokens":16000}`)}
+	_, note = p.AutoRoute(context.Background(), req2)
+	if req2.ReasoningEffort != "low" || req2.Thinking != nil || !strings.Contains(note, "effort=low") {
+		t.Fatalf("routine on CLOUD should cap high thinking to low: effort=%q thinking=%s note=%q", req2.ReasoningEffort, req2.Thinking, note)
 	}
 	low := &wire.Request{Messages: []wire.Msg{{Role: "user", Content: "rename a variable again"}}, ReasoningEffort: "off"}
 	_, note = p.AutoRoute(context.Background(), low)

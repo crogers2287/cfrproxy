@@ -419,6 +419,26 @@ thinking-block work helps only providers that reason visibly.
   sticky re-validation then sees the real size. `TestSmartRouteUsesActualPromptTokens`.
 - Live: next turn `auto→routine·sticky→ccbudget/deepseek …` TTFB 1.6 s, turns 2.2-5.9 s.
 
+#### Follow-up (2026-09-06): dsh cold-loaded on the 27B; tier effort cap fragmented local heads
+Source: screenshot (llama-swap Activity: qwen38-27b-3090-agg 16,660 prompt, no cache) + "why is it
+still cold loading? using dsh harness … should have loaded instantly from the artifact".
+Trace 174752 09:55:44 `fred/qwen38-27b` (alias → qwen38-27b-3090-agg since the alias moved off
+Flash-Next): `kvx→miss: no attachment shares at least 1024 tokens (16660)`. Detokenised heads of
+the pinned 27B artifacts: none was dsh's — they belong to browser-tool harnesses — and the one
+from 06:01 starts `Reasoning effort is set to low…` because it was captured from a routine-tier
+turn under the new `tier_effort` cap, while a direct dsh request renders at the provider level
+(no preamble). On Qwen3.8's template the effort level is the FIRST tokens of the render, so a
+per-tier level made routine heads unmatchable against seeded artifacts and other tiers.
+- `tier_effort` now applies to cloud winners only (`smartDecision.chosenIsLocal`); local models
+  keep the provider's standing level so every head renders identically.
+  `TestSmartRouteCapsEffortByTier` updated (local untouched, cloud capped).
+- dsh itself: turn 2 cached 11,998 of 28,603 (slot cache), turns 3-5 fully cached; auto-seed
+  pinned dsh's head on the 27B at 09:56 (72fc37be4a60, 28,856 tokens) → next dsh session restores.
+- Deploy waited 10+ min for a long in-flight stream (correct behaviour; `DRAIN_WAIT=3000` used).
+- Web search: OMP's `webSearchOrder` already starts with `searxng` at 127.0.0.1:9090 (healthy,
+  200 on `/search?format=json`); the "Authentication Fails, Your api key: ****JMjH is invalid"
+  is DeepSeek's API error text from a fallback provider — not yet located in a session log.
+
 #### Next (not started)
 - Phase 3 sidecar: once `route-decisions.jsonl` has a few thousand rows, fine-tune a small
   local grader (or fastText) on `(text, tools, depth, tokens) → tier` and point `classifier` at it.

@@ -834,8 +834,16 @@ func (p *Proxy) smartRoute(ctx context.Context, req *wire.Request, cfg AutoRoute
 		note += " conv:" + fp[:8]
 	}
 	note += fmt.Sprintf(" r=%dms", d.MsClassify+d.MsSelect)
-	if lvl := capEffort(req, cfg.Smart.tierEffort(d.Tier)); lvl != "" {
-		note += " effort=" + lvl
+	// Cloud only. On the local Qwen templates the effort level is rendered as
+	// the FIRST tokens of the system block ("Reasoning effort is set to low…"),
+	// so a per-tier level would make a routine turn's head differ from the
+	// seeded artifact and from the same conversation's careful turns — every
+	// pinned KV artifact and slot cache would fragment by effort. Local models
+	// keep the provider's standing level; cloud models have no such cache.
+	if !d.chosenIsLocal() {
+		if lvl := capEffort(req, cfg.Smart.tierEffort(d.Tier)); lvl != "" {
+			note += " effort=" + lvl
+		}
 	}
 	return d.Chosen, note
 }
@@ -1078,4 +1086,13 @@ func convTagOf(note string) string {
 		return ""
 	}
 	return note[i+5 : i+13]
+}
+
+func (d smartDecision) chosenIsLocal() bool {
+	for _, c := range d.Candidates {
+		if c.Provider+"/"+c.Model == d.Chosen {
+			return c.Local
+		}
+	}
+	return false
 }
